@@ -5,7 +5,7 @@ Summary: A PostScript interpreter and renderer
 Name: ghostscript
 Version: %{gs_ver}
 
-Release: 21%{?dist}
+Release: 21%{?dist}.1
 
 # Included CMap data is Redistributable, no modification permitted,
 # see http://bugzilla.redhat.com/487510
@@ -47,6 +47,10 @@ Patch28: ghostscript-pdf-invisible-text.patch
 Patch29: ghostscript-pdf-collection.patch
 Patch30: ghostscript-pdfa.patch
 Patch31: ghostscript-crash.patch
+Patch32: ghostscript-CVE-2013-5653.patch
+Patch33: ghostscript-CVE-2016-7977.patch
+Patch34: ghostscript-CVE-2016-7979.patch
+Patch35: ghostscript-CVE-2016-8602.patch
 
 Requires: urw-fonts >= 1.1, ghostscript-fonts
 BuildRequires: xz
@@ -213,6 +217,18 @@ rm -rf libpng zlib jpeg jasper
 
 # Prevent memory handling crash (bug #1105520).
 %patch31 -p1 -b .crash
+
+# getenv and filenameforall: do not ignore -dSAFER (bug #1380327)
+%patch32 -p1
+
+# .libfile: honor -dSAFER (bug #1380415)
+%patch33 -p1
+
+# DSC parser - validate parameters (bug #1382305)
+%patch34 -p1
+
+# check for sufficient params in .sethalftone5 (bug #1383940)
+%patch35 -p1
 
 # Convert manual pages to UTF-8
 from8859_1() {
@@ -398,6 +414,13 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/libgs.so
 
 %changelog
+* Mon Nov  7 2016 David Kaspar [Dee'Kej] <dkaspar@redhat.com> - 8.70-21_1
+- Added security fixes for:
+  - CVE-2013-5653 (bug #1380327)
+  - CVE-2016-7977 (bug #1380415)
+  - CVE-2016-7979 (bug #1382305)
+  - CVE-2016-8602 (bug #1383940)
+
 * Fri Feb 20 2015 Tim Waugh <twaugh@redhat.com> - 8.70-21
 - Removed patch backup file from payload (bug #1027534).
 
