@@ -5,7 +5,7 @@ Summary: A PostScript interpreter and renderer
 Name: ghostscript
 Version: %{gs_ver}
 
-Release: 21%{?dist}.1
+Release: 23%{?dist}
 
 # Included CMap data is Redistributable, no modification permitted,
 # see http://bugzilla.redhat.com/487510
@@ -51,6 +51,7 @@ Patch32: ghostscript-CVE-2013-5653.patch
 Patch33: ghostscript-CVE-2016-7977.patch
 Patch34: ghostscript-CVE-2016-7979.patch
 Patch35: ghostscript-CVE-2016-8602.patch
+Patch36: ghostscript-fix-locksafe.patch
 
 Requires: urw-fonts >= 1.1, ghostscript-fonts
 BuildRequires: xz
@@ -229,6 +230,9 @@ rm -rf libpng zlib jpeg jasper
 
 # check for sufficient params in .sethalftone5 (bug #1383940)
 %patch35 -p1
+
+# Fix .locksafe [fixes regression from previous CVE fixes](bug #1410260)
+%patch36 -p1
 
 # Convert manual pages to UTF-8
 from8859_1() {
@@ -414,7 +418,10 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/libgs.so
 
 %changelog
-* Mon Nov  7 2016 David Kaspar [Dee'Kej] <dkaspar@redhat.com> - 8.70-21_1
+* Tue Jan 31 2017 David Kaspar [Dee'Kej] <dkaspar@redhat.com> - 8.70-23
+- Fix for regression caused by previous CVE fixes (bug #1410260)
+
+* Mon Nov  7 2016 David Kaspar [Dee'Kej] <dkaspar@redhat.com> - 8.70-22
 - Added security fixes for:
   - CVE-2013-5653 (bug #1380327)
   - CVE-2016-7977 (bug #1380415)
