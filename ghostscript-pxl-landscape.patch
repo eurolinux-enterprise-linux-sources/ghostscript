@@ -1,0 +1,42 @@
+diff -up ghostscript-8.70/base/gdevpxut.c.pxl-landscape ghostscript-8.70/base/gdevpxut.c
+--- ghostscript-8.70/base/gdevpxut.c.pxl-landscape	2008-09-02 19:37:07.000000000 +0100
++++ ghostscript-8.70/base/gdevpxut.c	2011-05-31 16:50:42.839840437 +0100
+@@ -115,11 +115,7 @@ px_write_file_header(stream *s, const gx
+ int
+ px_write_page_header(stream *s, const gx_device *dev)
+ {
+-    static const byte page_header_1[] = {
+-	DUB(ePortraitOrientation), DA(pxaOrientation)
+-    };
+-
+-    PX_PUT_LIT(s, page_header_1);
++    /* Orientation is deferred until px_write_select_media... */
+     return 0;
+ }
+ 
+@@ -144,6 +140,7 @@ px_write_select_media(stream *s, const g
+     int i;
+     pxeMediaSize_t size;
+     byte tray = eAutoSelect;
++    byte orientation = ePortraitOrientation;
+ 
+     /* The default is eLetterPaper, media size 0. */
+     for (i = countof(media_sizes) - 2; i > 0; --i)
+@@ -151,7 +148,17 @@ px_write_select_media(stream *s, const g
+ 	    fabs(media_sizes[i].height - h) < 5.0 / 72
+ 	    )
+ 	    break;
++	else if (fabs(media_sizes[i].height - w) < 5.0 / 72 &&
++		 fabs(media_sizes[i].width - h) < 5.0 / 72)
++	{
++	    orientation = eLandscapeOrientation;
++	    break;
++	}
++
+     size = media_sizes[i].ms;
++
++    px_put_uba(s, orientation, pxaOrientation);
++
+     /*
+      * According to the PCL XL documentation, MediaSize must always
+      * be specified, but MediaSource is optional.

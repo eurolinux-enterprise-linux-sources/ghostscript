@@ -1,0 +1,113 @@
+diff -up ghostscript-8.70/base/sa85d.c.incomplete-eod ghostscript-8.70/base/sa85d.c
+--- ghostscript-8.70/base/sa85d.c.incomplete-eod	2007-09-25 14:31:24.000000000 +0100
++++ ghostscript-8.70/base/sa85d.c	2013-08-07 11:06:06.696828855 +0100
+@@ -128,16 +128,27 @@ s_A85D_process(stream_state * st, stream
+ 	     * And any other characters should raise an ioerror.
+ 	     * But Adobe Acrobat allows CR/LF between ~ and >.
+ 	     * So we allow CR/LF between them. */
++	    /* PDF further relaxes the requirements and accepts bare '~'.
++	     */
+ 	    while ((p[i] == 13 || p[i] == 10) && (p+i <= rlimit)) 
+ 		i++;
+ 	    if (p[i] != '>') {
+-		if (p+i == rlimit) {
+-		    if (last)
+-			status = ERRC;
+-		    else
+-			p--;	/* we'll see the '~' after filling the buffer */
++		if (ss->pdf_rules) {
++		    if (p[i] == 13 || p[i] == 10) {
++		        if (!last)
++		            break;
++		    } else {
++		        p--;
++		    }   
++		} else {
++		    if (p+i == rlimit) {
++		        if (last)
++			    status = ERRC;
++		        else
++			    p--;	/* we'll see the '~' after filling the buffer */
++		    }
++		    break;
+ 		}
+-		break;
+ 	    }
+ 	    p += i;		/* advance to the '>' */
+ 	    pw->ptr = q;
+diff -up ghostscript-8.70/base/sa85d.h.incomplete-eod ghostscript-8.70/base/sa85d.h
+--- ghostscript-8.70/base/sa85d.h.incomplete-eod	2007-06-05 23:23:38.000000000 +0100
++++ ghostscript-8.70/base/sa85d.h	2013-08-07 11:06:06.697828856 +0100
+@@ -23,6 +23,7 @@ typedef struct stream_A85D_state_s {
+     stream_state_common;
+     int odd;			/* # of odd digits */
+     ulong word;			/* word being accumulated */
++    bool pdf_rules;             /* hacks and tweaks for PDF */
+ } stream_A85D_state;
+ 
+ #define private_st_A85D_state()	/* in sfilter2.c */\
+diff -up ghostscript-8.70/psi/zfdecode.c.incomplete-eod ghostscript-8.70/psi/zfdecode.c
+--- ghostscript-8.70/psi/zfdecode.c.incomplete-eod	2008-08-28 23:48:19.000000000 +0100
++++ ghostscript-8.70/psi/zfdecode.c	2013-08-07 11:06:06.697828856 +0100
+@@ -55,7 +55,18 @@ zA85E(i_ctx_t *i_ctx_p)
+ static int
+ zA85D(i_ctx_t *i_ctx_p)
+ {
+-    return filter_read_simple(i_ctx_p, &s_A85D_template);
++    os_ptr op = osp;
++    stream_A85D_state ss;
++    int code;
++
++    if (r_has_type(op, t_dictionary)) {
++	check_dict_read(*op);
++	if ((code = dict_bool_param(op, "PDFRules", false, &ss.pdf_rules)) < 0)
++	    return code;
++    } else {
++        ss.pdf_rules = false;
++    }
++    return filter_read(i_ctx_p, 0, &s_A85D_template, (stream_state *)&ss, 0);
+ }
+ 
+ /* ------ CCITTFaxDecode filter ------ */
+diff -up ghostscript-8.70/Resource/Init/pdf_base.ps.incomplete-eod ghostscript-8.70/Resource/Init/pdf_base.ps
+--- ghostscript-8.70/Resource/Init/pdf_base.ps.incomplete-eod	2009-06-26 13:42:29.000000000 +0100
++++ ghostscript-8.70/Resource/Init/pdf_base.ps	2013-08-07 11:06:06.697828856 +0100
+@@ -921,14 +921,34 @@ currentdict /no_debug_dict undef
+     /.EOFDecode
+   } ifelse
+ } bind def
++
++/pdf_rules_dict << /PDFRules //true >> readonly def
++
++% Add PDF option to ASCII85Decode filter
++% <source>        <name> add_A85_param <source> <dict'> <name>
++% <source> <dict> <name> add_A85_param <source> <dict'> <name>
++/add_A85_param {
++  dup /ASCII85Decode eq {
++    1 index type /dicttype eq {
++      3 -1 roll dup length 1 add dict copy
++      dup /PDFRules //true put
++      3 1 roll
++    } {
++      //pdf_rules_dict exch
++    } ifelse
++  } if
++} bind def
++
++currentdict /pdf_rules_dict undef
++
+ /applyfilters {		% <parms> <source> <filternames> applyfilters <stream>
+-  2 index null eq {
+-    { filtername filter }
++  2 index //null eq {
++    { filtername add_A85_param filter }
+   } {
+     {		% Stack: parms source filtername
+-      2 index 0 oget dup null eq { pop } {
++      2 index 0 oget dup //null eq { pop } {
+         exch filtername dup /JBIG2Decode eq { exch jbig2cachectx exch } if
+-      } ifelse filter
++      } ifelse add_A85_param filter
+       exch dup length 1 sub 1 exch getinterval exch
+     }
+   } ifelse forall exch pop

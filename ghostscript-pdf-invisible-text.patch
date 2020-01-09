@@ -1,0 +1,12 @@
+diff -up ghostscript-8.70/base/gdevpdte.c.pdf-invisible-text ghostscript-8.70/base/gdevpdte.c
+--- ghostscript-8.70/base/gdevpdte.c.pdf-invisible-text	2009-07-15 14:07:48.000000000 +0100
++++ ghostscript-8.70/base/gdevpdte.c	2015-02-20 11:42:52.676053813 +0000
+@@ -969,7 +969,7 @@ process_text_modify_width(pdf_text_enum_
+ 	    }
+ 	}
+ 	pdf_char_widths_to_uts(pdfont3, &cw); /* convert design->text space */
+-	if (pte->text.operation & TEXT_DO_DRAW) {
++	if (pte->text.operation & (TEXT_DO_DRAW | TEXT_RENDER_MODE_3)) {
+ 	    gs_distance_transform(cw.Width.xy.x * ppts->values.size,
+ 				  cw.Width.xy.y * ppts->values.size,
+ 				  &ppts->values.matrix, &did);

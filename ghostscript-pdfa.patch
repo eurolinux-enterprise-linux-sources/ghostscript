@@ -1,0 +1,1188 @@
+diff -up ghostscript-8.70/base/gdevpdfb.h.pdfa ghostscript-8.70/base/gdevpdfb.h
+--- ghostscript-8.70/base/gdevpdfb.h.pdfa	2009-07-21 14:43:27.000000000 +0100
++++ ghostscript-8.70/base/gdevpdfb.h	2015-02-20 12:21:04.512365327 +0000
+@@ -129,6 +129,7 @@ const gx_device_pdf PDF_DEVICE_IDENT =
+  0 /*false*/,			/* PatternImagemask */
+  0 /*false*/,			/* PDFX */
+  0 /*false*/,			/* PDFA */
++ 0 /*false*/,			/* Abort generation of PDFA or X, produce PDF */
+  12000,				/* MaxClipPathSize */ /* HP LaserJet 1320 hangs with 14000. */
+  max_long,                      /* MaxViewerMemorySize */
+  256000,			/* MaxShadingBitmapSize */
+diff -up ghostscript-8.70/base/gdevpdfc.c.pdfa ghostscript-8.70/base/gdevpdfc.c
+--- ghostscript-8.70/base/gdevpdfc.c.pdfa	2009-06-29 10:33:50.000000000 +0100
++++ ghostscript-8.70/base/gdevpdfc.c	2015-02-20 12:21:04.513365323 +0000
+@@ -24,6 +24,8 @@
+ #include "stream.h"
+ #include "gsicc.h"
+ #include "gserrors.h"
++#include "gsfunc.h"		/* required for colour space function evaluation */
++#include "gsfunc3.h"		/* Required to create a replacement lineat interpolation function */
+ #include "gdevpdfx.h"
+ #include "gdevpdfg.h"
+ #include "gdevpdfc.h"
+@@ -329,6 +331,121 @@ pdf_cspace_init_Device(gs_memory_t *mem,
+     return 0;
+ }
+ 
++static int pdf_delete_base_space_function(gx_device_pdf *pdev, gs_function_t *pfn)
++{
++    gs_function_ElIn_params_t *params = (gs_function_ElIn_params_t *)&pfn->params;
++
++    gs_free_object(pdev->memory, (void *)params->Domain, "pdf_delete_function");
++    gs_free_object(pdev->memory, (void *)params->Range, "pdf_delete_function");
++    gs_free_object(pdev->memory, (void *)params->C0, "pdf_delete_function");
++    gs_free_object(pdev->memory, (void *)params->C1, "pdf_delete_function");
++    gs_free_object(pdev->memory, (void *)pfn, "pdf_delete_function");
++    return 0;
++}
++
++static int pdf_make_base_space_function(gx_device_pdf *pdev, gs_function_t **pfn,
++					int ncomp, float *data_low, float *data_high)
++{
++    gs_function_ElIn_params_t params;
++    float *ptr1, *ptr2;
++    int i, code;
++
++    ptr1 = (float *)
++        gs_alloc_byte_array(pdev->memory, 2, sizeof(float), "pdf_make_function(Domain)");
++    if (ptr1 == 0) {
++	return gs_note_error(gs_error_VMerror);
++    }
++    ptr2 = (float *)
++        gs_alloc_byte_array(pdev->memory, 2 * ncomp, sizeof(float), "pdf_make_function(Range)");
++    if (ptr2 == 0) {
++	gs_free_object(pdev->memory, (void *)ptr1, "pdf_make_function(Range)");
++	return gs_note_error(gs_error_VMerror);
++    }
++    params.m = 1;
++    params.n = ncomp;
++    params.N = 1.0f;
++    ptr1[0] = 0.0f;
++    ptr1[1] = 1.0f;
++    for (i=0;i<ncomp;i++) {
++        ptr2[i*2] = 0.0f;
++        ptr2[(i*2) + 1] = 1.0f;
++    }
++    params.Domain = ptr1;
++    params.Range = ptr2;
++
++    ptr1 = (float *)gs_alloc_byte_array(pdev->memory, ncomp, sizeof(float), "pdf_make_function(C0)");
++    if (ptr1 == 0) {
++	gs_free_object(pdev->memory, (void *)params.Domain, "pdf_make_function(C0)");
++	gs_free_object(pdev->memory, (void *)params.Range, "pdf_make_function(C0)");
++	return gs_note_error(gs_error_VMerror);
++    }
++    ptr2 = (float *)gs_alloc_byte_array(pdev->memory, ncomp, sizeof(float), "pdf_make_function(C1)");
++    if (ptr2 == 0) {
++	gs_free_object(pdev->memory, (void *)params.Domain, "pdf_make_function(C1)");
++	gs_free_object(pdev->memory, (void *)params.Range, "pdf_make_function(C1)");
++	gs_free_object(pdev->memory, (void *)ptr1, "pdf_make_function(C1)");
++	return gs_note_error(gs_error_VMerror);
++    }
++
++    for (i=0;i<ncomp;i++) {
++	ptr1[i] = data_low[i];
++	ptr2[i] = data_high[i];
++    }
++    params.C0 = ptr1;
++    params.C1 = ptr2;
++    code = gs_function_ElIn_init(pfn, &params, pdev->memory);
++    if (code < 0) {
++	gs_free_object(pdev->memory, (void *)params.Domain, "pdf_make_function");
++	gs_free_object(pdev->memory, (void *)params.Range, "pdf_make_function");
++	gs_free_object(pdev->memory, (void *)params.C0, "pdf_make_function");
++	gs_free_object(pdev->memory, (void *)params.C1, "pdf_make_function");
++    }
++    return code;
++}
++
++static void pdf_SepRGB_ConvertToCMYK (float *in, float *out)
++{
++    float CMYK[4];
++    int i;
++
++    if (in[0] <= in[1] && in[0] <= in[2]) {
++        CMYK[3] = 1.0 - in[0];
++    } else {
++        if (in[1]<= in[0] && in[1] <= in[2]) {
++    	    CMYK[3] = 1.0 - in[1];
++	} else {
++	    CMYK[3] = 1.0 - in[2];
++	}
++    }
++    CMYK[0] = 1.0 - in[0] - CMYK[3];
++    CMYK[1] = 1.0 - in[1] - CMYK[3];
++    CMYK[2] = 1.0 - in[2] - CMYK[3];
++    for (i=0;i<4;i++)
++        out[i] = CMYK[i];
++}
++
++static void pdf_SepCMYK_ConvertToRGB (float *in, float *out)
++{
++    float RGB[3];
++
++    RGB[0] = in[0] + in[3];
++    RGB[1] = in[1] + in[3];
++    RGB[2] = in[2] + in[3];
++
++    if (RGB[0] > 1)
++	out[0] = 0.0f;
++    else
++	out[0] = 1 - RGB[0];
++    if (RGB[1] > 1)
++	out[1] = 0.0f;
++    else
++	out[1] = 1 - RGB[1];
++    if (RGB[2] > 1)
++	out[2] = 0.0f;
++    else
++	out[2] = 1 - RGB[2];
++}
++
+ /* Create a Separation or DeviceN color space (internal). */
+ static int
+ pdf_separation_color_space(gx_device_pdf *pdev,
+@@ -341,7 +458,90 @@ pdf_separation_color_space(gx_device_pdf
+ {
+     cos_value_t v;
+     const gs_range_t *ranges;
+-    int code;
++    int code, csi;
++
++    /* We need to think about the alternate space. If we are producing 
++     * PDF/X or PDF/A we can't produce some device spaces, and the code in 
++     * pdf_color_space_named always allows device spaces. We could alter
++     * that code, but by then we don't know its an Alternate space, and have
++     * lost the tin transform procedure. So instead we check here.
++     */
++    csi = gs_color_space_get_index(alt_space);
++    if (csi == gs_color_space_index_DeviceRGB && (pdev->PDFX || 
++	(pdev->PDFA && (pdev->pcm_color_info_index == gs_color_space_index_DeviceCMYK)))) {
++
++	/* We have a DeviceRGB alternate, but are producing either PDF/X or
++	 * PDF/A with a DeviceCMYK process color model. So we need to convert
++	 * the alternate space into CMYK. We do this by evaluating the function
++	 * at each end of the Separation space (0 and 1), convert the resulting
++	 * RGB colours into CMYK and create a new function which linearly 
++	 * interpolates between these points.
++	 */
++	gs_function_t *new_pfn = 0;
++        float in[1] = {0.0f};
++	float out_low[4];
++	float out_high[4];
++
++	code = gs_function_evaluate(pfn, in, out_low);
++	if (code < 0)
++	    return code;
++	pdf_SepRGB_ConvertToCMYK((float *)&out_low, (float *)&out_low);
++
++	in[0] = 1.0f;
++	code = gs_function_evaluate(pfn, in, out_high);
++	if (code < 0)
++	    return code;
++	pdf_SepRGB_ConvertToCMYK((float *)&out_high, (float *)&out_high);
++	
++	code = pdf_make_base_space_function(pdev, &new_pfn, 4, out_low, out_high);
++	if (code < 0)
++	    return code;
++	if ((code = cos_array_add(pca, cos_c_string_value(&v, csname))) < 0 ||
++	    (code = cos_array_add_no_copy(pca, snames)) < 0 ||
++	    (code = (int)cos_c_string_value(&v, (const char *)pcsn->DeviceCMYK)) < 0 ||
++	    (code = cos_array_add(pca, &v)) < 0 ||
++	    (code = pdf_function_scaled(pdev, new_pfn, 0x00, &v)) < 0 ||
++	    (code = cos_array_add(pca, &v)) < 0 ||
++	    (v_attributes != NULL ? code = cos_array_add(pca, v_attributes) : 0) < 0
++	    ) {}
++	pdf_delete_base_space_function(pdev, new_pfn);
++	return code;
++    }
++    if (csi == gs_color_space_index_DeviceCMYK &&
++	(pdev->PDFA && (pdev->pcm_color_info_index == gs_color_space_index_DeviceRGB))) {
++	/* We have a DeviceCMYK alternate, but are producingPDF/A with a 
++	 * DeviceRGB process color model. See comment above re DviceRGB.
++	 */
++	gs_function_t *new_pfn = 0;
++        float in[1] = {0.0f};
++	float out_low[4];
++	float out_high[4];
++
++	code = gs_function_evaluate(pfn, in, out_low);
++	if (code < 0)
++	    return code;
++	pdf_SepCMYK_ConvertToRGB((float *)&out_low, (float *)&out_low);
++
++        in[0] = 1.0f;
++	code = gs_function_evaluate(pfn, in, out_high);
++	if (code < 0)
++	    return code;
++	pdf_SepCMYK_ConvertToRGB((float *)&out_high, (float *)&out_high);
++
++	code = pdf_make_base_space_function(pdev, &new_pfn, 3, out_low, out_high);
++	if (code < 0)
++	    return code;
++	if ((code = cos_array_add(pca, cos_c_string_value(&v, csname))) < 0 ||
++	    (code = cos_array_add_no_copy(pca, snames)) < 0 ||
++	    (code = (int)cos_c_string_value(&v, pcsn->DeviceRGB)) < 0 ||
++	    (code = cos_array_add(pca, &v)) < 0 ||
++	    (code = pdf_function_scaled(pdev, new_pfn, 0x00, &v)) < 0 ||
++	    (code = cos_array_add(pca, &v)) < 0 ||
++	    (v_attributes != NULL ? code = cos_array_add(pca, v_attributes) : 0) < 0
++	    ) {}
++	pdf_delete_base_space_function(pdev, new_pfn);
++	return code;
++    }
+ 
+     if ((code = cos_array_add(pca, cos_c_string_value(&v, csname))) < 0 ||
+ 	(code = cos_array_add_no_copy(pca, snames)) < 0 ||
+@@ -895,6 +1095,7 @@ pdf_color_space_named(gx_device_pdf *pde
+     default:
+ 	return_error(gs_error_rangecheck);
+     }
++
+     /*
+      * Register the color space as a resource, since it must be referenced
+      * by name rather than directly.
+diff -up ghostscript-8.70/base/gdevpdfd.c.pdfa ghostscript-8.70/base/gdevpdfd.c
+--- ghostscript-8.70/base/gdevpdfd.c.pdfa	2009-07-09 06:59:44.000000000 +0100
++++ ghostscript-8.70/base/gdevpdfd.c	2015-02-20 12:21:04.513365323 +0000
+@@ -1047,6 +1047,8 @@ gdev_pdf_fill_path(gx_device * dev, cons
+ 	return code;
+     if (code == 1)
+ 	return 0; /* Nothing to paint. */
++    if (!have_path)
++        return 0;
+     code = pdf_setfillcolor((gx_device_vector *)pdev, pis, pdcolor);
+     if (code == gs_error_rangecheck) {
+ 	const bool convert_to_image = (pdev->CompatibilityLevel <= 1.2 && 
+@@ -1154,7 +1156,7 @@ gdev_pdf_fill_path(gx_device * dev, cons
+     }
+     if (code < 0)
+ 	return code;
+-    if (have_path) {
++    {
+ 	stream *s = pdev->strm;
+ 	double scale;
+ 	gs_matrix smat;
+diff -up ghostscript-8.70/base/gdevpdfe.c.pdfa ghostscript-8.70/base/gdevpdfe.c
+--- ghostscript-8.70/base/gdevpdfe.c.pdfa	2009-04-28 14:16:17.000000000 +0100
++++ ghostscript-8.70/base/gdevpdfe.c	2015-02-20 12:21:04.514365319 +0000
+@@ -292,6 +292,9 @@ decode_escape(const byte *data, int data
+ 	return 0; /* Must_not_happen, because the string is PS encoded. */
+     c = data[*index];
+     switch (c) {
++	case '(': (*index)++; return '(';
++	case ')': (*index)++; return ')';
++	case '\\': (*index)++; return '\\';
+ 	case 'n': (*index)++; return '\n';
+ 	case 'r': (*index)++; return '\r';
+ 	case 't': (*index)++; return '\t';
+@@ -299,16 +302,23 @@ decode_escape(const byte *data, int data
+ 	    break;
+     }
+     if (c >= '0' && c <= '7') {
++	int oct_loop;
+ 	/* octal */
+ 	byte v = c - '0';
+ 
+-	for (;;) {
++	/* Octal values should always be three digits, one is consumed above! */
++	for (oct_loop = 0;oct_loop < 2; oct_loop++) {
+ 	    (*index)++;
+ 	    if (*index >= data_length)
++		/* Ran out of data, return what we found */
+ 		return v;
+ 	    c = data[*index];
+-	    if (c < '0' || c > '7')
++	    if (c < '0' || c > '7') {
++		/* Ran out of numeric data, return what we found */
++		/* Need to 'unget' the non-numeric character */
++		(*index)--;
+ 		break;
++	    }
+ 	    v = v * 8 + (c - '0');
+ 	}
+ 	return v;	
+@@ -321,7 +331,60 @@ pdf_xmp_write_translated(gx_device_pdf *
+ 			 void(*write)(stream *s, const byte *data, int data_length))
+ {
+     if (pdev->DSCEncodingToUnicode.data == 0) {
+-	write(s, data, data_length);
++	int i, j=0;
++	unsigned char *buf0 = data;
++
++	buf0 = (unsigned char *)gs_alloc_bytes(pdev->memory, data_length * sizeof(unsigned char), 
++			"pdf_xmp_write_translated");
++	if (buf0 == NULL)
++	    return_error(gs_error_VMerror);
++	for (i = 0; i < data_length; i++) {
++	    byte c = data[i];
++	    int v;
++
++	    if (c == '\\') 
++		c = decode_escape(data, data_length, &i);
++	    buf0[j] = c;
++	    j++;
++	}
++	if (buf0[0] == 0xfe && buf0[1] == 0xff) {
++	    /* Its a Unicode (UTF-16BE) string, convert to UTF-8 */
++	    UTF16 *buf0b, U16;
++	    UTF8 *buf1, *buf1b;
++	    char datab;
++
++	    buf1 = (UTF8 *)gs_alloc_bytes(pdev->memory, data_length * sizeof(unsigned char), 
++			"pdf_xmp_write_translated");
++	    if (buf1 == NULL)
++		return_error(gs_error_VMerror);
++	    buf1b = buf1;
++	    /* Skip the Byte Order Mark (0xfe 0xff) */
++	    buf0b = buf0 + 2;
++	    /* ConvertUTF16to UTF8 expects a buffer of UTF16s in the local
++	     * endian-ness, but the data is big-endian. In case this is a little-endian
++	     * machine, process the buffer from big-endian to whatever is right for this platform.
++	     */
++	    for (i = 2; i < j; i+=2) {
++		U16 = (buf0[i] << 8) + buf0[i + 1];
++		*(buf0b++) = U16;
++	    }
++	    buf0b = buf0 + 2;
++	    switch (ConvertUTF16toUTF8(&buf0b, (UTF16 *)(buf0 + j),
++			     &buf1b, buf1 + j, strictConversion)) {
++		case conversionOK:
++		    write(s, buf1, buf1b - buf1);
++		    gs_free_object(pdev->memory, buf1, "pdf_xmp_write_translated");
++		    break;
++		case sourceExhausted:
++		case targetExhausted:
++		case sourceIllegal:
++		default:
++		    gs_free_object(pdev->memory, buf1, "pdf_xmp_write_translated");
++		    return_error(gs_error_rangecheck);
++	    }
++	} else
++	    write(s, buf0, j);
++	gs_free_object(pdev->memory, buf0, "pdf_xmp_write_translated");
+ 	return 0;
+     } else {
+ 	UTF16 *buf0;
+@@ -335,8 +398,10 @@ pdf_xmp_write_translated(gx_device_pdf *
+ 	    return_error(gs_error_VMerror);
+ 	buf1 = (UTF8 *)gs_alloc_bytes(pdev->memory, data_length * 2, 
+ 			"pdf_xmp_write_translated");
+-	if (buf1 == NULL)
++	if (buf1 == NULL) {
++	    gs_free_object(pdev->memory, buf0, "pdf_xmp_write_translated");
+ 	    return_error(gs_error_VMerror);
++	}
+ 	buf0b = buf0;
+ 	buf1b = buf1;
+ 	for (i = 0; i < data_length; i++) {
+@@ -345,8 +410,11 @@ pdf_xmp_write_translated(gx_device_pdf *
+ 
+ 	    if (c == '\\') 
+ 		c = decode_escape(data, data_length, &i);
+-	    if (c > pdev->DSCEncodingToUnicode.size)
++	    if (c > pdev->DSCEncodingToUnicode.size) {
++		gs_free_object(pdev->memory, buf0, "pdf_xmp_write_translated");
++		gs_free_object(pdev->memory, buf1, "pdf_xmp_write_translated");
+ 		return_error(gs_error_rangecheck);
++	    }
+ 
+ 	    v = pdev->DSCEncodingToUnicode.data[c];
+ 	    if (v == -1)
+@@ -363,6 +431,8 @@ pdf_xmp_write_translated(gx_device_pdf *
+ 	    case targetExhausted:
+ 	    case sourceIllegal:
+ 	    default:
++		gs_free_object(pdev->memory, buf0, "pdf_xmp_write_translated");
++		gs_free_object(pdev->memory, buf1, "pdf_xmp_write_translated");
+ 		return_error(gs_error_rangecheck);
+ 	}
+ 	gs_free_object(pdev->memory, buf0, "pdf_xmp_write_translated");
+diff -up ghostscript-8.70/base/gdevpdfm.c.pdfa ghostscript-8.70/base/gdevpdfm.c
+--- ghostscript-8.70/base/gdevpdfm.c.pdfa	2015-02-20 12:17:48.175136604 +0000
++++ ghostscript-8.70/base/gdevpdfm.c	2015-02-20 12:21:04.514365319 +0000
+@@ -732,7 +732,8 @@ pdfmark_annot(gx_device_pdf * pdev, gs_p
+ 		 */
+ 		case 0:
+ 		    eprintf("Annotation set to non-printing,\n not permitted in PDF/A, reverting to normal PDF output\n");
+-		    pdev->PDFA = 0;
++		    pdev->AbortPDFAX = true;
++		    pdev->PDFA = false;
+ 		    break;
+ 		    /* Since the annotation would break PDF/A compatibility, do not
+ 		     * include it, but warn the user that it has been dropped.
+@@ -741,9 +742,15 @@ pdfmark_annot(gx_device_pdf * pdev, gs_p
+ 		    eprintf("Annotation set to non-printing,\n not permitted in PDF/A, annotation will not be present in output file\n");
+ 		    return 0;
+ 		    break;
++		case 2:
++		    eprintf(
++                             "Annotation set to non-printing,\n not permitted in PDF/A, aborting conversion\n");
++		    return gs_error_invalidfont;
++		    break;
+ 		default:
+ 		    eprintf("Annotation set to non-printing,\n not permitted in PDF/A, unrecognised PDFACompatibilityLevel,\nreverting to normal PDF output\n");
+-		    pdev->PDFA = 0;
++		    pdev->AbortPDFAX = true;
++		    pdev->PDFA = false;
+ 		    break;
+ 	    }
+ 	}
+diff -up ghostscript-8.70/base/gdevpdfo.c.pdfa ghostscript-8.70/base/gdevpdfo.c
+--- ghostscript-8.70/base/gdevpdfo.c.pdfa	2009-03-31 15:30:14.000000000 +0100
++++ ghostscript-8.70/base/gdevpdfo.c	2015-02-20 12:21:04.514365319 +0000
+@@ -508,10 +508,42 @@ cos_array_write(const cos_object_t *pco,
+     const cos_array_t *const pca = (const cos_array_t *)pco;
+     cos_array_element_t *first = cos_array_reorder(pca, NULL);
+     cos_array_element_t *pcae;
+-    uint last_index = 0;
++    uint last_index = 0, Element_Count = 0;
+ 
+     stream_puts(s, "[");
+     for (pcae = first; pcae; ++last_index, pcae = pcae->next) {
++	Element_Count++;
++
++	if(pdev->PDFA && Element_Count > 8191) {
++	    switch (pdev->PDFACompatibilityPolicy) {
++	    case 0:
++		eprintf(
++		    "Too many entries in array,\n max 8191 in PDF/A, reverting to normal PDF output\n");
++		pdev->AbortPDFAX = true;
++		pdev->PDFA = false;
++		break;
++	    case 1:
++		eprintf(
++                     "Too many entries in array,\n max 8191 in PDF/A. Cannot simply elide dictionary, reverting to normal output\n");
++		pdev->AbortPDFAX = true;
++		pdev->PDFA = false;
++		break;
++	    case 2:
++		eprintf(
++                     "Too many entries in array,\n max 8191 in PDF/A. aborting conversion\n");
++		/* Careful here, only certain errors will bubble up 
++		 * through the text processing.
++		 */
++		return gs_error_limitcheck;
++		break;
++	    default:
++		eprintf(
++                     "Too many entries in array,\n max 8191 in PDF/A. Unrecognised PDFACompatibilityLevel,\nreverting to normal PDF output\n");
++		pdev->AbortPDFAX = true;
++		pdev->PDFA = false;
++		break;
++	    }
++	}
+ 	if (pcae != first)
+ 	    stream_putc(s, '\n');
+ 	for (; pcae->index > last_index; ++last_index)
+@@ -751,6 +783,8 @@ static int
+ cos_elements_write(stream *s, const cos_dict_element_t *pcde,
+ 		   gx_device_pdf *pdev, bool do_space, gs_id object_id)
+ {
++    int Element_Count = 0;
++
+     if (pcde) {
+ 	/* Temporarily replace the output stream in pdev. */
+ 	stream *save = pdev->strm;
+@@ -762,6 +796,39 @@ cos_elements_write(stream *s, const cos_
+ 				    pcde->key.data, pcde->key.size) 
+ 				? object_id : (gs_id)-1);
+ 
++	    Element_Count++;
++
++	    if(pdev->PDFA && Element_Count > 4095) {
++		switch (pdev->PDFACompatibilityPolicy) {
++		    case 0:
++			eprintf(
++                             "Too many entries in dictionary,\n max 4095 in PDF/A, reverting to normal PDF output\n");
++			pdev->AbortPDFAX = true;
++			pdev->PDFA = false;
++			break;
++		    case 1:
++			eprintf(
++                             "Too many entries in dictionary,\n max 4095 in PDF/A. Cannot simply elide dictionary, reverting to normal output\n");
++			pdev->AbortPDFAX = true;
++			pdev->PDFA = false;
++			break;
++		    case 2:
++			eprintf(
++                             "Too many entries in dictionary,\n max 4095 in PDF/A. aborting conversion\n");
++			/* Careful here, only certain errors will bubble up 
++			 * through the text processing.
++			 */
++			return gs_error_limitcheck;
++			break;
++		    default:
++			eprintf(
++                             "Too many entries in dictionary,\n max 4095 in PDF/A. Unrecognised PDFACompatibilityLevel,\nreverting to normal PDF output\n");
++			pdev->AbortPDFAX = true;
++			pdev->PDFA = false;
++			break;
++		}
++	    }
++
+ 	    pdf_write_value(pdev, pcde->key.data, pcde->key.size, object_id1);
+ 	    cos_value_write_spaced(&pcde->value, pdev, true, object_id1);
+ 	    pcde = pcde->next;
+diff -up ghostscript-8.70/base/gdevpdfp.c.pdfa ghostscript-8.70/base/gdevpdfp.c
+--- ghostscript-8.70/base/gdevpdfp.c.pdfa	2009-07-21 14:43:27.000000000 +0100
++++ ghostscript-8.70/base/gdevpdfp.c	2015-02-20 12:21:04.515365315 +0000
+@@ -386,6 +386,17 @@ gdev_pdf_put_params_impl(gx_device * dev
+     }
+     if (ecode < 0)
+ 	goto fail;
++    /* PDFA and PDFX are stored in the page device dictionary and therefore
++     * set on every setpagedevice. However, if we have encountered a file which
++     * can't be made this way, and the PDFACompatibilityPolicy is 1, we want to
++     * continue producing the file, but not as a PDF/A or PDF/X file. Its more
++     * or less impossible to alter the setting in the (potentially saved) page
++     * device dictionary, so we use this rather clunky method.
++     */
++    if(pdev->PDFA && pdev->AbortPDFAX)
++	pdev->PDFA = false;
++    if(pdev->PDFX && pdev->AbortPDFAX)
++	pdev->PDFX = false;
+     if (pdev->PDFX && pdev->PDFA) {
+ 	ecode = gs_note_error(gs_error_rangecheck);
+ 	param_signal_error(plist, "PDFA", ecode);
+diff -up ghostscript-8.70/base/gdevpdfx.h.pdfa ghostscript-8.70/base/gdevpdfx.h
+--- ghostscript-8.70/base/gdevpdfx.h.pdfa	2009-07-21 14:43:27.000000000 +0100
++++ ghostscript-8.70/base/gdevpdfx.h	2015-02-20 12:21:04.515365315 +0000
+@@ -441,6 +441,7 @@ struct gx_device_pdf_s {
+ 			      with pattern color. */
+     bool PDFX;		   /* Generate PDF/X */
+     bool PDFA;		   /* Generate PDF/A */
++    bool AbortPDFAX;	    /* Abort generation of PDFA or X, produce regular PDF */
+     long MaxClipPathSize;  /* The maximal number of elements of a clipping path
+ 			      that the target viewer|printer can handle. */
+     long MaxViewerMemorySize;
+diff -up ghostscript-8.70/base/gdevpdtb.c.pdfa ghostscript-8.70/base/gdevpdtb.c
+--- ghostscript-8.70/base/gdevpdtb.c.pdfa	2009-04-28 10:04:10.000000000 +0100
++++ ghostscript-8.70/base/gdevpdtb.c	2015-02-20 12:21:04.515365315 +0000
+@@ -192,6 +192,7 @@ pdf_base_font_alloc(gx_device_pdf *pdev,
+ 	    code = gs_note_error(gs_error_VMerror);
+ 	    goto fail;
+ 	}
++        pbfont->CIDSetLength = (pbfont->num_glyphs + 7) / 8;
+ 	memset(pbfont->CIDSet, 0, (pbfont->num_glyphs + 7) / 8);
+ 	break;
+     default:
+@@ -687,7 +688,7 @@ pdf_write_CIDSet(gx_device_pdf *pdev, pd
+     if (code < 0)
+ 	return code;
+     stream_write(writer.binary.strm, pbfont->CIDSet,
+-		 (pbfont->num_glyphs + 7) / 8);
++                 pbfont->CIDSetLength);
+     code = pdf_end_data(&writer);
+     if (code < 0)
+ 	return code;
+diff -up ghostscript-8.70/base/gdevpdtc.c.pdfa ghostscript-8.70/base/gdevpdtc.c
+--- ghostscript-8.70/base/gdevpdtc.c.pdfa	2009-05-05 11:40:10.000000000 +0100
++++ ghostscript-8.70/base/gdevpdtc.c	2015-02-20 12:21:04.515365315 +0000
+@@ -501,7 +501,7 @@ scan_cmap_text(pdf_text_enum_t *pte, voi
+ 		    if (code < 0)
+ 			return code;
+ 		    if (pdf_is_CID_font(subfont)) {
+-			if (subfont->procs.decode_glyph((gs_font *)subfont, glyph) != GS_NO_CHAR) {
++			if (subfont->procs.decode_glyph((gs_font *)subfont, glyph, -1) != GS_NO_CHAR) {
+ 			    /* Since PScript5.dll creates GlyphNames2Unicode with character codes
+ 			       instead CIDs, and with the WinCharSetFFFF-H2 CMap
+ 		               character codes appears different than CIDs (Bug 687954),
+diff -up ghostscript-8.70/base/gdevpdtd.c.pdfa ghostscript-8.70/base/gdevpdtd.c
+--- ghostscript-8.70/base/gdevpdtd.c.pdfa	2009-01-16 18:38:48.000000000 +0000
++++ ghostscript-8.70/base/gdevpdtd.c	2015-02-20 12:21:04.516365311 +0000
+@@ -410,6 +410,7 @@ pdf_compute_font_descriptor(gx_device_pd
+ 	gs_glyph_info_t info;
+ 	gs_const_string gname;
+ 	gs_glyph glyph_known_enc;
++	gs_char position=0;
+ 
+ 	code = bfont->procs.glyph_info((gs_font *)bfont, glyph, pmat, members, &info);
+ 	if (code == gs_error_VMerror)
+@@ -459,9 +460,15 @@ pdf_compute_font_descriptor(gx_device_pd
+ 	    continue;
+ 	}
+ 	/* Finally check if the encoded glyph is in Standard Encoding */
+-	if (gs_c_decode(glyph_known_enc, 0) == gs_no_glyph) {
+-	    desc.Flags |= FONT_IS_SYMBOLIC;
+-	    continue;
++	/* gs_c_decode always fails to find .notdef, its always present so 
++	 * don't worry about it
++	 */
++	if(strncmp(".notdef", (const char *)gname.data, gname.size)) {
++	    position = gs_c_decode(glyph_known_enc, 0);
++	    if (position == GS_NO_CHAR) {
++		desc.Flags |= FONT_IS_SYMBOLIC;
++		continue;
++	    }
+ 	}
+         switch (gname.size) {
+ 	case 5:
+@@ -632,7 +639,7 @@ pdf_write_FontDescriptor(gx_device_pdf *
+ 	pdf_font_descriptor_common_t fd;
+ 
+ 	fd = pfd->common;
+-	if (pfd->embed && pfd->FontType == ft_TrueType && !pdev->PDFA &&
++	if (pfd->embed && pfd->FontType == ft_TrueType /*&& !pdev->PDFA*/ &&
+ 	    pdf_do_subset_font(pdev, pfd->base_font, pfd->common.rid)
+ 	    )
+ 	    fd.values.Flags =
+@@ -714,14 +721,13 @@ pdf_convert_truetype_font_descriptor(gx_
+ {
+     pdf_font_descriptor_t *pfd = pdfont->FontDescriptor;
+     pdf_base_font_t *pbfont = pfd->base_font;
+-    int num_CIDs = pbfont->num_glyphs;
+-    int length_CIDSet = (num_CIDs + 7) / 8;
+-    int length_CIDToGIDMap = num_CIDs * sizeof(ushort);
+     gs_font *pfont = (gs_font *)pbfont->copied;
+     gs_char ch;
+     /* Save the simple font descriptor data because CID font data overlap them. */
+     int FirstChar = pdfont->u.simple.FirstChar, LastChar = pdfont->u.simple.LastChar;
+     pdf_encoding_element_t *Encoding = pdfont->u.simple.Encoding;
++    int length_CIDSet = (pbfont->num_glyphs + 7) / 8;
++    int length_CIDToGIDMap = pbfont->num_glyphs * sizeof(ushort);
+ 
+     pfd->FontType = ft_CID_TrueType;
+     pdfont->u.simple.Encoding = NULL; /* Drop due to overlapping against a garbager problem. */
+@@ -743,8 +749,28 @@ pdf_convert_truetype_font_descriptor(gx_
+ 	    pdfont->u.cidfont.CIDToGIDMap[ch] = glyph - GS_MIN_GLYPH_INDEX;
+ 	}
+     }
++    /* Set the CIDSet bit for CID 0 (the /.notdef) which must always be present */
++    pbfont->CIDSet[0] |= 0x80;
++    pbfont->CIDSetLength = length_CIDSet;
++    pdfont->u.cidfont.CIDToGIDMapLength = length_CIDToGIDMap / sizeof(ushort);
+     pdfont->u.cidfont.Widths2 = NULL;
+     pdfont->u.cidfont.used2 = NULL;
+     pdfont->u.cidfont.v = NULL;
+     return 0;
+ }
++
++int mark_font_descriptor_symbolic(pdf_font_resource_t *pdfont)
++{
++    pdf_font_descriptor_values_t *desc;
++    
++    if(!pdfont || !pdfont->FontDescriptor)
++	return 0;
++
++    desc = &pdfont->FontDescriptor->common.values;
++
++    if (!(desc->Flags & FONT_IS_SYMBOLIC)) {
++	desc->Flags |= FONT_IS_SYMBOLIC; 
++	desc->Flags &= ~FONT_IS_ADOBE_ROMAN; 
++    }
++    return 1;
++}
+diff -up ghostscript-8.70/base/gdevpdtd.h.pdfa ghostscript-8.70/base/gdevpdtd.h
+--- ghostscript-8.70/base/gdevpdtd.h.pdfa	2007-06-05 23:23:38.000000000 +0100
++++ ghostscript-8.70/base/gdevpdtd.h	2015-02-20 12:21:04.516365311 +0000
+@@ -149,4 +149,9 @@ int pdf_release_FontDescriptor_component
+  */
+ int pdf_mark_font_descriptor_used(gx_device_pdf *pdev, pdf_font_descriptor_t *pfd);
+ 
++/*
++ * Mark a FontDescriptor Flags value as symbolic
++ */
++int mark_font_descriptor_symbolic(pdf_font_resource_t *pdfont);
++
+ #endif /* gdevpdtd_INCLUDED */
+diff -up ghostscript-8.70/base/gdevpdte.c.pdfa ghostscript-8.70/base/gdevpdte.c
+--- ghostscript-8.70/base/gdevpdte.c.pdfa	2015-02-20 12:17:48.211136463 +0000
++++ ghostscript-8.70/base/gdevpdte.c	2015-02-20 12:21:04.516365311 +0000
+@@ -78,7 +78,7 @@ pdf_add_ToUnicode(gx_device_pdf *pdev, g
+ 
+     if (glyph == GS_NO_GLYPH)
+ 	return 0;
+-    unicode = font->procs.decode_glyph((gs_font *)font, glyph);
++    unicode = font->procs.decode_glyph((gs_font *)font, glyph, ch);
+     if (unicode == GS_NO_CHAR && gnstr != NULL && gnstr->size == 7) {
+ 	if (!memcmp(gnstr->data, "uni", 3)) {
+ 	    static const char *hexdigits = "0123456789ABCDEF";
+@@ -228,6 +228,40 @@ pdf_encode_string_element(gx_device_pdf
+ 	if (code < 0 && code != gs_error_undefined)
+ 	    return code;
+ 	if (code == gs_error_undefined) {
++	    if (pdev->PDFA || pdev->PDFX) {
++		switch (pdev->PDFACompatibilityPolicy) {
++		    case 0:
++			eprintf(
++                             "Requested glyph not present in source font,\n not permitted in PDF/A, reverting to normal PDF output\n");
++			pdev->AbortPDFAX = true;
++			pdev->PDFA = false;
++			break;
++		    case 1:
++			eprintf(
++                             "Requested glyph not present in source font,\n not permitted in PDF/A, glyph will not be present in output file\n\n");
++			/* Returning an error causees text processing to try and
++			 * handle the glyph by rendering to a bitmap instead of
++			 * as a glyph in a font. This will eliminate the problem
++			 * and the fiel should appear the same as the original.
++			 */
++			return gs_error_unknownerror;
++			break;
++		    case 2:
++			eprintf(
++                             "Requested glyph not present in source font,\n not permitted in PDF/A, aborting conversion\n");
++			/* Careful here, only certain errors will bubble up 
++			 * through the text processing.
++			 */
++			return gs_error_invalidfont;
++			break;
++		    default:
++			eprintf(
++                             "Requested glyph not present in source font,\n not permitted in PDF/A, unrecognised PDFACompatibilityLevel,\nreverting to normal PDF output\n");
++			pdev->AbortPDFAX = true;
++			pdev->PDFA = false;
++			break;
++		}
++	    }
+ 	    /* PS font has no such glyph. */
+ 	    if (bytes_compare(gnstr.data, gnstr.size, (const byte *)".notdef", 7)) {
+ 		pet->glyph = glyph;
+diff -up ghostscript-8.70/base/gdevpdtf.c.pdfa ghostscript-8.70/base/gdevpdtf.c
+--- ghostscript-8.70/base/gdevpdtf.c.pdfa	2009-03-31 15:30:14.000000000 +0100
++++ ghostscript-8.70/base/gdevpdtf.c	2015-02-20 12:21:04.516365311 +0000
+@@ -938,6 +938,7 @@ pdf_font_cidfont_alloc(gx_device_pdf *pd
+ 	return code;
+     pdfont->FontDescriptor = pfd;
+     pdfont->u.cidfont.CIDToGIDMap = map;
++    pdfont->u.cidfont.CIDToGIDMapLength = chars_count;
+     /* fixme : Likely pdfont->u.cidfont.CIDToGIDMap duplicates 
+        pdfont->FontDescriptor->base_font->copied->client_data->CIDMap.
+        Only difference is 0xFFFF designates unmapped CIDs.
+@@ -1029,7 +1030,7 @@ pdf_convert_truetype_font(gx_device_pdf
+ 
+ 	    if (code < 0)
+ 		return code;
+-	    if (code == 256)
++	    if (code == 256 && pdfont->u.simple.BaseEncoding != ENCODING_INDEX_UNKNOWN)
+ 		return 0;
+ 	    {	/* The encoding have a difference - do convert. */
+ 		pdf_font_resource_t *pdfont0;
+diff -up ghostscript-8.70/base/gdevpdtf.h.pdfa ghostscript-8.70/base/gdevpdtf.h
+--- ghostscript-8.70/base/gdevpdtf.h.pdfa	2008-04-04 09:39:33.000000000 +0100
++++ ghostscript-8.70/base/gdevpdtf.h	2015-02-20 12:21:04.517365307 +0000
+@@ -173,6 +173,7 @@ struct pdf_base_font_s {
+      */
+     int num_glyphs;
+     byte *CIDSet;		/* for CIDFonts */
++    int CIDSetLength;
+     gs_string font_name;
+     bool written;
+     cos_dict_t *FontFile;
+@@ -246,6 +247,7 @@ struct pdf_font_resource_s {
+ 	    /* [D]W[2] is Widths. */
+ 	    long CIDSystemInfo_id; /* (written when font is allocated) */
+ 	    ushort *CIDToGIDMap; /* (CIDFontType 2 only) [count] */
++            unsigned int CIDToGIDMapLength;
+  	    gs_id glyphshow_font_id;
+ 	    double *Widths2;	/* [count * 2] (x, y) */
+ 	    double *v;		/* [count] */
+diff -up ghostscript-8.70/base/gdevpdtt.c.pdfa ghostscript-8.70/base/gdevpdtt.c
+--- ghostscript-8.70/base/gdevpdtt.c.pdfa	2009-04-13 08:31:25.000000000 +0100
++++ ghostscript-8.70/base/gdevpdtt.c	2015-02-20 12:21:04.517365307 +0000
+@@ -1181,8 +1181,14 @@ pdf_make_font_resource(gx_device_pdf *pd
+ 	    }
+ 	}
+     }
+-    if (font->FontType == ft_encrypted || font->FontType == ft_encrypted2 || 
+-	font->FontType == ft_TrueType) {
++    if (font->FontType == ft_encrypted || font->FontType == ft_encrypted2) {
++	/*|| font->FontType == ft_TrueType) */
++	/* Removed the addition of Encodings to TrueType fonts as we always write
++	 * these with the Symbolic flag set. The comment below explains why we
++	 * previously wrote these, but as the comment notes this was incorrect.
++	 * Removed as it is causing preflight problems, and is specifically
++	 * disallowed with PDF/A output.
++	 */
+         /*
+ 	 * We write True Types with Symbolic flag set.
+ 	 * PDF spec says that "symbolic font should not specify Encoding entry"
+diff -up ghostscript-8.70/base/gdevpdtw.c.pdfa ghostscript-8.70/base/gdevpdtw.c
+--- ghostscript-8.70/base/gdevpdtw.c.pdfa	2009-04-09 14:57:24.000000000 +0100
++++ ghostscript-8.70/base/gdevpdtw.c	2015-02-20 12:21:04.517365307 +0000
+@@ -224,6 +224,7 @@ pdf_write_simple_contents(gx_device_pdf
+ 	      pdfont->u.simple.s.type1.is_MM_instance ? "MMType1" : "Type1"));
+     pdf_end_separate(pdev);
+     if (diff_id) {
++	mark_font_descriptor_symbolic(pdfont);
+ 	code = pdf_write_encoding(pdev, pdfont, diff_id, ch);
+ 	if (code < 0)
+ 	    return code;
+@@ -510,7 +511,7 @@ pdf_write_contents_cid2(gx_device_pdf *p
+ 	}
+     }
+ 
+-    if (map_id == 0 && pdev->PDFA) {
++    if (map_id == 0 && pdf_font_descriptor_embedding(pdfont->FontDescriptor)) {
+ 	code = stream_puts(pdev->strm, "/CIDToGIDMap /Identity\n");
+ 	if (code < 0)
+ 	    return code;
+@@ -520,7 +521,7 @@ pdf_write_contents_cid2(gx_device_pdf *p
+     if (code < 0)
+ 	return code;
+ 
+-    if (map_id) {
++    if (map_id && pdf_font_descriptor_embedding(pdfont->FontDescriptor)) {
+ 	pdf_data_writer_t writer;
+ 	int i;
+ 
+@@ -529,7 +530,7 @@ pdf_write_contents_cid2(gx_device_pdf *p
+ 		    /* Don't set DATA_STREAM_ENCRYPT since we write to a temporary file.
+ 		       See comment in pdf_begin_encrypt. */
+ 		    map_id);
+-	for (i = 0; i < count; ++i) {
++        for (i = 0; i < pdfont->u.cidfont.CIDToGIDMapLength; ++i) {
+ 	    uint gid = pdfont->u.cidfont.CIDToGIDMap[i];
+ 
+ 	    stream_putc(writer.binary.strm, (byte)(gid >> 8));
+diff -up ghostscript-8.70/base/gsfont.c.pdfa ghostscript-8.70/base/gsfont.c
+--- ghostscript-8.70/base/gsfont.c.pdfa	2009-02-10 17:38:02.000000000 +0000
++++ ghostscript-8.70/base/gsfont.c	2015-02-20 12:21:04.518365304 +0000
+@@ -951,7 +951,7 @@ gs_no_encode_char(gs_font *pfont, gs_cha
+ 
+ /* Dummy glyph decoding procedure */
+ gs_char
+-gs_no_decode_glyph(gs_font *pfont, gs_glyph glyph)
++gs_no_decode_glyph(gs_font *pfont, gs_glyph glyph, int ch)
+ {
+     return GS_NO_CHAR;
+ }
+diff -up ghostscript-8.70/base/gxfont.h.pdfa ghostscript-8.70/base/gxfont.h
+--- ghostscript-8.70/base/gxfont.h.pdfa	2008-03-20 10:20:17.000000000 +0000
++++ ghostscript-8.70/base/gxfont.h	2015-02-20 12:21:04.518365304 +0000
+@@ -230,7 +230,7 @@ typedef struct gs_font_procs_s {
+      */
+ 
+ #define font_proc_decode_glyph(proc)\
+-  gs_char proc(gs_font *, gs_glyph)
++  gs_char proc(gs_font *, gs_glyph, int)
+     font_proc_decode_glyph((*decode_glyph));
+ 
+     /*
+diff -up ghostscript-8.70/doc/Ps2pdf.htm.pdfa ghostscript-8.70/doc/Ps2pdf.htm
+--- ghostscript-8.70/doc/Ps2pdf.htm.pdfa	2009-07-31 18:56:00.000000000 +0100
++++ ghostscript-8.70/doc/Ps2pdf.htm	2015-02-20 12:21:04.518365304 +0000
+@@ -259,12 +259,12 @@ spaces.
+ </dl>
+ 
+ <p>
+-The following option controls a conversion into PDF/X-3:
++The following option specifies a conversion into PDF/X-3:
+ <p>
+ 
+ <dl>
+ <dt><code>-dPDFX=</code><em>boolean</em>
+-<dd>Specifies the generated document to follow the PDF/X-3 standard.
++<dd>Specifies the generated document is to follow the PDF/X-3 standard.
+ When true, a <code>DefaultRGB</code> <code>ColorSpace</code> resource 
+ must be defined, and options <code>NOSUBSTDEVICECOLORS</code>, 
+ <code>NOCIE</code> must not be specified.
+@@ -276,16 +276,16 @@ Default value is <code>false</code>.
+ When generating a PDF/X-3 document, Ghostscript performs the following 
+ special actions to satisfy the PDF/X-3 standard :
+ <ul>
+-<li> All fonts are being embedded.
+-<li> <code>DeviceRGB</code> color space is being substituted with 
+-<code>DefaultRGB</code> color space,
++<li> All fonts are embedded.
++<li> <code>DeviceRGB</code> color space is substituted with 
++<code>the DefaultRGB</code> color space,
+ which must be defined in the <code>ColorSpace</code> category.
+ The easiest way is to provide it in the <code>DefaultRGB</code> file in the resource directory. 
+-<li> <code>DeviceRGB</code> color values are being passed unchanged.
+-If an user needs an untrivial color adjustment, an untrivial 
+-<code>DefaultRGB</code> color space to be defined.
+-<li> Transfer functions and halftone phases are being skipped.
+-<li> <code>/PS pdfmark</code> interpretes the <code>DataSource</code> 
++<li> <code>DeviceRGB</code> color values are passed unchanged.
++If a user needs an non trivial color adjustment, a non trivial 
++<code>DefaultRGB</code> color space must be defined.
++<li> Transfer functions and halftone phases are skipped.
++<li> <code>/PS pdfmark</code> interprets the <code>DataSource</code> 
+ stream or file.
+ <li><code>TrimBox</code> and <code>BleedBox</code> entries
+ are generated in page descriptions.
+@@ -309,8 +309,7 @@ the target viewer handles <code>ImageMas
+ Some old viewers, such as Ghostscript 3.30 fail with such constructs.
+ Seting this option to false, one can get more compatibility,
+ but the mask interpolation is lost.
+-With <code>CompatibilityLevel &ge; 1.3 </code> this option is being 
+-ignored.
++With <code>CompatibilityLevel &ge; 1.3 </code> this option is ignored.
+ Default value is <code>false</code>.
+ 
+ <dt><code>-dMaxClipPathSize=<em>integer</em></code>
+@@ -320,7 +319,7 @@ that the target viewer can handle. This
+ <code>PatternImagemask=false</code>,
+ and only when converting a mask into a clipping path.
+ If the clipping path exceeds the specified size,
+-the masked image and the clipping path is being decomposed into smaller images.
++the masked image and the clipping path is decomposed into smaller images.
+ The value of the option counts straight path segments
+ (curved segments are not used for representing a mask).
+ Default value is <code>12000</code>.
+@@ -329,14 +328,13 @@ Default value is <code>12000</code>.
+ <dd>With <code>CompatibilityLevel &lt; 1.3</code> it specifies 
+ the maximum number of bytes allowed for representing a shading as a bitmap.
+ If a shading exceeds this value, the resolution of the output bitmap
+-is being reduces to fit into the specified frame.
++is reduced to fit into the specified frame.
+ Note that the number of bytes depends on the number of color components
+ in <code>ProcessColorModel</code>, assumes 8 bits per sample,
+ and doesn't account an image compression or filtering.
+ Also note that reducing the resolution results unsmooth shading boundaries.
+ 
+-With <code>CompatibilityLevel &ge; 1.3</code> this option is being 
+-ignored. Default value is <code>256000</code>.
++With <code>CompatibilityLevel &ge; 1.3</code> this option is ignored. Default value is <code>256000</code>.
+ For the best quality one can set the maximal integer value,
+ but the output file size may dramatically increase.
+ Therefore the user should choose a compromise value.
+@@ -344,10 +342,9 @@ Therefore the user should choose a compr
+ <dt><code>-dHaveTrueTypes=<em>boolean</em></code>
+ <dd>With <code>CompatibilityLevel &lt; 1.3</code> it specifies 
+ whether the target viewer can handle TrueType fonts.
+-If not, TrueType fonts are being converted into raster fonts
++If not, TrueType fonts are converted into raster fonts
+ with resolution specified in <code>HWResolution</code>.
+-With <code>CompatibilityLevel &ge; 1.3</code> this option is being 
+-ignored. Default value is <code>true</code>.
++With <code>CompatibilityLevel &ge; 1.3</code> this option is ignored. Default value is <code>true</code>.
+ 
+ </dl>
+ 
+@@ -360,7 +357,7 @@ The following option controls a conversi
+ <dt><code>-dHaveTransparency=<em>boolean</em></code>
+ <dd>With <code>CompatibilityLevel &ge; 1.4</code> it specifies 
+ whether the target viewer can handle PDF 1.4 transparency objects.
+-If not, transparency objects are being converted into plain images.
++If not, transparency objects are converted into plain images.
+ Default value is <code>true</code>.
+ 
+ </dl>
+@@ -408,7 +405,7 @@ The following switches are used for gene
+ <dt><code>-sDocumentUUID=</code><em>string</em>
+ <dd>Defines a DocumentID to be included into the document Metadata.
+ If not specified, Ghostscript generates an UUID automatically.
+-Otherwise the specified string is being copyed into the document without 
++Otherwise the specified string is copied into the document without 
+ checking its syntax or consistence.
+ <p>
+ Note that Adobe XMP specification requires DocumentID must be same
+@@ -425,7 +422,7 @@ Therefore it uses an MD5 hash of the doc
+ <dt><code>-sInstanceUUID=</code><em>string</em>
+ <dd>Defines a instance ID to be included into the document Metadata.
+ If not specified, Ghostscript generates an UUID automatically.
+-Otherwise the specified string is being copyed into the document without
++Otherwise the specified string is copied into the document without
+ checking its syntax or consistence.
+ <p>
+ Note that Adobe XMP specification requires instance ID must be inique
+@@ -445,7 +442,7 @@ UUIDs, when several invokations of Ghost
+ several PDF documents within same clock quantum (tick).
+ Mainly reserved for very fast computers and/or multhithreading applications,
+ which may appear in future. If both <code>DocumentUUID</code>
+-and <code>InstanceUUID</code> are specified, <b><tt>DocumentTimeSeq</tt></b> is being ignored.
++and <code>InstanceUUID</code> are specified, <b><tt>DocumentTimeSeq</tt></b> is ignored.
+ </dl>
+ 
+ <dl>
+@@ -738,7 +735,8 @@ To create a PDF/X-3 document from a Post
+ <li> Specify the <code>-dPDFX</code> option. It provides the document conformity 
+      and forces <code>-dCompatibilityLevel=1.3</code>.
+ <li> Specify <code>-sProcessColorModel=DeviceGray</code> or <code>-sProcessColorModel=DeviceCMYK</code>
+-     (<code>DeviceRGB</code> is not allowed).
++     (<code>DeviceRGB</code> is not allowed). You must specify a ProcessColorModel, even if you plan
++     to create a device-independent colour PDF file using -dUseCIEColor.
+ <li> Specify the <code>-dUseCIEColor</code> option if necessary (see below).
+ <li> Specify a PDF/X definition file before running the input document.
+      It provides additional information to be included into the output document.
+@@ -749,17 +747,17 @@ To create a PDF/X-3 document from a Post
+ <li> Provide a <code>DefaultRGB</code> resource file in the ColorSpace resource category.
+      Either define it in the PDF/X definition file, or provide
+      a definition of <code>gs/Resource/ColorSpace/DefaultRGB</code> .
+-     Rather <code>gs/Resource/ColorSpace/DefaultRGB</code> is usually 
+-     distributed with Ghostscript, its contents is not necessarily satisfy your needs, see below.
++     <code>gs/Resource/ColorSpace/DefaultRGB</code> is usually 
++     distributed with Ghostscript, its content may not necessarily satisfy your needs, see below.
+ </ul>
+ 
+ <p>
+-As mentioned above, the PDF/X definition file provides a special information,
++As mentioned above, the PDF/X definition file provides special information,
+ which the PDF/X-3 standard requires. You can find a sample file in
+ <code>gs/lib/PDFX_def.ps</code>, and edit it according to your needs.
+ The file follows Postscript syntax and uses the operator <code>pdfmark</code>
+ to pass the special information. For your comfort 
+-we marked editable lines in the sample file with the comment <code>% Customize</code>.
++we marked the lines likely to need editing in the sample file with the comment <code>% Customize</code>.
+ They are explained below.
+ 
+ <dl>
+@@ -795,7 +793,7 @@ define a title with DSC comments. Otherw
+ </dl>
+ 
+ <p>
+-Rather the PDF/X-3 standard requires colors to be adjusted at the
++The PDF/X-3 standard requires colors to be adjusted at the
+ document generation time, Ghostscript <em>does not</em> perform any
+ special color conversion. Either colors to be adjusted in advance,
+ or a proper color conversion to be specified in <code>DefaultGray</code>,
+@@ -806,10 +804,10 @@ or a proper color conversion to be speci
+ If you want any color to be converted into CIE color,
+ the <code>-dUseCIEColor</code> option to be specified
+ in the command line. If it is not specified, 
+-only RGB colors are being converted into CIE colors
++only RGB colors are converted into CIE colors
+ with using the <code>DefaultRGB</code> color space resource,
+ but <code>DeviceGray</code> and <code>DeviceCMYK</code>
+-colors are being passed identically.
++colors are passed identically.
+ 
+ <p>Please note that if a graphic object can't embed into the output format,
+ Ghostscript converts it into low level objects, using a device color space
+@@ -867,6 +865,8 @@ gs -dPDFX -dBATCH -dNOPAUSE -dNOOUTERSAV
+ </code></blockquote>
+ 
+ <p>
++Please also see the <code>PDFACompatibilityPolicy</code> control described under "Creating a PDF/A document" below. The same control is now used to specify the desired behaviour when an input file cannot be converted 'as is' into a PDF/X file.
++<p>
+ <hr>
+ <h2><a name="PDFA"></a>Creating a PDF/A document</h2>
+ 
+@@ -875,28 +875,41 @@ To create a PDF/A document, please follo
+ with the following exceptions :
+ 
+ <ul>
++<li> Specify the <code>pdfwrite</code> device or use the <code>ps2pdf</code> script.
+ <li> Specify the <code>-dPDFA</code> option.
+-<li> A sample PDF/A definition file may be found in <code>gs/lib/PDFA_def.ps</code>.
+-<li> <code>Info</code>, <b><tt>OutputCondition</tt></b>, <b><tt>OutputConditionIdentifier</tt></b> 
+-are not required in the PDF/A definition file.
++<li> Specify <code>-sProcessColorModel=DeviceGray</code>,  <code>-sProcessColorModel=DeviceRGB</code> or <code>-sProcessColorModel=DeviceCMYK</code>
++     You must specify a ProcessColorModel, even if you plan
++     to create a device-independent colour PDF file using -dUseCIEColor.
++<li> Specify the <code>-dUseCIEColor</code> option if necessary (see PDF/X above).
++<li> Specify a PDF/A definition file before running the input document.
++     It provides additional information to be included in the output document.
++     A sample PDF/A definition file may be found in <code>gs/lib/PDFA_def.ps</code>.
++     You will need to modify the content of this file; in particular you must alter the
++     /ICCProfile so that it points to a valid ICC profile for your OutputIntent. The 
++     string '(...)' defining the ICCProfile must be a fully qualified device and path
++     specification appropriate for your Operating System.
+ </ul>
+ 
+ There is one additional control for PDF/A output:
+ 
+ <dl>
+ <dt><code>PDFACompatibilityPolicy</code> <em>integer</em>
+-<dd>When an operation (eg pdfmark) is encountered which cannot be emitted in a PDF/A compliant file, this policy is consulted, there are currently two possible values:
++<dd>When an operation (eg pdfmark) is encountered which cannot be emitted in a PDF/A compliant file, this policy is consulted, there are currently three possible values:
+ 
+ <blockquote>0 - (default) Include the feature or operation in the output file, the file will not be PDF/A compliant. Because the document Catalog is emitted before this is encountered, the file will still contain PDF/A metadata but will not be compliant. A warning will be emitted in this case.
+ </blockquote>
+ <dd>
+ <blockquote>1 - The feature or operation is ignored, the resulting PDF file will be PDF/A compliant. A warning wil be emitted for every elided feature.
+ </blockquote>
++<dd>
++<blockquote>2 - Processing of the file is aborted with an error, the exact error may vary
++depending on the nature of the PDF/A incompatibility.
++</blockquote>
+ </dl>
+ 
+ Here is a sample command line to invoke Ghostscript for generating a PDF/A document :
+ <blockquote><code>
+-gs -dPDFA -dBATCH -dNOPAUSE -dNOOUTERSAVE -dUseCIEColor -sDEVICE=pdfwrite -sOutputFile=out-a.pdf PDFA_def.ps input.ps
++gs -dPDFA -dBATCH -dNOPAUSE -dNOOUTERSAVE -dUseCIEColor -sProcessColorModel=DeviceCMYK -sDEVICE=pdfwrite -sOutputFile=out-a.pdf PDFA_def.ps input.ps
+ </code></blockquote>
+ 
+ <p>
+diff -up ghostscript-8.70/lib/PDFA_def.ps.pdfa ghostscript-8.70/lib/PDFA_def.ps
+--- ghostscript-8.70/lib/PDFA_def.ps.pdfa	2007-10-10 18:40:38.000000000 +0100
++++ ghostscript-8.70/lib/PDFA_def.ps	2015-02-20 12:21:04.518365304 +0000
+@@ -6,18 +6,7 @@
+ % This assumes an ICC profile to reside in the file (ISO Coated sb.icc),
+ % unless the user modifies the corresponding line below.
+ 
+-
+-systemdict /ProcessColorModel known {
+-  systemdict /ProcessColorModel get dup /DeviceGray ne exch /DeviceCMYK ne and
+-} {
+-  true
+-} ifelse 
+-{ (ERROR: ProcessColorModel must be /DeviceGray or DeviceCMYK.)=
+-  /ProcessColorModel cvx /rangecheck signalerror
+-} if
+-
+-
+-% Define entries to the document Info dictionary :
++% Define entries in the document Info dictionary :
+ 
+ /ICCProfile (ISO Coated sb.icc)   % Customize.
+ def
+diff -up ghostscript-8.70/psi/bfont.h.pdfa ghostscript-8.70/psi/bfont.h
+--- ghostscript-8.70/psi/bfont.h.pdfa	2008-08-28 23:48:19.000000000 +0100
++++ ghostscript-8.70/psi/bfont.h	2015-02-20 12:21:04.518365304 +0000
+@@ -77,7 +77,7 @@ int define_gs_font(gs_font *);
+ void get_font_name(const gs_memory_t *mem, ref *pfname, const ref *op);
+ void copy_font_name(gs_font_name * pfstr, const ref * pfname);
+ gs_glyph zfont_encode_char(gs_font *pfont, gs_char chr, gs_glyph_space_t ignored);
+-gs_char gs_font_map_glyph_to_unicode(gs_font *font, gs_glyph glyph);
++gs_char gs_font_map_glyph_to_unicode(gs_font *font, gs_glyph glyph, int ch);
+ const ref *zfont_get_to_unicode_map(gs_font_dir *dir);
+ void get_GlyphNames2Unicode(i_ctx_t *i_ctx_p, gs_font *pfont, ref *pdref);
+ 
+diff -up ghostscript-8.70/psi/zbfont.c.pdfa ghostscript-8.70/psi/zbfont.c
+--- ghostscript-8.70/psi/zbfont.c.pdfa	2008-08-28 23:48:19.000000000 +0100
++++ ghostscript-8.70/psi/zbfont.c	2015-02-20 12:21:04.519365300 +0000
+@@ -164,7 +164,7 @@ gs_font_map_glyph_by_dict(const gs_memor
+ 	make_int(&n, cid);
+     } else
+ 	name_index_ref(mem, glyph, &n);
+-    if (dict_find(map, &n, &v) > 0) {
++     if (dict_find(map, &n, &v) > 0) {
+ 	if (r_has_type(v, t_string)) {
+ 	    int i, l = r_size(v);
+ 	    gs_char c = 0;
+@@ -181,7 +181,7 @@ gs_font_map_glyph_by_dict(const gs_memor
+ 
+ /* Get Unicode UTF-16 code for a glyph. */
+ gs_char 
+-gs_font_map_glyph_to_unicode(gs_font *font, gs_glyph glyph)
++gs_font_map_glyph_to_unicode(gs_font *font, gs_glyph glyph, int ch)
+ {
+     font_data *pdata = pfont_data(font);
+     const ref *UnicodeDecoding;
+@@ -192,6 +192,30 @@ gs_font_map_glyph_to_unicode(gs_font *fo
+ 
+ 	if (c != GS_NO_CHAR)
+ 	    return c;
++	if (ch != -1) { /* -1 indicates a CIDFont */
++	    /* Its possible that we have a GlyphNames2Unicode dictionary
++	     * which contains integers and Unicode values, rather than names
++	     * and Unicode values. This happens if the input was PDF, the font
++	     * has a ToUnicode Cmap, but no Encoding. In this case we need to
++	     * use the character code as an index into the dictionary. Try that
++	     * now before we fall back to the UnicodeDecoding.
++	     */
++	    ref *v, n;
++	
++	    make_int(&n, ch);
++	    if (dict_find(&pdata->GlyphNames2Unicode, &n, &v) > 0) {
++		if (r_has_type(v, t_string)) {
++		    int i, l = r_size(v);
++		    gs_char c = 0;
++
++		    for (i = 0; i < l; i++)
++			c = (c << 8) | v->value.const_bytes[i];
++		    return c;
++		}
++		if (r_type(v) == t_integer)
++		    return v->value.intval;
++	    }
++	}
+ 	/* 
+ 	 * Fall through, because test.ps for SF bug #529103 requres 
+ 	 * to examine both tables. Due to that the Unicode Decoding resource 
