@@ -34,7 +34,7 @@
 Name:             ghostscript
 Summary:          Interpreter for PostScript language & PDF
 Version:          9.25
-Release:          2%{?dist}
+Release:          2%{?dist}.1
 
 License:          AGPLv3+
 
@@ -103,6 +103,7 @@ Patch011: ghostscript-cve-2019-3835.patch
 Patch012: ghostscript-cve-2019-3838.patch
 Patch013: ghostscript-fix-DSC-comment-parsing.patch
 Patch014: ghostscript-pdf2dsc-regression.patch
+Patch015: ghostscript-cve-2019-10216.patch
 
 # Downstream patches -- these should be always included when doing rebase:
 # ------------------
@@ -426,6 +427,9 @@ install -m 0755 -d %{buildroot}%{_sysconfdir}/%{name}/
 # =============================================================================
 
 %changelog
+* Mon Aug 05 2019 Martin Osvald <mosvald@redhat.com> - 9.25-2.1
+- Resolves: #1737338 - CVE-2019-10216 ghostscript: -dSAFER escape via .buildfont1 (701394)
+
 * Tue Apr 02 2019 Martin Osvald <mosvald@redhat.com> - 9.25-2
 - obsoleted old ghostscript-devel to allow clean upgrade to libgs-devel
 
