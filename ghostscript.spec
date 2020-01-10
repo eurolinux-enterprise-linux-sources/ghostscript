@@ -34,7 +34,7 @@
 Name:             ghostscript
 Summary:          Interpreter for PostScript language & PDF
 Version:          9.25
-Release:          2%{?dist}.1
+Release:          2%{?dist}.2
 
 License:          AGPLv3+
 
@@ -104,6 +104,8 @@ Patch012: ghostscript-cve-2019-3838.patch
 Patch013: ghostscript-fix-DSC-comment-parsing.patch
 Patch014: ghostscript-pdf2dsc-regression.patch
 Patch015: ghostscript-cve-2019-10216.patch
+Patch016: ghostscript-cve-2019-14811-14812-14813.patch
+Patch017: ghostscript-cve-2019-14817.patch
 
 # Downstream patches -- these should be always included when doing rebase:
 # ------------------
@@ -427,6 +429,12 @@ install -m 0755 -d %{buildroot}%{_sysconfdir}/%{name}/
 # =============================================================================
 
 %changelog
+* Thu Aug 22 2019 Martin Osvald <mosvald@redhat.com> - 9.25-2.2
+- Resolves: #1744008 - CVE-2019-14811 ghostscript: Safer Mode Bypass by .forceput Exposure in .pdf_hook_DSC_Creator (701445)
+- Resolves: #1744012 - CVE-2019-14812 ghostscript: Safer Mode Bypass by .forceput Exposure in setuserparams (701444)
+- Resolves: #1744003 - CVE-2019-14813 ghostscript: Safer Mode Bypass by .forceput Exposure in setsystemparams (701443)
+- Resolves: #1744228 - CVE-2019-14817 ghostscript: Safer Mode Bypass by .forceput Exposure in .pdfexectoken and other procedures (701450)
+
 * Mon Aug 05 2019 Martin Osvald <mosvald@redhat.com> - 9.25-2.1
 - Resolves: #1737338 - CVE-2019-10216 ghostscript: -dSAFER escape via .buildfont1 (701394)
 
