@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -77,7 +77,7 @@
 #ifndef CIE_FIXED_FRACTION_BITS
 /* Take as many bits as we can without having to multiply in two pieces. */
 #  define CIE_FIXED_FRACTION_BITS\
-     ((arch_sizeof_long * 8 - gx_cie_log2_cache_size) / 2 - 1)
+     ((ARCH_SIZEOF_LONG * 8 - gx_cie_log2_cache_size) / 2 - 1)
 #endif
 
 /* From CIE_RENDER_TABLE_INTERPOLATE */
@@ -93,7 +93,7 @@
 /* in a positive int (i.e., leaving 1 bit for the sign), plus a little slop. */
 /* The values for interpolation are cie_cached_values by default. */
 #  define _cie_interpolate_bits\
-     min(arch_sizeof_int * 8 - gx_cie_log2_cache_size - 2, 10)
+     min(ARCH_SIZEOF_INT * 8 - gx_cie_log2_cache_size - 2, 10)
 #  define _cix(i) ((i) >> _cie_interpolate_bits)
 #  define _cif(i) ((int)(i) & ((1 << _cie_interpolate_bits) - 1))
 #  define cie_interpolate_between(v0, v1, i)\
@@ -130,7 +130,7 @@ typedef long cie_cached_value;
 /* lies between 0 and gx_cie_cache_size - 1.  If the intermediate result */
 /* might overflow, compute it in pieces (being a little sloppy). */
 #  define _cie_product_excess_bits\
-     (_cie_fixed_shift * 2 + gx_cie_log2_cache_size - (arch_sizeof_long * 8 - 1))
+     (_cie_fixed_shift * 2 + gx_cie_log2_cache_size - (ARCH_SIZEOF_LONG * 8 - 1))
 #  define cie_cached_product2int(v, factor, fbits)\
      (_cie_product_excess_bits > 0 ?\
       arith_rshift( (v) * arith_rshift(factor, _cie_product_excess_bits) +\
@@ -200,29 +200,29 @@ typedef struct gs_range4_s {
 typedef struct gs_cie_common_s gs_cie_common;
 typedef struct gs_cie_wbsd_s gs_cie_wbsd;
 
-typedef float (*gs_cie_a_proc) (floatp, const gs_cie_a *);
+typedef float (*gs_cie_a_proc) (double, const gs_cie_a *);
 
-typedef float (*gs_cie_abc_proc) (floatp, const gs_cie_abc *);
+typedef float (*gs_cie_abc_proc) (double, const gs_cie_abc *);
 typedef struct gs_cie_abc_proc3_s {
     gs_cie_abc_proc procs[3];
 } gs_cie_abc_proc3;
 
-typedef float (*gs_cie_def_proc) (floatp, const gs_cie_def *);
+typedef float (*gs_cie_def_proc) (double, const gs_cie_def *);
 typedef struct gs_cie_def_proc3_s {
     gs_cie_def_proc procs[3];
 } gs_cie_def_proc3;
 
-typedef float (*gs_cie_defg_proc) (floatp, const gs_cie_defg *);
+typedef float (*gs_cie_defg_proc) (double, const gs_cie_defg *);
 typedef struct gs_cie_defg_proc4_s {
     gs_cie_defg_proc procs[4];
 } gs_cie_defg_proc4;
 
-typedef float (*gs_cie_common_proc) (floatp, const gs_cie_common *);
+typedef float (*gs_cie_common_proc) (double, const gs_cie_common *);
 typedef struct gs_cie_common_proc3_s {
     gs_cie_common_proc procs[3];
 } gs_cie_common_proc3;
 
-typedef float (*gs_cie_render_proc) (floatp, const gs_cie_render *);
+typedef float (*gs_cie_render_proc) (double, const gs_cie_render *);
 typedef struct gs_cie_render_proc3_s {
     gs_cie_render_proc procs[3];
 } gs_cie_render_proc3;
@@ -251,7 +251,7 @@ typedef struct gs_cie_render_proc3_s {
  * Note also that since TransformPQR can fail (if the driver doesn't
  * recognize the proc_name), it must return a failure code.
  */
-typedef int (*gs_cie_transform_proc)(int, floatp, const gs_cie_wbsd *,
+typedef int (*gs_cie_transform_proc)(int, double, const gs_cie_wbsd *,
                                      gs_cie_render *, float *);
 typedef struct gs_cie_transform_proc3_s {
     gs_cie_transform_proc proc;
@@ -369,7 +369,7 @@ typedef struct gx_cie_vector_cache3_s {
 
 /* Elements common to all CIE color space dictionaries. */
 struct gs_cie_common_s {
-    int (*install_cspace)(gs_color_space *, gs_state *);
+    int (*install_cspace)(gs_color_space *, gs_gstate *);
     void *client_data;
     gs_range3 RangeLMN;
     gs_cie_common_proc3 DecodeLMN;
@@ -595,8 +595,8 @@ typedef enum {
  * (3 if RGB, 4 if CMYK).
  */
 #define GX_CIE_REMAP_FINISH_PROC(proc)\
-  int proc(cie_cached_vector3 vec3, frac *pconc,\
-           const gs_imager_state *pis, const gs_color_space *pcs)
+  int proc(cie_cached_vector3 vec3, frac *pconc, float *xyz,\
+           const gs_gstate *pgs, const gs_color_space *pcs)
 
 struct gx_cie_joint_caches_s {
     /*
@@ -680,13 +680,13 @@ void gs_cie_defg_complete(gs_cie_defg *);
 void gs_cie_def_complete(gs_cie_def *);
 void gs_cie_abc_complete(gs_cie_abc *);
 void gs_cie_a_complete(gs_cie_a *);
-gx_cie_joint_caches *gx_unshare_cie_caches(gs_state *);
-gx_cie_joint_caches *gx_currentciecaches(gs_state *);
-const gs_cie_common *gs_cie_cs_common(const gs_state *);
-int gs_cie_cs_complete(gs_state *, bool);
-int gs_cie_jc_complete(const gs_imager_state *, const gs_color_space *);
-float gs_cie_cached_value(floatp, const cie_cache_floats *);
-int gx_install_cie_abc(gs_cie_abc *, gs_state *);
+gx_cie_joint_caches *gx_unshare_cie_caches(gs_gstate *);
+gx_cie_joint_caches *gx_currentciecaches(gs_gstate *);
+const gs_cie_common *gs_cie_cs_common(const gs_gstate *);
+int gs_cie_cs_complete(gs_gstate *, bool);
+int gs_cie_jc_complete(const gs_gstate *, const gs_color_space *);
+float gs_cie_cached_value(double, const cie_cache_floats *);
+int gx_install_cie_abc(gs_cie_abc *, gs_gstate *);
 
 #define CIE_CLAMP_INDEX(index)\
   index = (index < 0 ? 0 :\
@@ -841,13 +841,17 @@ bool gx_color_space_needs_cie_caches(const gs_color_space * pcs);
 
 /* made available for gsicc_create */
 
-float common_identity(floatp in, const gs_cie_common * pcie);
-float abc_identity(floatp in, const gs_cie_abc * pcie);
-float a_identity(floatp in, const gs_cie_a * pcie);
+float common_identity(double in, const gs_cie_common * pcie);
+float abc_identity(double in, const gs_cie_abc * pcie);
+float a_identity(double in, const gs_cie_a * pcie);
 void cie_mult3(const gs_vector3 * in, register const gs_matrix3 * mat,
           gs_vector3 * out);
 void cie_matrix_mult3(const gs_matrix3 *, const gs_matrix3 *,
                               gs_matrix3 *);
 void  cie_matrix_transpose3(const gs_matrix3 *, gs_matrix3 *);
+
+bool matrix_equal(const gs_matrix3 *p1, const gs_matrix3 *p2);
+bool range_equal(const gs_range3 *p1, const gs_range3 *p2);
+bool vector_equal(const gs_vector3 *p1, const gs_vector3 *p2);
 
 #endif /* gscie_INCLUDED */

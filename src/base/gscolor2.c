@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -31,7 +31,7 @@
 
 /* ---------------- General colors and color spaces ---------------- */
 int
-gs_setcolorspace_only(gs_state * pgs, gs_color_space * pcs)
+gs_setcolorspace_only(gs_gstate * pgs, gs_color_space * pcs)
 {
     int             code = 0;
     gs_color_space  *cs_old = pgs->color[0].color_space;
@@ -57,7 +57,7 @@ gs_setcolorspace_only(gs_state * pgs, gs_color_space * pcs)
 
 /* setcolorspace */
 int
-gs_setcolorspace(gs_state * pgs, gs_color_space * pcs)
+gs_setcolorspace(gs_gstate * pgs, gs_color_space * pcs)
 {
     int             code = 0;
 
@@ -73,21 +73,33 @@ gs_setcolorspace(gs_state * pgs, gs_color_space * pcs)
 
 /* currentcolorspace */
 gs_color_space *
-gs_currentcolorspace(const gs_state * pgs)
+gs_currentcolorspace(const gs_gstate * pgs)
 {
     return pgs->color[0].color_space;
 }
 
 /* setcolor */
 int
-gs_setcolor(gs_state * pgs, const gs_client_color * pcc)
+gs_setcolor(gs_gstate * pgs, const gs_client_color * pcc)
 {
     gs_color_space *    pcs = pgs->color[0].color_space;
     gs_client_color     cc_old = *pgs->color[0].ccolor;
+    gx_device_color *dev_color = pgs->color[0].dev_color;
+    bool do_unset  = true;
 
-   if (pgs->in_cachedevice)
+    if (pgs->in_cachedevice)
         return_error(gs_error_undefined); /* PLRM3 page 215. */
-    gx_unset_dev_color(pgs);
+    if (dev_color->ccolor_valid && gx_dc_is_pure(dev_color)) {      /* change of colorspace will set type to _none */
+        int i;
+        int ncomps = cs_num_components(pcs);
+
+        for(i=0; i < ncomps; i++)
+            if (dev_color->ccolor.paint.values[i] != pcc->paint.values[i])
+                break;
+        do_unset = i < ncomps;      /* if i == ncomps, color unchanged, optimized */
+    }
+    if (do_unset)
+        gx_unset_dev_color(pgs);
     (*pcs->type->adjust_color_count)(pcc, pcs, 1);
     *pgs->color[0].ccolor = *pcc;
     (*pcs->type->restrict_color)(pgs->color[0].ccolor, pcs);
@@ -98,14 +110,14 @@ gs_setcolor(gs_state * pgs, const gs_client_color * pcc)
 
 /* currentcolor */
 const gs_client_color *
-gs_currentcolor(const gs_state * pgs)
+gs_currentcolor(const gs_gstate * pgs)
 {
     return pgs->color[0].ccolor;
 }
 
 /* currentdevicecolor */
 const gx_device_color *
-gs_currentdevicecolor(const gs_state * pgs)
+gs_currentdevicecolor(const gs_gstate * pgs)
 {
     return pgs->color[0].dev_color;
 }
@@ -173,10 +185,12 @@ gs_private_st_composite(st_color_space_Indexed, gs_color_space,
 static cs_proc_restrict_color(gx_restrict_Indexed);
 static cs_proc_concrete_space(gx_concrete_space_Indexed);
 static cs_proc_concretize_color(gx_concretize_Indexed);
+static cs_proc_remap_color(gx_remap_IndexedNamed);
 static cs_proc_install_cspace(gx_install_Indexed);
 static cs_proc_set_overprint(gx_set_overprint_Indexed);
 static cs_proc_final(gx_final_Indexed);
 static cs_proc_serialize(gx_serialize_Indexed);
+static cs_proc_polarity(gx_polarity_Indexed);
 const gs_color_space_type gs_color_space_type_Indexed = {
     gs_color_space_index_Indexed, false, false,
     &st_color_space_Indexed, gx_num_components_1,
@@ -188,7 +202,25 @@ const gs_color_space_type gs_color_space_type_Indexed = {
     gx_set_overprint_Indexed,
     gx_final_Indexed, gx_no_adjust_color_count,
     gx_serialize_Indexed,
-    gx_cspace_is_linear_default
+    gx_cspace_is_linear_default, gx_polarity_Indexed
+};
+
+/* To keep things vectorized and avoid an if test during the remap proc we
+   have another set of procedures to use for indexed color spaces when 
+   someone has specified a named color profile and the base space of the
+   index color space is DeviceN or Separation */
+const gs_color_space_type gs_color_space_type_Indexed_Named = {
+    gs_color_space_index_Indexed, false, false,
+    &st_color_space_Indexed, gx_num_components_1,
+    gx_init_paint_1, gx_restrict_Indexed,
+    gx_concrete_space_Indexed,
+    gx_concretize_Indexed, NULL,
+    gx_remap_IndexedNamed,
+    gx_install_Indexed,
+    gx_set_overprint_Indexed,
+    gx_final_Indexed, gx_no_adjust_color_count,
+    gx_serialize_Indexed,
+    gx_cspace_is_linear_default, gx_polarity_Indexed
 };
 
 /* GC procedures. */
@@ -224,8 +256,16 @@ RELOC_PTRS_END
 
 /* Color space installation for an Indexed color space. */
 
+/* Return polarity of base space */
+static gx_color_polarity_t
+gx_polarity_Indexed(const gs_color_space * pcs)
+{
+    return (*pcs->base_space->type->polarity)
+        ((const gs_color_space *)pcs->base_space);
+}
+
 static int
-gx_install_Indexed(gs_color_space * pcs, gs_state * pgs)
+gx_install_Indexed(gs_color_space * pcs, gs_gstate * pgs)
 {
     return (*pcs->base_space->type->install_cspace)
         (pcs->base_space, pgs);
@@ -234,7 +274,7 @@ gx_install_Indexed(gs_color_space * pcs, gs_state * pgs)
 /* Color space overprint setting ditto. */
 
 static int
-gx_set_overprint_Indexed(const gs_color_space * pcs, gs_state * pgs)
+gx_set_overprint_Indexed(const gs_color_space * pcs, gs_gstate * pgs)
 {
     return (*pcs->base_space->type->set_overprint)
         ((const gs_color_space *)pcs->base_space, pgs);
@@ -438,25 +478,24 @@ gx_restrict_Indexed(gs_client_color * pcc, const gs_color_space * pcs)
 /* Color remapping for Indexed color spaces. */
 static const gs_color_space *
 gx_concrete_space_Indexed(const gs_color_space * pcs,
-                          const gs_imager_state * pis)
+                          const gs_gstate * pgs)
 {
     bool is_lab = false;
 
     if (gs_color_space_is_PSCIE(pcs->base_space)) {
         if (pcs->base_space->icc_equivalent == NULL) {
-            gs_colorspace_set_icc_equivalent(pcs->base_space,
-                                                &is_lab, pis->memory);
+            (void)gs_colorspace_set_icc_equivalent(pcs->base_space,
+                                                &is_lab, pgs->memory);
         }
         return (pcs->base_space->icc_equivalent);
     }
-    return cs_concrete_space(pcs->base_space, pis);
+    return cs_concrete_space(pcs->base_space, pgs);
 }
 
 static int
 gx_concretize_Indexed(const gs_client_color * pc, const gs_color_space * pcs,
-                      frac * pconc, const gs_imager_state * pis, gx_device *dev)
+                      frac * pconc, const gs_gstate * pgs, gx_device *dev)
 {
-
     gs_client_color cc;
     const gs_color_space *pbcs =
         (const gs_color_space *)pcs->base_space;
@@ -464,7 +503,54 @@ gx_concretize_Indexed(const gs_client_color * pc, const gs_color_space * pcs,
 
     if (code < 0)
         return code;
-    return (*pbcs->type->concretize_color) (&cc, pbcs, pconc, pis, dev);
+    return (*pbcs->type->concretize_color) (&cc, pbcs, pconc, pgs, dev);
+}
+
+/* We should only be here for cases where the base space is DeviceN or Sep and
+   we are doing named color replacement. */
+static int
+gx_remap_IndexedNamed(const gs_client_color * pcc, const gs_color_space * pcs,
+gx_device_color * pdc, const gs_gstate * pgs, gx_device * dev,
+gs_color_select_t select)
+{
+    frac conc[GS_CLIENT_COLOR_MAX_COMPONENTS];
+    const gs_color_space *pconcs;
+    int i = pcs->type->num_components(pcs);
+    gs_client_color cc;
+    bool mapped;
+    int code = gs_indexed_limit_and_lookup(pcc, pcs, &cc);
+
+    if (code < 0)
+        return code;
+
+    pconcs = cs_concrete_space(pcs, pgs);
+    if (pconcs) {
+        /* Now see if we can do the named color replacement */
+        mapped = gx_remap_named_color(&cc, pconcs, pdc, pgs, dev, select);
+
+        if (!mapped) {
+            /* Named color remap failed perhaps due to colorant not found. Do the
+               old approach of concretize of the base space and remap concrete color */
+            const gs_color_space *pbcs =
+                (const gs_color_space *)pcs->base_space;
+            cmm_dev_profile_t *dev_profile;
+            code = dev_proc(dev, get_profile)(dev, &dev_profile);
+            if (code < 0)
+                return code;
+
+            code = (*pbcs->type->concretize_color) (&cc, pbcs, conc, pgs, dev);
+            if (code < 0)
+                return code;
+            code = (*pconcs->type->remap_concrete_color)(pconcs, conc, pdc, pgs, dev, select, dev_profile);
+        }
+    }
+
+    /* Save original color space and color info into dev color */
+    i = any_abs(i);
+    for (i--; i >= 0; i--)
+        pdc->ccolor.paint.values[i] = pcc->paint.values[i];
+    pdc->ccolor_valid = true;
+    return code;
 }
 
 /* Look up an index in an Indexed color space. */
@@ -716,7 +802,7 @@ gx_serialize_Indexed(const gs_color_space * pcs, stream * s)
  * res_name and name_length passes the resource name.
  */
 int
-gs_includecolorspace(gs_state * pgs, const byte *res_name, int name_length)
+gs_includecolorspace(gs_gstate * pgs, const byte *res_name, int name_length)
 {
     return (*dev_proc(pgs->device, include_color_space))(pgs->device, gs_currentcolorspace_inline(pgs), res_name, name_length);
 }

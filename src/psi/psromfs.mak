@@ -1,4 +1,4 @@
-#  Copyright (C) 2001-2006 Artifex Software, Inc.
+#  Copyright (C) 2001-2018 Artifex Software, Inc.
 #  All Rights Reserved.
 #
 #  This software is provided AS-IS with no warranty, either express or
@@ -7,8 +7,8 @@
 #  This software is distributed under license and may not be copied, modified
 #  or distributed except as expressly authorized under the terms of that
 #  license.  Refer to licensing information at http://www.artifex.com/
-#  or contact Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134,
-#  San Rafael, CA  94903, U.S.A., +1(415)492-9861, for further information.
+#  or contact Artifex Software, Inc.,  1305 Grant Avenue - Suite 200,
+#  Novato, CA 94945, U.S.A., +1(415)492-9861, for further information.
 #
 # mkromfs macros for PostScript %rom% when COMPILE_INITS=1
 
@@ -25,17 +25,21 @@ PDF_RESOURCE_LIST=CMap$(D)*
 
 MISC_INIT_FILES=FCOfontmap-PCLPS2 -C cidfmap \
  FAPIcidfmap FAPIconfig FAPIfontmap Fontmap Fontmap.GS xlatmap \
- gs_cet.ps gs_diskf.ps gs_diskn.ps gs_dscp.ps gs_trap.ps \
- pdf_cslayer.ps -B
+ gs_cet.ps gs_diskn.ps gs_dscp.ps gs_trap.ps \
+ -B
 
 # In the below list, the Font contents are _not_ compressed since it doesn't help.
-RESOURCE_LIST=CIDFSubst$(D)* CIDFont$(D)* -C $(PDF_RESOURCE_LIST) ColorSpace$(D)* Decoding$(D)* Encoding$(D)* -B -b Font$(D)* -c -C IdiomSet$(D)* ProcSet$(D)* -P $(PSRESDIR)$(D)Init$(D) -d Resource/Init/ -B $(MISC_INIT_FILES)
+PS_RESOURCE_LIST=SubstCID$(D)* CIDFSubst$(D)* CIDFont$(D)* -C $(PDF_RESOURCE_LIST) ColorSpace$(D)* Decoding$(D)* Encoding$(D)* -c -C IdiomSet$(D)* ProcSet$(D)* -P $(PSRESDIR)$(D)Init$(D) -d Resource/Init/ -B $(MISC_INIT_FILES)
+
+PS_FONT_RESOURCE_LIST=-B -b Font$(D)*
 
 #	Notes: gs_cet.ps is only needed to match Adobe CPSI defaults
 PS_ROMFS_ARGS=-c \
-  -d Resource/Init/ -P $(PSRESDIR)$(D)Init$(D) -g gs_init.ps $(gconfig_h) \
-  -d Resource/ -P $(PSRESDIR)$(D) $(RESOURCE_LIST) \
+  -d Resource/Init/ -P $(PSRESDIR)$(D)Init$(D) -g gs_init.ps $(iconfig_h) \
+  -d Resource/ -P $(PSRESDIR)$(D) $(PS_RESOURCE_LIST) \
   -d lib/ -P $(PSLIBDIR)$(D) $(EXTRA_INIT_FILES)
+
+PS_FONT_ROMFS_ARGS=-d Resource/ -P $(PSRESDIR)$(D) $(PS_FONT_RESOURCE_LIST)
 
 # If you add a file remember to add it here. If you forget then builds from
 # clean will work (as all files in the directory are included), but rebuilds
@@ -314,41 +318,41 @@ PS_ENCODING_DEPS=\
 
 # A list of all of the files in Resource/Font
 PS_FONT_DEPS=\
-	$(PSRESDIR)$(D)Font$(D)CenturySchL-Bold \
-	$(PSRESDIR)$(D)Font$(D)CenturySchL-BoldItal \
-	$(PSRESDIR)$(D)Font$(D)CenturySchL-Ital \
-	$(PSRESDIR)$(D)Font$(D)CenturySchL-Roma \
-	$(PSRESDIR)$(D)Font$(D)Dingbats \
-	$(PSRESDIR)$(D)Font$(D)NimbusMonL-Bold \
-	$(PSRESDIR)$(D)Font$(D)NimbusMonL-BoldObli \
-	$(PSRESDIR)$(D)Font$(D)NimbusMonL-Regu \
-	$(PSRESDIR)$(D)Font$(D)NimbusMonL-ReguObli \
-	$(PSRESDIR)$(D)Font$(D)NimbusRomNo9L-Medi \
-	$(PSRESDIR)$(D)Font$(D)NimbusRomNo9L-MediItal \
-	$(PSRESDIR)$(D)Font$(D)NimbusRomNo9L-Regu \
-	$(PSRESDIR)$(D)Font$(D)NimbusRomNo9L-ReguItal \
-	$(PSRESDIR)$(D)Font$(D)NimbusSanL-Bold \
-	$(PSRESDIR)$(D)Font$(D)NimbusSanL-BoldCond \
-	$(PSRESDIR)$(D)Font$(D)NimbusSanL-BoldCondItal \
-	$(PSRESDIR)$(D)Font$(D)NimbusSanL-BoldItal \
-	$(PSRESDIR)$(D)Font$(D)NimbusSanL-Regu \
-	$(PSRESDIR)$(D)Font$(D)NimbusSanL-ReguCond \
-	$(PSRESDIR)$(D)Font$(D)NimbusSanL-ReguCondItal \
-	$(PSRESDIR)$(D)Font$(D)NimbusSanL-ReguItal \
-	$(PSRESDIR)$(D)Font$(D)StandardSymL \
-	$(PSRESDIR)$(D)Font$(D)URWBookmanL-DemiBold \
-	$(PSRESDIR)$(D)Font$(D)URWBookmanL-DemiBoldItal \
-	$(PSRESDIR)$(D)Font$(D)URWBookmanL-Ligh \
-	$(PSRESDIR)$(D)Font$(D)URWBookmanL-LighItal \
-	$(PSRESDIR)$(D)Font$(D)URWChanceryL-MediItal \
-	$(PSRESDIR)$(D)Font$(D)URWGothicL-Book \
-	$(PSRESDIR)$(D)Font$(D)URWGothicL-BookObli \
-	$(PSRESDIR)$(D)Font$(D)URWGothicL-Demi \
-	$(PSRESDIR)$(D)Font$(D)URWGothicL-DemiObli \
-	$(PSRESDIR)$(D)Font$(D)URWPalladioL-Bold \
-	$(PSRESDIR)$(D)Font$(D)URWPalladioL-BoldItal \
-	$(PSRESDIR)$(D)Font$(D)URWPalladioL-Ital \
-	$(PSRESDIR)$(D)Font$(D)URWPalladioL-Roma
+	$(PSRESDIR)$(D)Font$(D)C059-BdIta \
+	$(PSRESDIR)$(D)Font$(D)C059-Bold \
+	$(PSRESDIR)$(D)Font$(D)C059-Italic \
+	$(PSRESDIR)$(D)Font$(D)C059-Roman \
+	$(PSRESDIR)$(D)Font$(D)D050000L \
+	$(PSRESDIR)$(D)Font$(D)NimbusMonoPS-Bold \
+	$(PSRESDIR)$(D)Font$(D)NimbusMonoPS-BoldItalic \
+	$(PSRESDIR)$(D)Font$(D)NimbusMonoPS-Italic \
+	$(PSRESDIR)$(D)Font$(D)NimbusMonoPS-Regular \
+	$(PSRESDIR)$(D)Font$(D)NimbusRoman-Bold \
+	$(PSRESDIR)$(D)Font$(D)NimbusRoman-BoldItalic \
+	$(PSRESDIR)$(D)Font$(D)NimbusRoman-Italic \
+	$(PSRESDIR)$(D)Font$(D)NimbusRoman-Regular \
+	$(PSRESDIR)$(D)Font$(D)NimbusSans-Bold \
+	$(PSRESDIR)$(D)Font$(D)NimbusSans-BoldItalic \
+	$(PSRESDIR)$(D)Font$(D)NimbusSansNarrow-BoldOblique \
+	$(PSRESDIR)$(D)Font$(D)NimbusSansNarrow-Bold \
+	$(PSRESDIR)$(D)Font$(D)NimbusSansNarrow-Oblique \
+	$(PSRESDIR)$(D)Font$(D)NimbusSansNarrow-Regular \
+	$(PSRESDIR)$(D)Font$(D)NimbusSans-Italic \
+	$(PSRESDIR)$(D)Font$(D)NimbusSans-Regular \
+	$(PSRESDIR)$(D)Font$(D)P052-Bold \
+	$(PSRESDIR)$(D)Font$(D)P052-BoldItalic \
+	$(PSRESDIR)$(D)Font$(D)P052-Italic \
+	$(PSRESDIR)$(D)Font$(D)P052-Roman \
+	$(PSRESDIR)$(D)Font$(D)StandardSymbolsPS \
+	$(PSRESDIR)$(D)Font$(D)URWBookman-Demi \
+	$(PSRESDIR)$(D)Font$(D)URWBookman-DemiItalic \
+	$(PSRESDIR)$(D)Font$(D)URWBookman-Light \
+	$(PSRESDIR)$(D)Font$(D)URWBookman-LightItalic \
+	$(PSRESDIR)$(D)Font$(D)URWGothic-Book \
+	$(PSRESDIR)$(D)Font$(D)URWGothic-BookOblique \
+	$(PSRESDIR)$(D)Font$(D)URWGothic-Demi \
+	$(PSRESDIR)$(D)Font$(D)URWGothic-DemiOblique \
+	$(PSRESDIR)$(D)Font$(D)Z003-MediumItalic
 
 # A list of all of the files in Resource/IdimSet
 PS_IDIOMSET_DEPS=
@@ -372,9 +376,7 @@ PS_INIT_DEPS=\
 	$(PSRESDIR)$(D)Init$(D)gs_cidtt.ps \
 	$(PSRESDIR)$(D)Init$(D)gs_cmap.ps \
 	$(PSRESDIR)$(D)Init$(D)gs_cspace.ps \
-	$(PSRESDIR)$(D)Init$(D)gs_css_e.ps \
 	$(PSRESDIR)$(D)Init$(D)gs_dbt_e.ps \
-	$(PSRESDIR)$(D)Init$(D)gs_diskf.ps \
 	$(PSRESDIR)$(D)Init$(D)gs_diskn.ps \
 	$(PSRESDIR)$(D)Init$(D)gs_dpnxt.ps \
 	$(PSRESDIR)$(D)Init$(D)gs_dps.ps \
@@ -410,7 +412,6 @@ PS_INIT_DEPS=\
 	$(PSRESDIR)$(D)Init$(D)gs_type1.ps \
 	$(PSRESDIR)$(D)Init$(D)gs_wan_e.ps \
 	$(PSRESDIR)$(D)Init$(D)pdf_base.ps \
-	$(PSRESDIR)$(D)Init$(D)pdf_cslayer.ps \
 	$(PSRESDIR)$(D)Init$(D)pdf_draw.ps \
 	$(PSRESDIR)$(D)Init$(D)pdf_font.ps \
 	$(PSRESDIR)$(D)Init$(D)pdf_main.ps \
@@ -428,10 +429,9 @@ PS_SUBSTCID_DEPS=\
 PS_MISC_DEPS=\
 	$(PSRESDIR)$(D)Init$(D)FCOfontmap-PCLPS2 \
 	$(PSRESDIR)$(D)Init$(D)cidfmap \
-	$(PSRESDIR)$(D)Init$(D)gs_cet.ps \
-	$(PSRESDIR)$(D)Init$(D)pdf_cslayer.ps
+	$(PSRESDIR)$(D)Init$(D)gs_cet.ps
 
-PS_ROMFS_DEPS=$(PSSRCDIR)$(D)psromfs.mak $(gconfig_h) \
+PS_ROMFS_DEPS=$(PSSRCDIR)$(D)psromfs.mak $(gconfig_h) $(gs_tr) \
 	$(PDF_RESOURCE_DEPS) $(PS_COLORSPACE_DEPS) $(PS_DECODING_DEPS) $(PS_ENCODING_DEPS) \
 	$(PS_FONT_DEPS) $(PS_IDIOMSET_DEPS) $(PS_PROCSET_DEPS) $(PS_INIT_DEPS) $(PS_SUBSTCID_DEPS) \
 	$(PS_MISC_DEPS)

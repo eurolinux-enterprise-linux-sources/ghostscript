@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -66,12 +66,12 @@ s_jbig2decode_make_global_data(byte *data, uint size, void **result)
     s_jbig2decode_global_data *global = NULL;
 
     global = malloc(sizeof(*global));
-    if (global == NULL) return gs_error_VMerror;
+    if (global == NULL) return_error(gs_error_VMerror);
 
     global->data = malloc(size);
     if (global->data == NULL) {
         free(global);
-        return gs_error_VMerror;
+        return_error(gs_error_VMerror);
     }
     memcpy(global->data, data, size);
     global->size = size;
@@ -99,7 +99,7 @@ s_jbig2decode_set_global_data(stream_state *ss, s_jbig2_global_data_t *gd)
 {
     stream_jbig2decode_state *state = (stream_jbig2decode_state*)ss;
     if (state == NULL)
-        return gs_error_VMerror;
+        return_error(gs_error_VMerror);
 
     state->global_struct = gd;
     if (gd != NULL) {
@@ -230,7 +230,7 @@ s_jbig2decode_inbuf(stream_jbig2decode_state *state, stream_cursor_read * pr)
     /* allocate the input buffer if needed */
     if (state->inbuf == NULL) {
         state->inbuf = malloc(JBIG2_BUFFER_SIZE);
-        if (state->inbuf == NULL) return gs_error_VMerror;
+        if (state->inbuf == NULL) return_error(gs_error_VMerror);
         state->insize = JBIG2_BUFFER_SIZE;
         state->infill = 0;
     }
@@ -246,7 +246,7 @@ s_jbig2decode_inbuf(stream_jbig2decode_state *state, stream_cursor_read * pr)
         if_debug1m('s', state->memory, "[s]jbig2decode growing input buffer to %lu bytes\n",
                    new_size);
         new = realloc(state->inbuf, new_size);
-        if (new == NULL) return gs_error_VMerror;
+        if (new == NULL) return_error(gs_error_VMerror);
 
         state->inbuf = new;
         state->insize = new_size;
@@ -488,6 +488,7 @@ s_jbig2encode_init(stream_state * ss)
     state->outsize = 0;
     state->outfill = 0;
     state->offset = 0;
+    state->jb2_encode = false;
 
     return 0;
 }
@@ -504,6 +505,7 @@ s_jbig2encode_process(stream_state * ss, stream_cursor_read * pr,
     long out_size = pw->limit - pw->ptr;
     long available, segment;
     JB2_Error err;
+    JB2_Export_Format format[] = {cJB2_Export_Format_Stream_For_PDF, cJB2_Export_Format_JB2};
 
     /* Be greedy in filling our internal line buffer so we always
        make read progress on a stream. */
@@ -557,7 +559,7 @@ s_jbig2encode_process(stream_state * ss, stream_cursor_read * pr,
            unfortunately we can't serialize this across process calls */
         err = JB2_Document_Export_Document(state->doc,
             s_jbig2encode_write, state,
-            cJB2_Export_Format_Stream_For_PDF);
+            format[state->jb2_encode]);
         if (err != cJB2_Error_OK) return ERRC;
     }
 
@@ -573,7 +575,11 @@ s_jbig2encode_process(stream_state * ss, stream_cursor_read * pr,
         else return EOFC; /* all done */
     }
 
-    /* something went wrong above */
+    /* no data. */
+    if (in_size == 0 && !last)
+        return 0;
+
+    /* something went wrong above. */
     return ERRC;
 }
 

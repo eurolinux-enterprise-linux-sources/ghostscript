@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -20,9 +20,8 @@
 #include "gserrors.h"
 #include "gxfixed.h"
 #include "gxfarith.h"
-#include "gxistate.h"		/* for access to line params */
+#include "gxgstate.h"		/* for access to line params */
 #include "gzpath.h"
-#include "vdtrace.h"
 
 /* Forward declarations */
 static void adjust_point_to_tangent(segment *, const segment *,
@@ -85,7 +84,7 @@ break_gap_if_long(gx_path *ppath, const segment *pseg)
 /* If the copy fails, free the new path. */
 int
 gx_path_copy_reducing(const gx_path *ppath_old, gx_path *ppath,
-                      fixed fixed_flatness, const gs_imager_state *pis,
+                      fixed fixed_flatness, const gs_gstate *pgs,
                       gx_path_copy_options options)
 {
     const segment *pseg;
@@ -105,22 +104,20 @@ gx_path_copy_reducing(const gx_path *ppath_old, gx_path *ppath,
 #endif
     if (options & pco_for_stroke) {
         /* Precompute the maximum expansion of the bounding box. */
-        double width = pis->line_params.half_width;
+        double width = pgs->line_params.half_width;
 
         expansion.x =
-            float2fixed((fabs(pis->ctm.xx) + fabs(pis->ctm.yx)) * width) * 2;
+            float2fixed((fabs(pgs->ctm.xx) + fabs(pgs->ctm.yx)) * width) * 2;
         expansion.y =
-            float2fixed((fabs(pis->ctm.xy) + fabs(pis->ctm.yy)) * width) * 2;
+            float2fixed((fabs(pgs->ctm.xy) + fabs(pgs->ctm.yy)) * width) * 2;
     } else
         expansion.x = expansion.y = 0; /* Quiet gcc warning. */
-    vd_setcolor(RGB(255,255,0));
     pseg = (const segment *)(ppath_old->first_subpath);
     while (pseg) {
         switch (pseg->type) {
             case s_start:
                 code = gx_path_add_point(ppath,
                                          pseg->pt.x, pseg->pt.y);
-                vd_moveto(pseg->pt.x, pseg->pt.y);
                 break;
             case s_curve:
                 {
@@ -204,7 +201,6 @@ gx_path_copy_reducing(const gx_path *ppath_old, gx_path *ppath,
                                                           notes);
                             if (code < 0)
                                 break;
-                            vd_lineto(x0, y0);
                             start = ppath->current_subpath->last;
                             notes |= sn_not_first;
                             cseg = *pc;
@@ -216,7 +212,6 @@ gx_path_copy_reducing(const gx_path *ppath_old, gx_path *ppath,
                              * they line up with the tangents.
                              */
                             end = ppath->current_subpath->last;
-                            vd_lineto(ppath->position.x, ppath->position.y);
                             if ((code = gx_path_add_line_notes(ppath,
                                                           ppath->position.x,
                                                           ppath->position.y,
@@ -247,7 +242,6 @@ gx_path_copy_reducing(const gx_path *ppath_old, gx_path *ppath,
                     break;
                 code = gx_path_add_line_notes(ppath,
                                        pseg->pt.x, pseg->pt.y, pseg->notes);
-                vd_lineto(pseg->pt.x, pseg->pt.y);
                 break;
             case s_gap:
                 code = break_gap_if_long(ppath, pseg);
@@ -255,7 +249,6 @@ gx_path_copy_reducing(const gx_path *ppath_old, gx_path *ppath,
                     break;
                 code = gx_path_add_gap_notes(ppath,
                                        pseg->pt.x, pseg->pt.y, pseg->notes);
-                vd_lineto(pseg->pt.x, pseg->pt.y);
                 break;
             case s_dash:
                 {
@@ -270,7 +263,6 @@ gx_path_copy_reducing(const gx_path *ppath_old, gx_path *ppath,
                 if (code < 0)
                     break;
                 code = gx_path_close_subpath(ppath);
-                vd_closepath;
                 break;
             default:		/* can't happen */
                 code = gs_note_error(gs_error_unregistered);
@@ -281,9 +273,14 @@ gx_path_copy_reducing(const gx_path *ppath_old, gx_path *ppath,
         }
         pseg = pseg->next;
     }
-    if (path_last_is_moveto(ppath_old))
-        gx_path_add_point(ppath, ppath_old->position.x,
+    if (path_last_is_moveto(ppath_old)) {
+        code = gx_path_add_point(ppath, ppath_old->position.x,
                           ppath_old->position.y);
+        if (code < 0) {
+            gx_path_new(ppath);
+            return code;
+        }
+    }
     if (ppath_old->bbox_set) {
         if (ppath->bbox_set) {
             ppath->bbox.p.x = min(ppath_old->bbox.p.x, ppath->bbox.p.x);
@@ -465,8 +462,8 @@ gx_curve_monotonize(gx_path * ppath, const curve_segment * pc)
 {
     fixed x0 = ppath->position.x, y0 = ppath->position.y;
     segment_notes notes = pc->notes;
-    double t[4], tt = 1, tp;
-    int c[4];
+    double t[5], tt = 1, tp;
+    int c[5];
     int n0, n1, n, i, j, k = 0;
     fixed ax, bx, cx, ay, by, cy, v01, v12;
     fixed px, py, qx, qy, rx, ry, sx, sy;

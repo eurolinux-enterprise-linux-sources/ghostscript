@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -42,7 +42,7 @@ extern int gs_cspace_set_devn_proc(
                                       gs_color_space * pcspace,
                         int (*proc)(const float *,
                                        float *,
-                                       const gs_imager_state *,
+                                       const gs_gstate *,
                                        void *
                                       ),
                                       void *proc_data
@@ -64,7 +64,7 @@ gs_function_t *gs_cspace_get_devn_function(const gs_color_space *pcspace);
 
 /* Map a DeviceN color using a Function. */
 int map_devn_using_function(const float *in, float *out,
-                        const gs_imager_state *pis, void *data);
+                        const gs_gstate *pgs, void *data);
 
 /* Serialize a DeviceN map. */
 int gx_serialize_device_n_map(const gs_color_space * pcs, gs_device_n_map * m, stream * s);
@@ -79,6 +79,6 @@ int gx_serialize_device_n_map(const gs_color_space * pcs, gs_device_n_map * m, s
  * color space is in the current (temp) gstate.  The DeviceN color space is
  * in the next gstate down in the gstate list (pgs->saved).
  */
-int gs_attachattributecolorspace(gs_separation_name sep_name, gs_state * pgs);
+int gs_attachattributecolorspace(gs_separation_name sep_name, gs_gstate * pgs);
 
 #endif /* gscdevn_INCLUDED */

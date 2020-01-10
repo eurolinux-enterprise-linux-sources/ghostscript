@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 /* Create a sample device CRD */
@@ -38,7 +38,7 @@ static const gs_range3 bit_RangePQR = {
 };
 static const float dent_PQR = 1.0;
 static int
-bit_TransformPQR_proc(int index, floatp in, const gs_cie_wbsd * pwbsd,
+bit_TransformPQR_proc(int index, double in, const gs_cie_wbsd * pwbsd,
                       gs_cie_render * pcrd, float *out)
 {
     *out = DENT(in, dent_PQR);
@@ -49,7 +49,7 @@ static const gs_cie_transform_proc3 bit_TransformPQR = {
 };
 static const float dent_LMN = 1.0;
 static float
-bit_EncodeLMN_proc(floatp in, const gs_cie_render * pcrd)
+bit_EncodeLMN_proc(double in, const gs_cie_render * pcrd)
 {
     return DENT(in, dent_LMN);
 }
@@ -65,7 +65,7 @@ static const gs_matrix3 bit_MatrixABC = {
     {(float)-0.49863, (float) 0.04152, (float) 1.05700}
 };
 static float
-bit_EncodeABC_proc(floatp in, const gs_cie_render * pcrd)
+bit_EncodeABC_proc(double in, const gs_cie_render * pcrd)
 {
     return pow(max(in, 0.0), 0.45);
 }

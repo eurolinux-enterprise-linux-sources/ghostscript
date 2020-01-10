@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -70,7 +70,7 @@ sread_file(register stream * s, FILE * file, byte * buf, uint len)
     s->file = file;
     s->file_modes = s->modes;
     s->file_offset = 0;
-    s->file_limit = sizeof(gs_offset_t) > 4 ? max_int64_t : max_long;
+    s->file_limit = (sizeof(gs_offset_t) > 4 ? max_int64_t : max_long);
 }
 
 /* Confine reading to a subfile.  This is primarily for reusable streams. */
@@ -78,9 +78,9 @@ int
 sread_subfile(stream *s, gs_offset_t start, gs_offset_t length)
 {
     if (s->file == 0 || s->modes != s_mode_read + s_mode_seek ||
-        s->file_offset != 0 || s->file_limit != max_long ||
-        ((s->position < start || s->position > start + length) &&
-         sseek(s, start) < 0)
+        s->file_offset != 0 ||
+        s->file_limit != S_FILE_LIMIT_MAX ||
+        ((s->position < start || s->position > start + length) && sseek(s, start) < 0)
         )
         return ERRC;
     s->position -= start;
@@ -161,7 +161,7 @@ s_file_read_process(stream_state * st, stream_cursor_read * ignore_pr,
     int status = 1;
     int count;
 
-    if (s->file_limit < max_long) {
+    if (s->file_limit < S_FILE_LIMIT_MAX) {
         gs_offset_t limit_count = s->file_offset + s->file_limit - gp_ftell_64(file);
 
         if (max_count > limit_count)
@@ -193,17 +193,19 @@ swrite_file(register stream * s, FILE * file, byte * buf, uint len)
     s->file = file;
     s->file_modes = s->modes;
     s->file_offset = 0;		/* in case we switch to reading later */
-    s->file_limit = sizeof(gs_offset_t) > 4 ? max_int64_t : max_long;	/* ibid. */
+    s->file_limit = S_FILE_LIMIT_MAX;
 }
 /* Initialize for appending to an OS file. */
-void
+int
 sappend_file(register stream * s, FILE * file, byte * buf, uint len)
 {
     swrite_file(s, file, buf, len);
     s->modes = s_mode_write + s_mode_append;	/* no seek */
     s->file_modes = s->modes;
-    gp_fseek_64(file, 0L, SEEK_END);
+    if (gp_fseek_64(file, 0L, SEEK_END) != 0)
+        return ERRC;
     s->position = gp_ftell_64(file);
+    return 0;
 }
 /* Procedures for writing on a file */
 static int
@@ -279,9 +281,11 @@ s_file_switch(stream * s, bool writing)
         pos = stell(s);
         if_debug2m('s', s->memory, "[s]switch 0x%"PRIx64" to write at %"PRId64"\n",
                    (uint64_t) s, (int64_t)pos);
-        gp_fseek_64(file, pos, SEEK_SET);
+        if (gp_fseek_64(file, pos, SEEK_SET) != 0)
+            return ERRC;
         if (modes & s_mode_append) {
-            sappend_file(s, file, s->cbuf, s->cbsize);	/* sets position */
+            if (sappend_file(s, file, s->cbuf, s->cbsize)!= 0)	/* sets position */
+                return ERRC;
         } else {
             swrite_file(s, file, s->cbuf, s->cbsize);
             s->position = pos;
@@ -295,7 +299,8 @@ s_file_switch(stream * s, bool writing)
                    (uint64_t) s, (int64_t)pos);
         if (sflush(s) < 0)
             return ERRC;
-        gp_fseek_64(file, 0L, SEEK_CUR);	/* pacify C library */
+        if (gp_fseek_64(file, 0L, SEEK_CUR) != 0)
+            return ERRC;
         sread_file(s, file, s->cbuf, s->cbsize);
         s->modes |= modes & s_mode_append;	/* don't lose append info */
         s->position = pos;

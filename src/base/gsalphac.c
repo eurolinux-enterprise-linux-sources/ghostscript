@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -182,7 +182,7 @@ static int
 c_alpha_read(gs_composite_t ** ppcte, const byte * data, uint size,
              gs_memory_t * mem)
 {
-    gs_composite_alpha_params_t params;
+    gs_composite_alpha_params_t params = {composite_Clear, 0};
     int code, nbytes = 1;
 
     if (size < 1 || *data > composite_op_last)
@@ -271,7 +271,7 @@ static const gx_device_composite_alpha gs_composite_alpha_device =
 /* Create an alpha compositor. */
 static int
 c_alpha_create_default_compositor(const gs_composite_t * pcte,
-           gx_device ** pcdev, gx_device * dev, gs_imager_state * pis,
+           gx_device ** pcdev, gx_device * dev, gs_gstate * pgs,
            gs_memory_t * mem)
 {
     gx_device_composite_alpha *cdev;
@@ -591,13 +591,16 @@ composite_values(const pixel_row_t * pdest, const const_pixel_row_t * psource,
     bool constant_colors = psource->data == 0;
     uint highlight_value = (1 << dest_bpv) - 1;
 
-    sample_load_declare(sptr, sbit);
-    sample_store_declare(dptr, dbit, dbyte);
+    const byte *sptr;
+    int sbit;
+    byte *dptr;
+    int dbit;
+    byte dbyte;
 
     {
         uint xbit = pdest->initial_x * dest_bpv * dest_vpp;
 
-        sample_store_setup(dbit, xbit & 7, dest_bpv);
+        dbit =  xbit & 7;
         dptr = pdest->data + (xbit >> 3);
     }
     {
@@ -641,29 +644,19 @@ composite_values(const pixel_row_t * pdest, const const_pixel_row_t * psource,
             }
         }
         /* Preload the output byte buffer if necessary. */
-        sample_store_preload(dbyte, dptr, dbit, dest_bpv);
+        dbyte = (dbit ? (byte)(*dptr & (0xff00 >> dbit)) : 0);
 
         for (x = 0; x < num_pixels; ++x) {
             int j;
             uint result_alpha = dest_alpha;
-
-/* get_value does not increment the source pointer. */
-#define get_value(v, ptr, bit, bpv, vmax)\
-  sample_load16(v, ptr, bit, bpv)
-
-/* put_value increments the destination pointer. */
-#define put_value(v, ptr, bit, bpv, bbyte)\
-  sample_store_next16(v, ptr, bit, bpv, bbyte)
-
-#define advance(ptr, bit, bpv)\
-  sample_next(ptr, bit, bpv)
 
             /* Get destination alpha value. */
             if (dest_alpha_j >= 0) {
                 int dabit = dbit + dest_bpv * dest_alpha_j;
                 const byte *daptr = dptr + (dabit >> 3);
 
-                get_value(dest_alpha, daptr, dabit & 7, dest_bpv, dest_max);
+                if (sample_load16(&dest_alpha, daptr, dabit & 7, dest_bpv) < 0)
+                    return_error(gs_error_rangecheck);
 #ifdef PREMULTIPLY_TOWARDS_WHITE
                 dest_bias = dest_max - dest_alpha;
 #endif
@@ -673,11 +666,18 @@ composite_values(const pixel_row_t * pdest, const const_pixel_row_t * psource,
                 int sabit = sbit;
                 const byte *saptr = sptr;
 
-                if (source_alpha_j == 0)
-                    advance(sptr, sbit, source_bpv);
-                else
-                    advance(saptr, sabit, source_bpv * source_alpha_j);
-                get_value(source_alpha, saptr, sabit, source_bpv, source_max);
+                if (source_alpha_j == 0) {
+                    sbit += (source_bpv);
+                    sptr += sbit >> 3;
+                    sbit &= 7;
+                }
+                else {
+                    sabit += (source_bpv * source_alpha_j);
+                    saptr += sabit >> 3;
+                    sabit &= 7;
+                }
+                if (sample_load16(&dest_alpha, saptr, sabit, source_bpv) < 0)
+                    return_error(gs_error_rangecheck);
 #ifdef PREMULTIPLY_TOWARDS_WHITE
                 source_bias = source_max - source_alpha;
 #endif
@@ -710,10 +710,14 @@ composite_values(const pixel_row_t * pdest, const const_pixel_row_t * psource,
                     if (constant_colors)
                         source_v = pcp->source_values[j - 1];
                     else {
-                        get_value(source_v, sptr, sbit, source_bpv, source_max);
-                        advance(sptr, sbit, source_bpv);
+                        if (sample_load16(&source_v, sptr, sbit, source_bpv) < 0)
+                            return_error(gs_error_rangecheck);
+                        sbit += (source_bpv);
+                        sptr += sbit >> 3;
+                        sbit &= 7;
                     }
-                    get_value(dest_v, dptr, dbit, dest_bpv, dest_max);
+                    if (sample_load16(&dest_v, dptr, dbit, dest_bpv) < 0)
+                        return_error(gs_error_rangecheck);
 #ifdef PREMULTIPLY_TOWARDS_WHITE
                     source_v -= source_bias;
                     dest_v -= dest_bias;
@@ -816,20 +820,22 @@ composite_values(const pixel_row_t * pdest, const const_pixel_row_t * psource,
                     continue;
                 }
 #endif
-                put_value(result, dptr, dbit, dest_bpv, dbyte);
+                if (sample_store_next16(result, &dptr, &dbit, dest_bpv, &dbyte) < 0)
+                    return_error(gs_error_rangecheck);
             }
             /* Skip a trailing source alpha value. */
-            if (source_alpha_j > 0)
-                advance(sptr, sbit, source_bpv);
+            if (source_alpha_j > 0) {
+                sbit += (source_bpv);
+                sptr += sbit >> 3;
+                sbit &= 7;
+            }
             /* Store a trailing destination alpha value. */
             if (dest_alpha_j > 0)
-                put_value(result_alpha, dptr, dbit, dest_bpv, dbyte);
-#undef get_value
-#undef put_value
-#undef advance
+                if (sample_store_next16(result_alpha, &dptr, &dbit, dest_bpv, &dbyte) < 0)
+                    return_error(gs_error_rangecheck);
         }
         /* Store any partial output byte. */
-        sample_store_flush(dptr, dbit, dest_bpv, dbyte);
+        sample_store_flush(dptr, dbit, dbyte);
     }
     return 0;
 }

@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -110,6 +110,7 @@
 
 /* Function prototypes */
 static iodev_proc_init(iodev_diskn_init);
+static iodev_proc_finit(iodev_diskn_finit);
 static iodev_proc_fopen(iodev_diskn_fopen);
 static iodev_proc_delete_file(diskn_delete);
 static iodev_proc_rename_file(diskn_rename);
@@ -126,7 +127,7 @@ iodev_proc_put_params(diskn_os_put_params);
 const gx_io_device varname = \
 { \
     diskname, "FileSystem", \
-    {iodev_diskn_init, iodev_no_open_device, \
+    {iodev_diskn_init, iodev_diskn_finit, iodev_no_open_device, \
      NULL /* no longer used */ , iodev_diskn_fopen, iodev_os_fclose, \
      diskn_delete, diskn_rename, diskn_status, \
      iodev_no_enumerate_files, /* Only until we have a root location */ \
@@ -163,7 +164,6 @@ gs_private_st_ptrs1(st_diskn_state, struct diskn_state_s, "diskn_state",
 #define TEMP_FILE_NAME "Tmp.txt"
 #define MAP_FILE_VERSION 1
 #define InitialNumber 0
-#define BUFFER_LENGTH gp_file_name_sizeof
 
 typedef struct map_file_enum_s {
     FILE *  stream;         /* stream to map file */
@@ -175,13 +175,13 @@ typedef struct map_file_enum_s {
 gs_private_st_ptrs2(st_map_file_enum, struct map_file_enum_s, "map_file_enum",
     map_file_enum_enum_ptrs, map_file_enum_reloc_ptrs, pattern, root);
 
-static void * map_file_enum_init(gs_memory_t *, const char *, const char *);
+static void * map_file_enum_init(gs_memory_t *, const char *, const char *, uint);
 static bool map_file_enum_next(void *, char *);
 static void map_file_enum_close(void *);
-static bool map_file_name_get(const char *, const char *, char *);
-static void map_file_name_add(const char *, const char *);
-static void map_file_name_ren(const char*, const char *, const char *);
-static void map_file_name_del(const char *, const char *);
+static bool map_file_name_get(gs_memory_t *, const char *, const char *, char *);
+static void map_file_name_add(gs_memory_t *, const char *, const char *);
+static void map_file_name_ren(gs_memory_t *, const char*, const char *, const char *);
+static void map_file_name_del(gs_memory_t *, const char *, const char *);
 
 static int
 iodev_diskn_init(gx_io_device * iodev, gs_memory_t * mem)
@@ -189,7 +189,7 @@ iodev_diskn_init(gx_io_device * iodev, gs_memory_t * mem)
     diskn_state * pstate = gs_alloc_struct(mem, diskn_state, &st_diskn_state,
                                                 "iodev_diskn_init(state)");
     if (!pstate)
-        return gs_error_VMerror;
+        return_error(gs_error_VMerror);
     pstate->root_size = 0;
     pstate->root = NULL;
     pstate->memory = mem;
@@ -197,102 +197,168 @@ iodev_diskn_init(gx_io_device * iodev, gs_memory_t * mem)
     return 0;
 }
 
+static void
+iodev_diskn_finit(gx_io_device * iodev, gs_memory_t * mem)
+{
+    gs_object_free(mem, iodev->state, "iodev_diskn_finit");
+    iodev->state = NULL;
+    return;
+}
+
 static int
 iodev_diskn_fopen(gx_io_device * iodev, const char *fname, const char *access,
                FILE ** pfile, char *rfname, uint rnamelen)
 {
-    char realname[gp_file_name_sizeof];
     diskn_state * pstate = (diskn_state *)iodev->state;
+    char *realname = (char *)gs_alloc_bytes(pstate->memory, gp_file_name_sizeof, "iodev_diskn_fopen(realname)");
+    int code = 0;
 
-    /* Exit if we do not have a root location */
-    if (!pstate->root)
-        return_error(gs_error_undefinedfilename);
-
-    /* Remap filename (if it exists). */
-    if (!map_file_name_get((char *)pstate->root, fname, realname)) {
-        if (strchr(access, 'w')) {
-            map_file_name_add(pstate->root, fname);
-            map_file_name_get(pstate->root, fname, realname);
-        }
-        else
-            return_error(gs_error_undefinedfilename);
+    if (realname == NULL) {
+        code = gs_note_error(gs_error_VMerror);
+	goto done;
     }
 
-    return iodev_os_fopen(iodev_default(pstate->memory), realname, access, pfile, rfname, rnamelen);
+    /* Exit if we do not have a root location */
+    if (!pstate->root) {
+        code = gs_note_error(gs_error_undefinedfilename);
+	goto done;
+    }
+
+    /* Remap filename (if it exists). */
+    if (!map_file_name_get(pstate->memory, (char *)pstate->root, fname, realname)) {
+        if (strchr(access, 'w')) {
+            map_file_name_add(pstate->memory, pstate->root, fname);
+            map_file_name_get(pstate->memory, pstate->root, fname, realname);
+        }
+        else {
+            code = gs_note_error(gs_error_undefinedfilename);
+	    goto done;
+	}
+    }
+
+    code = iodev_os_gp_fopen(iodev_default(pstate->memory), realname, access, pfile, rfname, rnamelen);
+    
+done:
+    if (realname != NULL)
+        gs_free_object(pstate->memory, realname, "iodev_diskn_fopen(realname)");
+
+    return(code);
 }
 
 static int
 diskn_delete(gx_io_device * iodev, const char *fname)
 {
-    char realname[gp_file_name_sizeof];
     diskn_state * pstate = (diskn_state *)iodev->state;
+    char *realname = (char *)gs_alloc_bytes(pstate->memory, gp_file_name_sizeof, "diskn_delete(realname)");
+    int code = 0;
+
+    if (realname == NULL) {
+        code = gs_note_error(gs_error_VMerror);
+	goto done;
+    }
 
     /* Exit if we do not have a root location */
-    if (!pstate->root)
-        return_error(gs_error_undefinedfilename);
+    if (!pstate->root) {
+        code = gs_note_error(gs_error_undefinedfilename);
+        goto done;
+    }
 
     /* Map filename (if it exists). */
-    if (!map_file_name_get((char *)pstate->root, fname, realname))
-        return_error(gs_error_undefinedfilename);
+    if (!map_file_name_get(pstate->memory, (char *)pstate->root, fname, realname)) {
+        code = gs_note_error(gs_error_undefinedfilename);
+        goto done;
+    }
 
-    map_file_name_del((char *)pstate->root, fname);
-    return (unlink(realname) == 0 ? 0 : gs_error_ioerror);
+    map_file_name_del(pstate->memory, (char *)pstate->root, fname);
+    code = (unlink(realname) == 0 ? 0 : gs_note_error(gs_error_ioerror));
+
+done:
+    if (realname != NULL)
+        gs_free_object(pstate->memory, realname, "diskn_delete(realname)");
+
+    return(code);
 }
 
 static int
 diskn_rename(gx_io_device * iodev, const char *from, const char *to)
 {
-    char toreal[gp_file_name_sizeof];
-    int code = 0;
     diskn_state * pstate = (diskn_state *)iodev->state;
+    char *toreal = (char *)gs_alloc_bytes(pstate->memory, gp_file_name_sizeof, "diskn_rename(toreal)");
+    int code = 0;
+
+    if (toreal == NULL) {
+        code = gs_note_error(gs_error_VMerror);
+	goto done;
+    }
 
     /* Exit if we do not have a root location */
-    if (!pstate->root)
-        return_error(gs_error_undefinedfilename);
+    if (!pstate->root) {
+        code = gs_note_error(gs_error_undefinedfilename);
+        goto done;
+    }
 
     /* if filenames are the same them we are done. */
-    if (strcmp(to, from) == 0)
-        return 0;
+    if (strcmp(to, from) == 0) {
+        code = 0;
+        goto done;
+    }
 
     /*
      * If the destination file already exists, then we want to delete it.
      */
-    if (map_file_name_get((char *)pstate->root, to, toreal)) {
-        map_file_name_del((char *)pstate->root, to);
-        code = unlink(toreal) == 0 ? 0 : gs_error_ioerror;
+    if (map_file_name_get(pstate->memory, (char *)pstate->root, to, toreal)) {
+        map_file_name_del(pstate->memory, (char *)pstate->root, to);
+        code = unlink(toreal) == 0 ? 0 : gs_note_error(gs_error_ioerror);
     }
 
-    map_file_name_ren((char *)pstate->root, from, to);
-    return code;
+    map_file_name_ren(pstate->memory, (char *)pstate->root, from, to);
+
+done:
+    if (toreal != NULL)
+        gs_free_object(pstate->memory, toreal, "diskn_rename(toreal)");
+
+    return(code);
 }
 
 static int
 diskn_status(gx_io_device * iodev, const char *fname, struct stat *pstat)
 {
-    char realname[gp_file_name_sizeof];
     diskn_state * pstate = (diskn_state *)iodev->state;
+    char *realname = (char *)gs_alloc_bytes(pstate->memory, gp_file_name_sizeof, "diskn_status(realname)");
+    int code = 0;
+
+    if (realname == NULL) {
+        code = gs_note_error(gs_error_VMerror);
+	goto done;
+    }
 
     /* Exit if we do not have a root location */
-    if (!pstate->root)
-        return_error(gs_error_undefinedfilename);
+    if (!pstate->root) {
+        code = gs_note_error(gs_error_undefinedfilename);
+        goto done;
+    }
 
     /* Map filename (if it exists). */
-    if (!map_file_name_get((char *)pstate->root, fname, realname))
-        return_error(gs_error_undefinedfilename);
+    if (!map_file_name_get(pstate->memory, (char *)pstate->root, fname, realname)) {
+        code = gs_note_error(gs_error_undefinedfilename);
+    }
 
-    return (stat((char *)realname, pstat) < 0 ? gs_error_undefinedfilename : 0);
+    code = stat((char *)realname, pstat) < 0 ? gs_note_error(gs_error_undefinedfilename) : 0;
+
+done:
+    if (realname != NULL)
+        gs_free_object(pstate->memory, realname, "diskn_status(realname)");
+
+    return(code);
 }
 
 static file_enum *
-diskn_enumerate_files_init(gx_io_device * iodev, const char *pat, uint patlen,
+diskn_enumerate_files(gx_io_device * iodev, const char *pat, uint patlen,
              gs_memory_t * mem)
 {
-    char patstr[gp_file_name_sizeof];
     diskn_state * pstate = (diskn_state *)iodev->state;
-
-    memcpy(patstr, pat, patlen);	/* Copy string to buffer */
-    patstr[patlen]=0;			/* Terminate string */
-    return (file_enum *)map_file_enum_init(mem, (char *)pstate->root, patstr);
+    
+    return (file_enum *)map_file_enum_init(mem, (char *)pstate->root, pat, patlen);
 }
 
 static void
@@ -388,10 +454,10 @@ diskn_put_params(gx_io_device *iodev, gs_param_list *plist)
             pstate->root = (char *)gs_alloc_byte_array(pstate->memory,
                         gp_file_name_sizeof, sizeof(char), "diskn(rootdir)");
             if (!pstate->root)
-                return gs_error_VMerror;
+                return_error(gs_error_VMerror);
             pstate->root_size = rootstr.size + 1;
             /* Now allow enumeration of files on the disk */
-            iodev->procs.enumerate_files = diskn_enumerate_files_init;
+            iodev->procs.enumerate_files = diskn_enumerate_files;
         }
 
         memcpy(pstate->root, rootstr.data, rootstr.size);
@@ -409,14 +475,25 @@ diskn_put_params(gx_io_device *iodev, gs_param_list *plist)
  * Returns - NULL if error, file structure pointer if no error
  */
 static FILE *
-MapFileOpen(const char * rootpath, const char * filename, const char * attributes)
+MapFileOpen(gs_memory_t *mem, const char * rootpath, const char * filename, const char * attributes)
 {
-    char fullname[BUFFER_LENGTH];
+    char *fullname = NULL;
+    FILE *f = NULL;
+    int totlen = strlen(rootpath) + strlen(filename) + 1;
 
-    if (strlen(rootpath) + strlen(filename) >= BUFFER_LENGTH)
+    if (totlen >= gp_file_name_sizeof)
         return NULL;
-    sprintf(fullname, "%s%s", rootpath, filename);
-    return gp_fopen(fullname, attributes);
+
+    fullname = (char *)gs_alloc_bytes(mem, totlen, "MapFileOpen(fullname)");
+    if (fullname) {
+
+        gs_sprintf(fullname, "%s%s", rootpath, filename);
+        f = gp_fopen(fullname, attributes);
+
+        gs_free_object(mem, fullname , "MapFileOpen(fullname)");
+    }
+
+    return(f);
 }
 
 /*
@@ -479,7 +556,7 @@ MapFileRead(FILE * mapfile, char * namebuf, int * value)
     /* Get the file name */
     do {
         namebuf[count++] = c = fgetc(mapfile);
-    } while (count < BUFFER_LENGTH && c != EOF && c != '\n' && c != '\r');
+    } while (count < gp_file_name_sizeof && c != EOF && c != '\n' && c != '\r');
     namebuf[--count] = 0;    /* Terminate file name */
 
     /* Clean up any trailing linefeeds or carriage returns */
@@ -510,14 +587,21 @@ MapFileWrite(FILE * mapfile, const char * namebuf, int value)
  * filename - File name string
  */
 static void
-MapFileUnlink(const char * rootpath, const char * filename)
+MapFileUnlink(gs_memory_t *mem, const char * rootpath, const char * filename)
 {
-    char fullname[BUFFER_LENGTH];
+    char *fullname = NULL;
+    int totlen = strlen(rootpath) + strlen(filename) + 1;
 
-    if (strlen(rootpath) + strlen(filename) >= BUFFER_LENGTH)
+    if (totlen >= gp_file_name_sizeof)
         return;
-    sprintf(fullname, "%s%s", rootpath, filename);
-    unlink(fullname);
+    fullname = (char *)gs_alloc_bytes(mem, totlen, "MapFileUnlink(fullname)");
+    if (fullname) {
+        gs_sprintf(fullname, "%s%s", rootpath, filename);
+
+        unlink(fullname);
+
+        gs_free_object(mem, fullname , "MapFileUnlink(fullname)");
+    }
 }
 
 /*
@@ -528,18 +612,28 @@ MapFileUnlink(const char * rootpath, const char * filename)
  * newfilename - New file name string
  */
 static void
-MapFileRename(const char * rootpath, const char * newfilename, const char * oldfilename)
+MapFileRename(gs_memory_t *mem, const char * rootpath, const char * newfilename, const char * oldfilename)
 {
-    char oldfullname[BUFFER_LENGTH];
-    char newfullname[BUFFER_LENGTH];
+    char *oldfullname = NULL;
+    char *newfullname = NULL;
+    int ototlen = strlen(rootpath) + strlen(oldfilename) + 1;
+    int ntotlen = strlen(rootpath) + strlen(newfilename) + 1;
 
-    if (strlen(rootpath) + strlen(oldfilename) >= BUFFER_LENGTH)
+    if (ototlen >= gp_file_name_sizeof)
         return;
-    if (strlen(rootpath) + strlen(newfilename) >= BUFFER_LENGTH)
+    if (ntotlen >= gp_file_name_sizeof)
         return;
-    sprintf(oldfullname, "%s%s", rootpath, oldfilename);
-    sprintf(newfullname, "%s%s", rootpath, newfilename);
-    rename(oldfullname, newfullname);
+    oldfullname = (char *)gs_alloc_bytes(mem, ototlen, "MapFileRename(oldfullname)");
+    newfullname = (char *)gs_alloc_bytes(mem, ntotlen, "MapFileRename(newfullname)");
+
+    if (oldfullname && newfullname) {    
+        gs_sprintf(oldfullname, "%s%s", rootpath, oldfilename);
+        gs_sprintf(newfullname, "%s%s", rootpath, newfilename);
+        rename(oldfullname, newfullname);
+    }
+
+    gs_free_object(mem, oldfullname , "MapFileRename(oldfullname)");
+    gs_free_object(mem, newfullname , "MapFileRename(newfullname)");
 }
 
 /*
@@ -552,14 +646,14 @@ MapFileRename(const char * rootpath, const char * newfilename, const char * oldf
  * returns	    -1 if file not found, file number if found.
  */
 static int
-MapToFile(const char* rootpath, const char* name)
+MapToFile(gs_memory_t *mem, const char* rootpath, const char* name)
 {
     FILE * mapfile;
     int d = -1;
-    char filename[BUFFER_LENGTH];
+    char *filename = NULL;
     int file_version;
 
-    mapfile = MapFileOpen(rootpath, MAP_FILE_NAME, "r");
+    mapfile = MapFileOpen(mem, rootpath, MAP_FILE_NAME, "r");
     if (mapfile == NULL)
         return -1;
 
@@ -568,13 +662,15 @@ MapToFile(const char* rootpath, const char* name)
     if (MapFileReadVersion(mapfile, &file_version)
         && file_version == MAP_FILE_VERSION) {
 
+        filename = (char *)gs_alloc_bytes(mem, gp_file_name_sizeof, "MapToFile(filename)");
         /* Scan the file looking for the given name */
 
-        while (MapFileRead(mapfile, filename, &d)) {
+        while (filename && MapFileRead(mapfile, filename, &d)) {
             if (strcmp(filename, name) == 0)
                 break;
             d = -1;
         }
+        gs_free_object(mem, filename, "MapToFile(filename)");
     }
     fclose(mapfile);
     return d;
@@ -591,7 +687,7 @@ MapToFile(const char* rootpath, const char* name)
  * Returns:		    NULL if error, else pointer to enumeration structure.
  */
 static void *
-map_file_enum_init(gs_memory_t * mem, const char * root_name, const char * search_pattern)
+map_file_enum_init(gs_memory_t *mem, const char * root_name, const char * search_pattern, uint search_pattern_len)
 {
     int file_version;
     map_file_enum * mapfileenum = gs_alloc_struct(mem, map_file_enum, &st_map_file_enum,
@@ -603,13 +699,15 @@ map_file_enum_init(gs_memory_t * mem, const char * root_name, const char * searc
     mapfileenum->memory = mem;
 
     if (search_pattern) {
-        mapfileenum->pattern = (char *)gs_alloc_bytes(mem, strlen(search_pattern) + 1,
+        mapfileenum->pattern = (char *)gs_alloc_bytes(mem, search_pattern_len + 1,
                                                         "diskn:enum_init(pattern)");
         if (mapfileenum->pattern == NULL) {
             map_file_enum_close((file_enum *) mapfileenum);
             return NULL;
         }
-        strcpy(mapfileenum->pattern, search_pattern);
+        memcpy(mapfileenum->pattern, search_pattern, search_pattern_len);
+        /* Terminate string */
+        mapfileenum->pattern[search_pattern_len] = '\0';
     }
 
     mapfileenum->root = (char *)gs_alloc_bytes(mem, strlen(root_name) + 1,
@@ -619,10 +717,10 @@ map_file_enum_init(gs_memory_t * mem, const char * root_name, const char * searc
         return NULL;
     }
 
-    if (strlen(root_name) >= BUFFER_LENGTH)
+    if (strlen(root_name) >= gp_file_name_sizeof)
         return NULL;
     strcpy(mapfileenum->root, root_name);
-    mapfileenum->stream = MapFileOpen(root_name, MAP_FILE_NAME, "r");
+    mapfileenum->stream = MapFileOpen(mem, root_name, MAP_FILE_NAME, "r");
 
     /* Check the mapping file version number */
     if (mapfileenum->stream != NULL
@@ -704,14 +802,14 @@ map_file_enum_close(void * enum_mem)
  * osname          char*   resulting os specific path to the file
  */
 static bool
-map_file_name_get(const char * root_name, const char * Fname, char * osname)
+map_file_name_get(gs_memory_t *mem, const char * root_name, const char * Fname, char * osname)
 {
-    int d = MapToFile(root_name, Fname);
+    int d = MapToFile(mem, root_name, Fname);
 
     if (d != -1) {
         /* 20 characters are enough for even a 64 bit integer */
-        if ((strlen(root_name) + 20) < BUFFER_LENGTH) {
-            sprintf(osname, "%s%d", root_name, d);
+        if ((strlen(root_name) + 20) < gp_file_name_sizeof) {
+            gs_sprintf(osname, "%s%d", root_name, d);
             return true;
         }
     }
@@ -729,32 +827,37 @@ map_file_name_get(const char * root_name, const char * Fname, char * osname)
  * Fname           char*   name of the entry to add to the map
  */
 static void
-map_file_name_del(const char * root_name, const char * Fname)
+map_file_name_del(gs_memory_t *mem, const char * root_name, const char * Fname)
 {
     /*  search for target entry */
-    int d = MapToFile(root_name, Fname);
+    int d = MapToFile(mem, root_name, Fname);
     int file_version;
+    char *name = NULL;
 
-    if (d != -1) {			 /* if the file exists ... */
-        char    name[BUFFER_LENGTH];
+    name = (char *)gs_alloc_bytes(mem, gp_file_name_sizeof, "map_file_name_del(name)");
+
+    if (name && d != -1) {			 /* if the file exists ... */
         FILE*   newMap;
         FILE*   oldMap;
 
         /* Open current map file and a working file */
 
-        MapFileUnlink(root_name, TEMP_FILE_NAME );
-        newMap = MapFileOpen(root_name, TEMP_FILE_NAME, "w");
-        if (newMap == NULL)
+        MapFileUnlink(mem, root_name, TEMP_FILE_NAME );
+        newMap = MapFileOpen(mem, root_name, TEMP_FILE_NAME, "w");
+        if (newMap == NULL) {
+            gs_free_object(mem, name , "map_file_name_del(name)");
             return;
-        oldMap = MapFileOpen(root_name, MAP_FILE_NAME, "r");
+        }
+        oldMap = MapFileOpen(mem, root_name, MAP_FILE_NAME, "r");
         if (oldMap != NULL && (!MapFileReadVersion(oldMap, &file_version)
             || file_version != MAP_FILE_VERSION)) {
             fclose(oldMap);
             oldMap= NULL;
         }
         if (oldMap == NULL) {
+            gs_free_object(mem, name , "map_file_name_del(name)");
             fclose(newMap);
-            MapFileUnlink(root_name, TEMP_FILE_NAME);
+            MapFileUnlink(mem, root_name, TEMP_FILE_NAME);
             return;
         }
 
@@ -766,9 +869,10 @@ map_file_name_del(const char * root_name, const char * Fname)
                 MapFileWrite(newMap, name, d);
         fclose(newMap);
         fclose(oldMap);
-        MapFileUnlink(root_name, MAP_FILE_NAME);
-        MapFileRename(root_name, MAP_FILE_NAME, TEMP_FILE_NAME);
+        MapFileUnlink(mem, root_name, MAP_FILE_NAME);
+        MapFileRename(mem, root_name, MAP_FILE_NAME, TEMP_FILE_NAME);
     }
+    gs_free_object(mem, name, "map_file_name_del(name)");
 }
 
 /*
@@ -780,51 +884,55 @@ map_file_name_del(const char * root_name, const char * Fname)
  * Fname           char*   name of the entry to add to the map
  */
 static void
-map_file_name_add(const char * root_name, const char * Fname)
+map_file_name_add(gs_memory_t *mem, const char * root_name, const char * Fname)
 {
     /*
      * add entry to map file
      * entry number is one greater than biggest number
      */
-    char    name[BUFFER_LENGTH];
+    char *name = NULL;
     int d;
     int dmax = -1;
     int file_version;
     FILE*   newMap;
     FILE*   oldMap;
 
-    oldMap = MapFileOpen(root_name, MAP_FILE_NAME, "r");
-    if (oldMap != NULL && (!MapFileReadVersion(oldMap, &file_version)
-        || file_version != MAP_FILE_VERSION)) {
-        fclose(oldMap);
-        oldMap = NULL;
-    }
-    if (oldMap == NULL) {
-        oldMap = MapFileOpen(root_name, MAP_FILE_NAME, "w");
-        if (!oldMap)
-            return;
-        MapFileWriteVersion(oldMap, MAP_FILE_VERSION);
-        MapFileWrite(oldMap, Fname, InitialNumber);
-        fclose(oldMap);
-    }
-    else {
-        MapFileUnlink(root_name, TEMP_FILE_NAME);
-        newMap = MapFileOpen(root_name, TEMP_FILE_NAME, "w");
-        if (newMap != NULL) {
-            MapFileWriteVersion(newMap, MAP_FILE_VERSION);
-            while (MapFileRead(oldMap, name, &d)) {
-                MapFileWrite(newMap, name, d);
-                if (dmax < d)
-                    dmax = d;
-            }
-
-            dmax += 1;
-            MapFileWrite(newMap, Fname, dmax);
-            fclose(newMap);
+    name = (char *)gs_alloc_bytes(mem, gp_file_name_sizeof, "map_file_name_add(name)");
+    if (name) {
+        oldMap = MapFileOpen(mem, root_name, MAP_FILE_NAME, "r");
+        if (oldMap != NULL && (!MapFileReadVersion(oldMap, &file_version)
+            || file_version != MAP_FILE_VERSION)) {
             fclose(oldMap);
-            MapFileUnlink(root_name, MAP_FILE_NAME);
-            MapFileRename(root_name, MAP_FILE_NAME, TEMP_FILE_NAME);
+            oldMap = NULL;
         }
+        if (oldMap == NULL) {
+            oldMap = MapFileOpen(mem, root_name, MAP_FILE_NAME, "w");
+            if (!oldMap)
+                return;
+            MapFileWriteVersion(oldMap, MAP_FILE_VERSION);
+            MapFileWrite(oldMap, Fname, InitialNumber);
+            fclose(oldMap);
+        }
+        else {
+            MapFileUnlink(mem, root_name, TEMP_FILE_NAME);
+            newMap = MapFileOpen(mem, root_name, TEMP_FILE_NAME, "w");
+            if (newMap != NULL) {
+                MapFileWriteVersion(newMap, MAP_FILE_VERSION);
+                while (MapFileRead(oldMap, name, &d)) {
+                    MapFileWrite(newMap, name, d);
+                    if (dmax < d)
+                        dmax = d;
+                }
+
+                dmax += 1;
+                MapFileWrite(newMap, Fname, dmax);
+                fclose(newMap);
+                fclose(oldMap);
+                MapFileUnlink(mem, root_name, MAP_FILE_NAME);
+                MapFileRename(mem, root_name, MAP_FILE_NAME, TEMP_FILE_NAME);
+            }
+        }
+        gs_free_object(mem, name , "map_file_name_add(name)");
     }
 }
 
@@ -838,25 +946,25 @@ map_file_name_add(const char * root_name, const char * Fname)
  * newname         char*   name to change the entry indicated by oldname into
  */
 static void
-map_file_name_ren(const char* root_name, const char * oldname, const char * newname)
+map_file_name_ren(gs_memory_t *mem, const char* root_name, const char * oldname, const char * newname)
 {
     /*  search for target entry */
 
-    int d = MapToFile(root_name, oldname);
+    int d = MapToFile(mem, root_name, oldname);
     int file_version;
+    char *name = (char *)gs_alloc_bytes(mem, gp_file_name_sizeof, "map_file_name_ren(name)");
 
-    if (d != -1) { 		/* if target exists ... */
-        char    name[BUFFER_LENGTH];
+    if (name && d != -1) { 		/* if target exists ... */
         FILE*   newMap;
         FILE*   oldMap;
 
         /* Open current map file and a working file */
 
-        MapFileUnlink(root_name, TEMP_FILE_NAME );
-        newMap = MapFileOpen(root_name, TEMP_FILE_NAME, "w");
+        MapFileUnlink(mem, root_name, TEMP_FILE_NAME );
+        newMap = MapFileOpen(mem, root_name, TEMP_FILE_NAME, "w");
         if (newMap == NULL)
             return;
-        oldMap = MapFileOpen(root_name, MAP_FILE_NAME, "r");
+        oldMap = MapFileOpen(mem, root_name, MAP_FILE_NAME, "r");
         if (oldMap != NULL && (!MapFileReadVersion(oldMap, &file_version)
             || file_version != MAP_FILE_VERSION)) {
             fclose(oldMap);
@@ -864,7 +972,7 @@ map_file_name_ren(const char* root_name, const char * oldname, const char * newn
         }
         if (oldMap == NULL) {
             fclose(newMap);
-            MapFileUnlink(root_name, TEMP_FILE_NAME);
+            MapFileUnlink(mem, root_name, TEMP_FILE_NAME);
             return;
         }
 
@@ -878,7 +986,8 @@ map_file_name_ren(const char* root_name, const char * oldname, const char * newn
                 MapFileWrite(newMap, newname, d);
         fclose(newMap);
         fclose(oldMap);
-        MapFileUnlink(root_name, MAP_FILE_NAME);
-        MapFileRename(root_name, MAP_FILE_NAME, TEMP_FILE_NAME);
+        MapFileUnlink(mem, root_name, MAP_FILE_NAME);
+        MapFileRename(mem, root_name, MAP_FILE_NAME, TEMP_FILE_NAME);
     }
+    gs_free_object(mem, name ,"map_file_name_ren(name)");
 }

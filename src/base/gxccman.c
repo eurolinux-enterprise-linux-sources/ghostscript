@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -97,6 +97,8 @@ gx_char_cache_alloc(gs_memory_t * struct_mem, gs_memory_t * bits_mem,
     }
     pdir->fmcache.mmax = mmax;
     pdir->fmcache.mdata = mdata;
+    memset(mdata, 0, mmax * sizeof(*mdata));
+    memset(chars, 0, chsize * sizeof(*chars));
     pdir->ccache.struct_memory = struct_mem;
     pdir->ccache.bits_memory = bits_mem;
     pdir->ccache.bmax = bmax;
@@ -105,12 +107,11 @@ gx_char_cache_alloc(gs_memory_t * struct_mem, gs_memory_t * bits_mem,
     pdir->ccache.upper = upper;
     pdir->ccache.table = chars;
     pdir->ccache.table_mask = chsize - 1;
-    gx_char_cache_init(pdir);
-    return 0;
+    return gx_char_cache_init(pdir);
 }
 
 /* Initialize the character cache. */
-void
+int
 gx_char_cache_init(register gs_font_dir * dir)
 {
     int i;
@@ -119,6 +120,8 @@ gx_char_cache_init(register gs_font_dir * dir)
     gs_alloc_bytes_immovable(dir->ccache.bits_memory,
                              sizeof(char_cache_chunk),
                              "initial_chunk");
+    if (cck == NULL)
+        return_error(gs_error_VMerror);
 
     dir->fmcache.msize = 0;
     dir->fmcache.used = dir->fmcache.mmax;
@@ -136,6 +139,7 @@ gx_char_cache_init(register gs_font_dir * dir)
         pair->ttf = 0;
         pair->ttr = 0;
     }
+    return 0;
 }
 
 /* ====== Purging ====== */
@@ -155,9 +159,6 @@ gx_purge_selected_cached_chars(gs_font_dir * dir,
         cached_char *cc = dir->ccache.table[chi];
 
         if (cc != 0 &&
-#ifdef GSLITE
-                !cc->dont_evict &&
-#endif
                 (*proc) (dir->memory, cc, proc_data)) {
             hash_remove_cached_char(dir, chi);
             gx_free_cached_char(dir, cc);
@@ -354,7 +355,12 @@ gx_add_fm_pair(register gs_font_dir * dir, gs_font * font, const gs_uid * puid,
                                 char_tm, log2_scale, design_grid);
             if (code < 0)
                 return code;
-        }
+    }
+    else {
+       if (font->FontType == ft_TrueType) {
+           pair->design_grid = design_grid;
+       }
+    }
     pair->memory = 0;
     if_debug8m('k', dir->memory,
                "[k]adding pair 0x%lx: font=0x%lx [%g %g %g %g] UID %ld, 0x%lx\n",
@@ -479,7 +485,10 @@ gx_alloc_char_bits(gs_font_dir * dir, gx_device_memory * dev,
     int log2_yscale = pscale->y;
     int log2_depth = ilog2(depth);
     uint nwidth_bits = (iwidth >> log2_xscale) << log2_depth;
-    ulong isize, icdsize, isize2;
+    ulong isize, icdsize;
+#ifdef ENABLE_IMPOSSIBLE_ALPHA_CODE
+    ulong isize2;
+#endif
     uint iraster;
     cached_char *cc;
     gx_device_memory mdev;
@@ -530,10 +539,27 @@ gx_alloc_char_bits(gs_font_dir * dir, gx_device_memory * dev,
         pdev->retained = retained;
         pdev->width = iwidth;
         pdev->height = iheight;
+        pdev->raster = gx_device_raster((gx_device *)pdev, 1);
         gdev_mem_bitmap_size(pdev, &isize);	/* Assume less than max_ulong */
         pdev->HWResolution[0] = HWResolution0;
         pdev->HWResolution[1] = HWResolution1;
     } else {
+        /* We reckon this code has never actually been run since 2002,
+         * as the conditions set up in gx_compute_text_oversampling
+         * preclude this function ever being called in a way that
+         * will cause this else clause to be executed. */
+#ifndef ENABLE_IMPOSSIBLE_ALPHA_CODE
+        static int THIS_NEVER_HAPPENS = 0;
+
+        if (THIS_NEVER_HAPPENS == 0) {
+            /* Just put the warning out once */
+            dmlprintf(dev2->memory,
+                      "Unexpected code path in gx_alloc_char_bits taken!\n"
+                      "Please contact the Ghostscript developers.\n");
+            THIS_NEVER_HAPPENS = 1;
+        }
+        return_error(gs_error_unknownerror);
+#else /* ENABLE_IMPOSSIBLE_ALPHA_CODE */
         /* Use an alpha-buffer device to compress as we go. */
         /* Preserve the reference counts, if any. */
         rc_header rc;
@@ -554,6 +580,7 @@ gx_alloc_char_bits(gs_font_dir * dir, gx_device_memory * dev,
         isize += isize2;	/* Assume less than max_ulong */
         dev->HWResolution[0] = HWResolution0 * (1 >> log2_xscale);
         dev->HWResolution[1] = HWResolution1 * (1 >> log2_yscale);
+#endif /* ENABLE_IMPOSSIBLE_ALPHA_CODE */
     }
     icdsize = isize + sizeof_cached_char;
     code = alloc_char(dir, icdsize, &cc);
@@ -583,6 +610,7 @@ gx_alloc_char_bits(gs_font_dir * dir, gx_device_memory * dev,
 
     /* Open the cache device(s). */
 
+#ifndef ENABLE_IMPOSSIBLE_ALPHA_CODE
     if (dev2) {			/* The second device is an alpha device that targets */
         /* the real storage for the character. */
         byte *bits = cc_bits(cc);
@@ -596,6 +624,10 @@ gx_alloc_char_bits(gs_font_dir * dir, gx_device_memory * dev,
         (*dev_proc(dev, open_device)) ((gx_device *) dev);
     } else if (dev)
         gx_open_cache_device(dev, cc);
+#else /* ENABLE_IMPOSSIBLE_ALPHA_CODE */
+    if (dev)
+        gx_open_cache_device(dev, cc);
+#endif /* ENABLE_IMPOSSIBLE_ALPHA_CODE */
 
     return 0;
 }
@@ -971,12 +1003,6 @@ alloc_char_in_chunk(gs_font_dir * dir, ulong icdsize, cached_char **pcc)
         if (cch == 0) {		/* Not enough room to allocate in this chunk. */
             return 0;
         }
-#ifdef GSLITE
-        /* We shouldn't free because it's used. */
-        if (cc->dont_evict) {
-            return 0;
-        }
-#endif
         else {			/* Free the character */
             cached_fm_pair *pair = cc_pair(cc);
 
@@ -995,10 +1021,6 @@ alloc_char_in_chunk(gs_font_dir * dir, ulong icdsize, cached_char **pcc)
             gx_free_cached_char(dir, cc);
         }
     }
-
-#ifdef GSLITE
-    cc->dont_evict = 0;
-#endif
 
     cc->chunk = cck;
     cc->loc = (byte *) cc - cck->data;
@@ -1045,17 +1067,3 @@ shorten_cached_char(gs_font_dir * dir, cached_char * cc, uint diff)
     if_debug2m('K', dir->memory, "[K]shortening creates free block 0x%lx(%u)\n",
               (ulong) ((byte *) cc + cc->head.size), diff);
 }
-
-#ifdef GSLITE
-
-void gx_retain_cached_char(cached_char *cc)
-{
-    cc->dont_evict ++;
-}
-
-void gx_release_cached_char(cached_char *cc)
-{
-    cc->dont_evict --;
-}
-
-#endif

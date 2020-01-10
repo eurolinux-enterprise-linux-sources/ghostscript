@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -39,15 +39,13 @@
 private_st_jbig2decode_state();	/* creates a gc object for our state, defined in sjbig2.h */
 
 /* error callback for jbig2 decoder */
-static int
-s_jbig2decode_error(void *error_callback_data, const char *msg, Jbig2Severity severity,
+static void
+s_jbig2decode_error(void *callback_data, const char *msg, Jbig2Severity severity,
                int32_t seg_idx)
 {
-    stream_jbig2decode_state *const state =
-        (stream_jbig2decode_state *) error_callback_data;
+    s_jbig2_callback_data_t *error_data = (s_jbig2_callback_data_t *)callback_data;
     const char *type;
     char segment[22];
-    int code = 0;
 
     switch (severity) {
         case JBIG2_SEVERITY_DEBUG:
@@ -59,34 +57,33 @@ s_jbig2decode_error(void *error_callback_data, const char *msg, Jbig2Severity se
         case JBIG2_SEVERITY_FATAL:
             type = "FATAL ERROR decoding image:";
             /* pass the fatal error upstream if possible */
-            code = gs_error_ioerror;
-            if (state != NULL) state->error = code;
+            if (error_data != NULL) error_data->error = gs_error_ioerror;
             break;;
         default: type = "unknown message:"; break;;
     }
     if (seg_idx == -1) segment[0] = '\0';
-    else sprintf(segment, "(segment 0x%02x)", seg_idx);
+    else gs_sprintf(segment, "(segment 0x%02x)", seg_idx);
 
-    if (state)
+    if (error_data)
     {
-        if (severity == JBIG2_SEVERITY_FATAL) {
-            dmlprintf3(state->memory, "jbig2dec %s %s %s\n", type, msg, segment);
+        if (severity == JBIG2_SEVERITY_FATAL || severity == JBIG2_SEVERITY_WARNING) {
+            dmlprintf3(error_data->memory, "jbig2dec %s %s %s\n", type, msg, segment);
         } else {
-            if_debug3m('w', state->memory, "[w] jbig2dec %s %s %s\n", type, msg, segment);
+            if_debug3m('w', error_data->memory, "[w] jbig2dec %s %s %s\n", type, msg, segment);
         }
     }
     else
     {
-        // FIXME error_callback_data should be updated so that jbig2_ctx_new is not called
-        // with a NULL argument (see jbig2.h) and we never reach here with a NULL state
+/*
+        FIXME s_jbig2_callback_data_t should be updated so that jbig2_ctx_new is not called
+        with a NULL argument (see jbig2.h) and we never reach here with a NULL state
+*/
         if (severity == JBIG2_SEVERITY_FATAL) {
             dlprintf3("jbig2dec %s %s %s\n", type, msg, segment);
         } else {
             if_debug3('w', "[w] jbig2dec %s %s %s\n", type, msg, segment);
         }
     }
-
-    return code;
 }
 
 /* invert the bits in a buffer */
@@ -126,6 +123,7 @@ s_jbig2decode_make_global_data(byte *data, uint length, void **result)
 
     if (code) {
         /* error parsing the global stream */
+        jbig2_ctx_free(ctx);
         *result = NULL;
         return code;
     }
@@ -164,14 +162,28 @@ s_jbig2decode_init(stream_state * ss)
 {
     stream_jbig2decode_state *const state = (stream_jbig2decode_state *) ss;
     Jbig2GlobalCtx *global_ctx = state->global_ctx; /* may be NULL */
-    state->error = 0;
+    int code = 0;
 
-    /* initialize the decoder with the parsed global context if any */
-    state->decode_ctx = jbig2_ctx_new(NULL, JBIG2_OPTIONS_EMBEDDED,
-                global_ctx, s_jbig2decode_error, ss);
+    state->callback_data = (s_jbig2_callback_data_t *)gs_alloc_bytes(
+                                                ss->memory->non_gc_memory,
+                                                sizeof(s_jbig2_callback_data_t),
+						"s_jbig2decode_init(callback_data)");
+    if (state->callback_data) {
+        state->callback_data->memory = ss->memory->non_gc_memory;
+        state->callback_data->error = 0;
+        /* initialize the decoder with the parsed global context if any */
+        state->decode_ctx = jbig2_ctx_new(NULL, JBIG2_OPTIONS_EMBEDDED,
+                     global_ctx, s_jbig2decode_error, state->callback_data);
+
+        code = state->callback_data->error;
+    }
+    else {
+        code = gs_error_VMerror;
+    }
     state->image = 0;
 
-    return (state->error);
+
+    return_error (code);
 }
 
 /* process a section of the input and return any decoded data.
@@ -200,7 +212,7 @@ s_jbig2decode_process(stream_state * ss, stream_cursor_read * pr,
             jbig2_complete_page(state->decode_ctx);
         }
         /* handle fatal decoding errors reported through our callback */
-        if (state->error) return state->error;
+        if (state->callback_data->error) return state->callback_data->error;
     }
     if (out_size > 0) {
         if (image == NULL) {
@@ -236,9 +248,24 @@ s_jbig2decode_release(stream_state *ss)
 
     if (state->decode_ctx) {
         if (state->image) jbig2_release_page(state->decode_ctx, state->image);
+	state->image = NULL;
         jbig2_ctx_free(state->decode_ctx);
+	state->decode_ctx = NULL;
+    }
+    if (state->callback_data) {
+        gs_memory_t *mem = state->callback_data->memory;
+        gs_free_object(mem, state->callback_data, "s_jbig2decode_release(callback_data)");
+	state->callback_data = NULL;
     }
     /* the interpreter takes care of freeing the global_ctx */
+}
+
+void
+s_jbig2decode_finalize(const gs_memory_t *cmem, void *vptr)
+{
+    (void)cmem;
+    
+    s_jbig2decode_release((stream_state *)vptr);
 }
 
 /* set stream defaults.
@@ -257,7 +284,7 @@ s_jbig2decode_set_defaults(stream_state *ss)
     state->decode_ctx = NULL;
     state->image = NULL;
     state->offset = 0;
-    state->error = 0;
+    state->callback_data = NULL;
 }
 
 /* stream template */

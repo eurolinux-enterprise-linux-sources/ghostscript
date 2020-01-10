@@ -140,7 +140,7 @@ alps_open(gx_device *pdev)
 static int
 alps_get_params(gx_device *pdev, gs_param_list *plist)
 {
-    gs_param_string mediaType = { "", 1, false };
+    gs_param_string mediaType = { (unsigned char *)"", 1, false };
     int code = gdev_prn_get_params(pdev, plist);
     if (code < 0 ||
         (code = param_write_bool(plist, "Color",   &dev_alps->color))   < 0 ||
@@ -223,7 +223,7 @@ alps_put_params(gx_device *pdev, gs_param_list *plist)
     code = alps_put_param_int (plist, "Yellow",  &yellow,  0, 2048, code);
     code = alps_put_param_int (plist, "Black",   &black,   0, 2048, code);
 
-#define mediaTypeCmp(mname) strncmp(mediaType.data, mname, mediaType.size)
+#define mediaTypeCmp(mname) strncmp((const char *)mediaType.data, mname, mediaType.size)
     if (param_read_string(plist, "MediaType", &mediaType) == 0) {
         dev_alps->mediaType
             = (! mediaTypeCmp("PlainPaper"      ) ? 0
@@ -568,7 +568,8 @@ alps_print_page(gx_device_printer *pdev, FILE *prn_stream,
                     int xskip = 0;
 
                     /* Count pre print skip octets */
-                    for( ; len > 0 && *dp == 0; len --, dp ++, xskip ++);
+                    for( ; len > 0 && *dp == 0; len --, dp ++, xskip ++)
+                    {}
 
                     alps_cmd("\033\052\142", len, 0124, prn_stream);
                     write_short(xskip, prn_stream);

@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -181,13 +181,17 @@ main(int argc, char *argv[])
     define_int(f, "ARCH_ALIGN_INT_MOD", OFFSET_IN(si, i));
     define_int(f, "ARCH_ALIGN_LONG_MOD", OFFSET_IN(sl, l));
 
-#if defined (sparc)
+#if defined (GS_MEMPTR_ALIGNMENT) && GS_MEMPTR_ALIGNMENT != 0
+    define_int(f, "ARCH_ALIGN_PTR_MOD", GS_MEMPTR_ALIGNMENT);
+#else
+#if defined (sparc) || defined (__hpux)
 # ifndef __BIGGEST_ALIGNMENT__
 #  define __BIGGEST_ALIGNMENT__ 8
 # endif
     define_int(f, "ARCH_ALIGN_PTR_MOD", __BIGGEST_ALIGNMENT__);
 #else
     define_int(f, "ARCH_ALIGN_PTR_MOD", OFFSET_IN(sp, p));
+#endif
 #endif
 
     define_int(f, "ARCH_ALIGN_FLOAT_MOD", OFFSET_IN(sf, f));

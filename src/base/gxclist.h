@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -24,8 +24,9 @@
 #include "gxband.h"
 #include "gxbcache.h"
 #include "gxclio.h"
+#include "gxcolor2.h"		/* for pattern1_instance */
 #include "gxdevbuf.h"
-#include "gxistate.h"
+#include "gxgstate.h"
 #include "gxrplane.h"
 #include "gscms.h"
 
@@ -59,23 +60,36 @@
  * questions is negative, we flush the buffer.
  */
 
-#ifndef gs_pattern1_instance_t_DEFINED
-#  define gs_pattern1_instance_t_DEFINED
-typedef struct gs_pattern1_instance_s gs_pattern1_instance_t;
-#endif
-
 /* ---------------- Public structures ---------------- */
 
 /*
- * Define a saved page object.  This consists of a snapshot of the device
- * structure, information about the page per se, and the num_copies
- * parameter of output_page.
+ * Define a saved page object. This consists of information about the
+ * page's clist and parameters and the num_copies parameter of
+ * output_page. The current device's name, and color_info is saved to
+ * allow gdev_prn_render_pages to make sure that the target device is
+ * compatible.
  */
 typedef struct gx_saved_page_s {
-    gx_device device;
-    char dname[8 + 1];		/* device name for checking */
-    gx_band_page_info_t info;
-    int num_copies;
+    char dname[32];		/* device name for checking */
+    gx_device_color_info color_info;	/* also for checking */
+    gs_graphics_type_tag_t	tag;
+    /* Elements from gx_band_page_info that we need */
+    char cfname[gp_file_name_sizeof];	/* command file name */
+    char bfname[gp_file_name_sizeof];	/* block file name */
+    const clist_io_procs_t *io_procs;
+    uint tile_cache_size;	/* size of tile cache */
+    int64_t bfile_end_pos;		/* ftell at end of bfile */
+    gx_band_params_t band_params;  /* parameters used when writing band list */
+                                /* (actual values, no 0s) */
+    gs_memory_t *mem;		/* allocator for paramlist */
+    /* device params are expected to include info to set the icc_struct and the devn_params */
+    /* as well as color_info (if it is able to change as the 'bit' devices can).            */
+    int paramlist_len;
+    byte *paramlist;		/* serialized device param list */
+    /* for DeviceN devices, we need the spot colors collected during parsing */
+    int num_separations;
+    int separation_name_sizes[GS_SOFT_MAX_SPOTS];
+    byte *separation_names[GS_SOFT_MAX_SPOTS];	/* AKA Spot Color names */
 } gx_saved_page;
 
 /*
@@ -85,13 +99,6 @@ typedef struct gx_placed_page_s {
     gx_saved_page *page;
     gs_int_point offset;
 } gx_placed_page;
-
-/*
- * Define a procedure to cause some bandlist memory to be freed up,
- * probably by rendering current bandlist contents.
- */
-#define proc_free_up_bandlist_memory(proc)\
-  int proc(gx_device *dev, bool flush_current)
 
 /* ---------------- Internal structures ---------------- */
 
@@ -117,6 +124,7 @@ typedef struct {
     /*   0 means unused */
     /* reading: offset from cdev->chunk.data */
 } tile_hash;
+
 typedef struct {
     gx_cached_bits_common;
     /* To save space, instead of storing rep_width and rep_height, */
@@ -148,11 +156,11 @@ typedef struct cmd_list_s {
 
 /*
  * In order to keep the per-band state down to a reasonable size,
- * we store only a single set of the imager state parameters;
+ * we store only a single set of the gs_gstate parameters;
  * for each parameter, each band has a flag that says whether that band
  * 'knows' the current value of the parameters.
  */
-extern const gs_imager_state clist_imager_state_initial;
+#define GS_STATE_INIT_VALUES_CLIST(s) GS_STATE_INIT_VALUES(s, 300.0 / 72.0)
 
 /*
  * Define the main structure for holding command list state.
@@ -173,11 +181,9 @@ typedef struct gx_clist_state_s gx_clist_state;
         uint data_size;			/* size of buffer */\
         gx_band_params_t band_params;	/* band buffering parameters */\
         bool do_not_open_or_close_bandfiles;	/* if true, do not open/close bandfiles */\
-        bool page_uses_transparency;	/* if true then page uses PDF 1.4 transparency */\
-        int is_planar;                  /* if non zero then we have a planar device
-                                         * with is_planar bits per component. */\
+        int is_printer;                 /* if true, then clist is based on a prn device */\
                 /* Following are used for both writing and reading. */\
-        gx_bits_cache_chunk chunk;	/* the only chunk of bits */\
+        gx_bits_cache_chunk *cache_chunk;	/* the only chunk of bits */\
         gx_bits_cache bits;\
         uint tile_hash_mask;		/* size of tile hash table -1 */\
         uint tile_band_mask_size;	/* size of band mask preceding */\
@@ -193,13 +199,9 @@ typedef struct gx_clist_state_s gx_clist_state;
         clist_icctable_t *icc_table;    /* Table that keeps track of ICC profiles.\
                                            It relates the hashcode to the cfile\
                                            file location. */\
-        gsicc_link_cache_t *icc_cache_cl  /* Link cache */\
-
-/*
- * Chech whether a clist is used for storing a pattern command stream.
- * Useful for both reader and writer.
- */
-#define IS_CLIST_FOR_PATTERN(cdev) (cdev->procs.open_device == pattern_clist_open_device)
+        gsicc_link_cache_t *icc_cache_cl; /* Link cache */\
+        int icc_cache_list_len;         /* Length of list of caches, one per rendering thread */\
+        gsicc_link_cache_t **icc_cache_list  /* Link cache list */
 
 /* Define a structure to hold where the ICC profiles are stored in the clist
    Profiles are added into psuedo bands of the clist, these are bands that exist beyond
@@ -213,17 +215,14 @@ typedef struct gx_clist_state_s gx_clist_state;
 typedef struct clist_icc_serial_entry_s clist_icc_serial_entry_t;
 
 struct clist_icc_serial_entry_s {
-
     int64_t hashcode;              /* A hash code for the icc profile */
     int64_t file_position;        /* File position in cfile of the profile with header */
     int size;
-
 };
 
 typedef struct clist_icctable_entry_s clist_icctable_entry_t;
 
 struct clist_icctable_entry_s {
-
     clist_icc_serial_entry_t serial_data;
     clist_icctable_entry_t *next;  /* The next entry in the table */
     cmm_profile_t *icc_profile;    /* The profile.  In non-gc memory. This is
@@ -249,10 +248,13 @@ struct clist_icctable_s {
     clist_icctable_entry_t *final;
 };
 
+void
+clist_icc_table_finalize(const gs_memory_t *memory, void * vptr);
+
 #define private_st_clist_icctable()\
-  gs_private_st_ptrs2(st_clist_icctable,\
+  gs_private_st_ptrs2_final(st_clist_icctable,\
                 clist_icctable_t, "clist_icctable",\
-                clist_icctable_enum_ptrs, clist_icctable_reloc_ptrs, head, final)
+                clist_icctable_enum_ptrs, clist_icctable_reloc_ptrs, clist_icc_table_finalize, head, final)
 
 typedef struct gx_device_clist_common_s {
     gx_device_clist_common_members;
@@ -288,6 +290,7 @@ typedef struct clist_icc_color_s {
     int64_t icc_hash;           /* hash code for icc profile */
     byte icc_num_components;   /* needed to avoid having to read icc data early */
     bool is_lab;               /* also needed early */
+    gsicc_profile_t default_match;     /* used by gsicc_get_link early for usefastcolor mode */
     gsicc_colorbuffer_t data_cs;
 } clist_icc_color_t;
 
@@ -316,11 +319,18 @@ struct gx_device_clist_writer_s {
                                 /* current tile parameters */
     /*
      * NOTE: we must not set the line_params.dash.pattern member of the
-     * imager state to point to the dash_pattern member of the writer
+     * gs_gstate to point to the dash_pattern member of the writer
      * state (except transiently), since this would confuse the
      * garbage collector.
      */
-    gs_imager_state imager_state;	/* current values of imager params */
+    gs_gstate gs_gstate;	        /* current values of gs_gstate params */
+    bool pdf14_needed;		/* if true then not page level opaque mode */
+                                /* above set when not at page level with no SMask or when */
+                                /* the page level BM, shape or opacity alpha needs tranaparency */
+    int pdf14_trans_group_level;/* 0 when at page level group -- push increments, pop decrements */
+    int pdf14_smask_level;	/* 0 when at SMask None -- push increments, pop decrements */
+    bool page_pdf14_needed;	/* save page level pdf14_needed state */
+
     float dash_pattern[cmd_max_dash];	/* current dash pattern */
     const gx_clip_path *clip_path;	/* current clip path, */
                                 /* only non-transient for images */
@@ -333,14 +343,9 @@ struct gx_device_clist_writer_s {
     gs_id device_halftone_id;	/* id of device halftone */
     gs_id image_enum_id;	/* non-0 if we are inside an image */
                                 /* that we are passing through */
-    int error_is_retryable;		/* Extra status used to distinguish hard VMerrors */
-                               /* from warnings upgraded to VMerrors. */
-                               /* T if err ret'd by cmd_put_op et al can be retried */
     int permanent_error;		/* if < 0, error only cleared by clist_reset() */
-    int driver_call_nesting;	/* nesting level of non-retryable driver calls */
     int ignore_lo_mem_warnings;	/* ignore warnings from clist file/mem */
             /* Following must be set before writing */
-    proc_free_up_bandlist_memory((*free_up_bandlist_memory)); /* if nz, proc to free some bandlist memory */
     int disable_mask;		/* mask of routines to disable clist_disable_xxx */
     gs_pattern1_instance_t *pinst; /* Used when it is a pattern clist. */
     int cropping_min, cropping_max;
@@ -360,13 +365,6 @@ struct gx_device_clist_writer_s {
                                            access to the graphic state information in those
                                            routines, this is the logical place to put this
                                            information */
-   /* clist_icctable_t *icc_table;  */          /* Table that keeps track of ICC profiles.  It
-                                              relates the hashcode to the cfile file location.
-                                              I did not put this into gx_device_clist_common_members
-                                              since I dont see where those pointers are ever defined
-                                              for GC. */
-   /* gsicc_link_cache_t *icc_cache_cl; */  /* Had to add this into the writer device to avoid problems
-                                           with 64 bit builds.  We need to revisit this */
 };
 
 #ifndef gx_device_clist_writer_DEFINED
@@ -395,8 +393,8 @@ typedef struct gx_device_clist_reader_s {
     gx_render_plane_t yplane;		/* current plane, index = -1 */
                                         /* means all planes */
     const gx_placed_page *pages;
+    gx_color_usage_t *color_usage_array; /* per band color_usage */
     int num_pages;
-    gx_band_complexity_t *band_complexity_array;  /* num_bands elements */
     void *offset_map; /* Just against collecting the map as garbage. */
     int num_render_threads;		/* number of threads being used */
     clist_render_thread_control_t *render_threads;	/* array of threads */
@@ -424,12 +422,12 @@ extern_st(st_device_clist);
     "gx_device_clist", 0, device_clist_enum_ptrs, device_clist_reloc_ptrs,\
     gx_device_finalize)
 #define st_device_clist_max_ptrs\
-  (st_device_forward_max_ptrs + st_imager_state_num_ptrs + 4)
+  (st_device_forward_max_ptrs + st_gs_gstate_num_ptrs + 4)
 
 #define CLIST_IS_WRITER(cdev) ((cdev)->common.ymin < 0)
 
 /* setup before opening clist device */
-#define clist_init_params(xclist, xdata, xdata_size, xtarget, xbuf_procs, xband_params, xexternal, xmemory, xfree_bandlist, xdisable, pageusestransparency)\
+#define clist_init_params(xclist, xdata, xdata_size, xtarget, xbuf_procs, xband_params, xexternal, xmemory, xdisable, pageusestransparency)\
     BEGIN\
         (xclist)->common.data = (xdata);\
         (xclist)->common.data_size = (xdata_size);\
@@ -438,15 +436,10 @@ extern_st(st_device_clist);
         (xclist)->common.band_params = (xband_params);\
         (xclist)->common.do_not_open_or_close_bandfiles = (xexternal);\
         (xclist)->common.bandlist_memory = (xmemory);\
-        (xclist)->writer.free_up_bandlist_memory = (xfree_bandlist);\
         (xclist)->writer.disable_mask = (xdisable);\
         (xclist)->writer.page_uses_transparency = (pageusestransparency);\
         (xclist)->writer.pinst = NULL;\
     END
-
-/* Determine whether this clist device is able to recover VMerrors */
-#define clist_test_VMerror_recoverable(cldev)\
-  ((cldev)->free_up_bandlist_memory != 0)
 
 /* The device template itself is never used, only the procedures. */
 extern const gx_device_procs gs_clist_device_procs;
@@ -464,14 +457,6 @@ int clist_close_output_file(gx_device *dev);
  * page_info structure (a page that has been separated from the device).
  */
 int clist_close_page_info(gx_band_page_info_t *ppi);
-
-/*
- * Compute the colors-used information in the page_info structure from the
- * information in the individual writer bands.  This is only useful at the
- * end of a page.  gdev_prn_colors_used calls this procedure if it hasn't
- * been called since the page was started.  clist_end_page also calls it.
- */
-void clist_compute_color_usage(gx_device_clist_writer *cldev);
 
 /* Define the abstract type for a printer device. */
 #ifndef gx_device_printer_DEFINED
@@ -498,22 +483,17 @@ int clist_render_rectangle(gx_device_clist *cdev,
                            const gx_render_plane_t *render_plane,
                            bool clear);
 
-/* A null pointer is used to denote not banding.
- * Since false == NULL the old usage of for_banding = false works even if it's hackish.
- *
- * returns the complexity for a band given the y offset from top of page.
- */
-gx_band_complexity_t *
-clist_get_band_complexity(gx_device *dev, int y);
+/* Optimization of PDF 1.4 transparency requires a trans_bbox for each band */
+/* This function updates the clist writer states with the bbox provided. */
+void clist_update_trans_bbox(gx_device_clist_writer *dev, gs_int_rect *bbox);
 
-/* Free any band_complexity_array memory used by the clist reader device */
-void gx_clist_reader_free_band_complexity_array(gx_device_clist *cldev);
-
-/* deep copy constructor if from != NULL
- * default constructor if from == NULL
- */
-void
-clist_copy_band_complexity(gx_band_complexity_t *this, const gx_band_complexity_t *from);
+/* Make a clist device for accumulating. Used for pattern-clist as well as */
+/* for pdf14 pages that are too large to be done in page mode.             */
+gx_device_clist *
+clist_make_accum_device(gx_device *target, const char *dname, void *base, int space,
+                        gx_device_buf_procs_t *buf_procs, gx_band_params_t *band_params,
+                        bool use_memory_clist, bool uses_transparency,
+                        gs_pattern1_instance_t *pinst);
 
 /* Retrieve total size for cfile and bfile. */
 int clist_data_size(const gx_device_clist *cdev, int select);
@@ -521,6 +501,14 @@ int clist_data_size(const gx_device_clist *cdev, int select);
 int clist_get_data(const gx_device_clist *cdev, int select, int64_t offset, byte *buf, int length);
 /* Put command list data. */
 int clist_put_data(const gx_device_clist *cdev, int select, int64_t offset, const byte *buf, int length);
+
+/* Write out the array of color usage entries (one per band) */
+int clist_write_color_usage_array(gx_device_clist_writer *cldev);
+
+/* get the color_usage summary over a Y range from the clist writer states */
+/* Not expected to be used */
+int clist_writer_color_usage(gx_device_clist_writer *cldev, int y, int height,
+                     gx_color_usage_t *color_usage, int *range_start);
 
 /* ICC table prototypes */
 
@@ -538,7 +526,7 @@ int clist_icc_addentry(gx_device_clist_writer *cdev, int64_t hashcode,
                        cmm_profile_t *icc_profile);
 
 /* Free the table and its entries */
-int clist_icc_freetable(clist_icctable_t *icc_table, gs_memory_t *memory);
+int clist_free_icc_table(clist_icctable_t *icc_table, gs_memory_t *memory);
 
 /* Generic read function used with ICC and could be used with others.
    A different of this and clist_get_data is that here we reset the

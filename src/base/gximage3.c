@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -26,7 +26,7 @@
 #include "gxdevmem.h"
 #include "gxclipm.h"
 #include "gximage3.h"
-#include "gxistate.h"
+#include "gxgstate.h"
 
 /* Forward references */
 static dev_proc_begin_typed_image(gx_begin_image3);
@@ -108,6 +108,7 @@ make_mid_default(gx_device **pmidev, gx_device *dev, int width, int height,
     midev->bitmap_memory = mem;
     midev->width = width;
     midev->height = height;
+    midev->raster = gx_device_raster((gx_device *)midev, 1);
     check_device_separable((gx_device *)midev);
     gx_device_fill_in_procs((gx_device *)midev);
     code = dev_proc(midev, open_device)((gx_device *)midev);
@@ -123,7 +124,7 @@ make_mid_default(gx_device **pmidev, gx_device *dev, int width, int height,
 }
 static IMAGE3_MAKE_MCDE_PROC(make_mcde_default);  /* check prototype */
 static int
-make_mcde_default(gx_device *dev, const gs_imager_state *pis,
+make_mcde_default(gx_device *dev, const gs_gstate *pgs,
                   const gs_matrix *pmat, const gs_image_common_t *pic,
                   const gs_int_rect *prect, const gx_drawing_color *pdcolor,
                   const gx_clip_path *pcpath, gs_memory_t *mem,
@@ -156,7 +157,7 @@ make_mcde_default(gx_device *dev, const gs_imager_state *pis,
     }
     mcdev->tiles = bits;
     code = dev_proc(mcdev, begin_typed_image)
-        ((gx_device *)mcdev, pis, pmat, pic, prect, pdcolor, pcpath, mem,
+        ((gx_device *)mcdev, pgs, pmat, pic, prect, pdcolor, pcpath, mem,
          pinfo);
     if (code < 0) {
         gs_free_object(mem, mcdev, "make_mcde_default");
@@ -167,12 +168,12 @@ make_mcde_default(gx_device *dev, const gs_imager_state *pis,
 }
 static int
 gx_begin_image3(gx_device * dev,
-                const gs_imager_state * pis, const gs_matrix * pmat,
+                const gs_gstate * pgs, const gs_matrix * pmat,
                 const gs_image_common_t * pic, const gs_int_rect * prect,
                 const gx_drawing_color * pdcolor, const gx_clip_path * pcpath,
                 gs_memory_t * mem, gx_image_enum_common_t ** pinfo)
 {
-    return gx_begin_image3_generic(dev, pis, pmat, pic, prect, pdcolor,
+    return gx_begin_image3_generic(dev, pgs, pmat, pic, prect, pdcolor,
                                    pcpath, mem, make_mid_default,
                                    make_mcde_default, pinfo);
 }
@@ -181,10 +182,10 @@ gx_begin_image3(gx_device * dev,
  * Begin a generic ImageType 3 image, with client handling the creation of
  * the mask image and mask clip devices.
  */
-static bool check_image3_extent(floatp mask_coeff, floatp data_coeff);
+static bool check_image3_extent(double mask_coeff, double data_coeff);
 int
 gx_begin_image3_generic(gx_device * dev,
-                        const gs_imager_state *pis, const gs_matrix *pmat,
+                        const gs_gstate *pgs, const gs_matrix *pmat,
                         const gs_image_common_t *pic, const gs_int_rect *prect,
                         const gx_drawing_color *pdcolor,
                         const gx_clip_path *pcpath, gs_memory_t *mem,
@@ -348,7 +349,7 @@ gx_begin_image3_generic(gx_device * dev,
     mrect.q.x = pim->MaskDict.Width;
     mrect.q.y = pim->MaskDict.Height;
     if (pmat == 0)
-        pmat = &ctm_only(pis);
+        pmat = &ctm_only(pgs);
     if ((code = gs_matrix_multiply(&mi_mask, pmat, &mat)) < 0 ||
         (code = gs_bbox_transform(&mrect, &mat, &mrect)) < 0
         )
@@ -384,8 +385,8 @@ gx_begin_image3_generic(gx_device * dev,
         m_mat.tx -= origin.x;
         m_mat.ty -= origin.y;
         /*
-         * Note that pis = NULL here, since we don't want to have to
-         * create another imager state with default log_op, etc.
+         * Note that pgs = NULL here, since we don't want to have to
+         * create another gs_gstate with default log_op, etc.
          */
         code = gx_device_begin_typed_image(mdev, NULL, &m_mat,
                                            (const gs_image_common_t *)&i_mask,
@@ -402,7 +403,7 @@ gx_begin_image3_generic(gx_device * dev,
         i_pixel.type = type1;
         i_pixel.image_parent_type = gs_image_type3;
     }
-    code = make_mcde(dev, pis, pmat, (const gs_image_common_t *)&i_pixel,
+    code = make_mcde(dev, pgs, pmat, (const gs_image_common_t *)&i_pixel,
                      prect, pdcolor, pcpath, mem, &penum->pixel_info,
                      &pcdev, mdev, penum->mask_info, &origin);
     if (code < 0)
@@ -458,7 +459,7 @@ gx_begin_image3_generic(gx_device * dev,
     return code;
 }
 static bool
-check_image3_extent(floatp mask_coeff, floatp data_coeff)
+check_image3_extent(double mask_coeff, double data_coeff)
 {
     if (mask_coeff == 0)
         return data_coeff == 0;
@@ -544,13 +545,15 @@ gx_image3_plane_data(gx_image_enum_common_t * info,
                 /* We do this in the simplest (not fastest) way for now. */
                 uint bit_x = bpc * (num_components + 1) * planes[0].data_x;
 
-                sample_load_declare_setup(sptr, sbit,
-                                          planes[0].data + (bit_x >> 3),
-                                          bit_x & 7, bpc);
-                sample_store_declare_setup(mptr, mbit, mbbyte,
-                                           penum->mask_data, 0, 1);
-                sample_store_declare_setup(pptr, pbit, pbbyte,
-                                           penum->pixel_data, 0, bpc);
+                const byte *sptr = planes[0].data + (bit_x >> 3);
+                int sbit = bit_x & 7;
+
+                byte *mptr = penum->mask_data;
+                int mbit = 0;
+                byte mbbyte = 0;
+                byte *pptr = penum->pixel_data;
+                int pbit = 0;
+                byte pbbyte = 0;
                 int x;
 
                 mask_plane.data = mptr;
@@ -564,15 +567,19 @@ gx_image3_plane_data(gx_image_enum_common_t * info,
                     uint value;
                     int i;
 
-                    sample_load_next12(value, sptr, sbit, bpc);
-                    sample_store_next12(value != 0, mptr, mbit, 1, mbbyte);
+                    if (sample_load_next12(&value, &sptr, &sbit, bpc) < 0)
+                        return_error(gs_error_rangecheck);
+                    if (sample_store_next12(value != 0, &mptr, &mbit, 1, &mbbyte) < 0)
+                        return_error(gs_error_rangecheck);
                     for (i = 0; i < num_components; ++i) {
-                        sample_load_next12(value, sptr, sbit, bpc);
-                        sample_store_next12(value, pptr, pbit, bpc, pbbyte);
+                        if (sample_load_next12(&value, &sptr, &sbit, bpc) < 0)
+                            return_error(gs_error_rangecheck);
+                        if (sample_store_next12(value, &pptr, &pbit, bpc, &pbbyte) < 0)
+                            return_error (gs_error_rangecheck);
                     }
                 }
-                sample_store_flush(mptr, mbit, 1, mbbyte);
-                sample_store_flush(pptr, pbit, bpc, pbbyte);
+                sample_store_flush(mptr, mbit, mbbyte);
+                sample_store_flush(pptr, pbit, pbbyte);
             }
             break;
         case interleave_scan_lines:

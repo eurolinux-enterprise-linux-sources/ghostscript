@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -276,19 +276,6 @@ struct gs_overprint_params_s {
      * it is to be left unaffected.
      */
     gx_color_index  drawn_comps;
-
-    /* A representation of the K value that is used for simulating CMYK
-       overprinting out to an RGB device.  While CMY map readily to RGB using
-       the simple 255-X color process, we have to know what the K value
-       was if we are overprinting with K so that we can properly reduce 
-       the RGB values with the addition of K.  We will use 8 bits for this.
-     */
-    unsigned short k_value;
-
-    /* This is used when we want to simulate the overprint of spot colors
-       by blending the equivalent CMYK colorant with with what was already
-       drawn */
-    bool blendspot;
 };
 
 /*

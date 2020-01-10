@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -32,15 +32,17 @@
 #include "iimage.h"
 #include "iname.h"
 #include "store.h"
-#include "gsdfilt.h"
+#include "gspaint.h"		/* gs_erasepage prototype */
 #include "gdevdevn.h"
+#include "gxdevsop.h"
 #include "gxblend.h"
 #include "gdevp14.h"
+#include "gsicc_cms.h"
 
 /* ------ Utilities ------ */
 
 static int
-set_float_value(i_ctx_t *i_ctx_p, int (*set_value)(gs_state *, floatp))
+set_float_value(i_ctx_t *i_ctx_p, int (*set_value)(gs_gstate *, double))
 {
     os_ptr op = osp;
     double value;
@@ -56,7 +58,7 @@ set_float_value(i_ctx_t *i_ctx_p, int (*set_value)(gs_state *, floatp))
 
 static int
 current_float_value(i_ctx_t *i_ctx_p,
-                    float (*current_value)(const gs_state *))
+                    float (*current_value)(const gs_gstate *))
 {
     os_ptr op = osp;
 
@@ -72,13 +74,15 @@ enum_param(const gs_memory_t *mem, const ref *pnref,
     const char *const *p;
     ref nsref;
 
+    check_type(*pnref, t_name);
+
     name_string_ref(mem, pnref, &nsref);
     for (p = names; *p; ++p)
         if (r_size(&nsref) == strlen(*p) &&
             !memcmp(*p, nsref.value.const_bytes, r_size(&nsref))
             )
             return p - names;
-    return_error(e_rangecheck);
+    return_error(gs_error_rangecheck);
 }
 
 /* ------ Graphics state operators ------ */
@@ -187,7 +191,7 @@ rect_param(gs_rect *prect, os_ptr op)
 
 static int
 mask_op(i_ctx_t *i_ctx_p,
-        int (*mask_proc)(gs_state *, gs_transparency_channel_selector_t))
+        int (*mask_proc)(gs_gstate *, gs_transparency_channel_selector_t))
 {
     int csel;
     int code = int_param(osp, 1, &csel);
@@ -228,8 +232,20 @@ zbegintransparencygroup(i_ctx_t *i_ctx_p)
     if (dict_find_string(dop, "CS", &dummy) <= 0) {
         params.ColorSpace = NULL;
     } else {
-        /* the PDF interpreter set the colorspace, so use it */
+        /* the PDF interpreter sets the colorspace, so use it */
         params.ColorSpace = gs_currentcolorspace(igs);
+        /* Lets make sure that it is not an ICC color space that came from
+           a PS CIE color space or a PS color space. These are 1-way color
+           spaces and cannot be used for group color spaces */
+        if (gs_color_space_is_PSCIE(params.ColorSpace))
+            params.ColorSpace = NULL;
+        else if (gs_color_space_is_ICC(params.ColorSpace) &&
+            params.ColorSpace->cmm_icc_profile_data != NULL &&
+            params.ColorSpace->cmm_icc_profile_data->profile_handle != NULL) {
+            if (gscms_is_input(params.ColorSpace->cmm_icc_profile_data->profile_handle,
+                params.ColorSpace->cmm_icc_profile_data->memory))
+                params.ColorSpace = NULL;
+        }
     }
     code = gs_begin_transparency_group(igs, &params, &bbox);
     if (code < 0)
@@ -245,9 +261,23 @@ zendtransparencygroup(i_ctx_t *i_ctx_p)
     return gs_end_transparency_group(igs);
 }
 
+/* - .endtransparencytextgroup - */
+static int
+zendtransparencytextgroup(i_ctx_t *i_ctx_p)
+{
+    return gs_end_transparency_text_group(igs);
+}
+
+/* - .begintransparencytextgroup - */
+static int
+zbegintransparencytextgroup(i_ctx_t *i_ctx_p)
+{
+    return gs_begin_transparency_text_group(igs);
+}
+
 /* <cs_set?> <paramdict> <llx> <lly> <urx> <ury> .begintransparencymaskgroup -	*/
 /*             cs_set == false if we are inheriting the colorspace		*/
-static int tf_using_function(floatp, float *, void *);
+static int tf_using_function(double, float *, void *);
 static int
 zbegintransparencymaskgroup(i_ctx_t *i_ctx_p)
 {
@@ -264,7 +294,7 @@ zbegintransparencymaskgroup(i_ctx_t *i_ctx_p)
     check_type(*dop, t_dictionary);
     check_dict_read(*dop);
     if (dict_find_string(dop, "Subtype", &pparam) <= 0)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     if ((code = enum_param(imemory, pparam, subtype_names)) < 0)
         return code;
     gs_trans_mask_params_init(&params, code);
@@ -275,6 +305,7 @@ zbegintransparencymaskgroup(i_ctx_t *i_ctx_p)
         return code;
     else if (code > 0)
         params.Background_components = code;
+
     if ((code = dict_floats_param(imemory, dop, "GrayBackground",
                     1, &params.GrayBackground, NULL)) < 0)
         return code;
@@ -282,16 +313,30 @@ zbegintransparencymaskgroup(i_ctx_t *i_ctx_p)
         gs_function_t *pfn = ref_function(pparam);
 
         if (pfn == 0 || pfn->params.m != 1 || pfn->params.n != 1)
-            return_error(e_rangecheck);
+            return_error(gs_error_rangecheck);
         params.TransferFunction = tf_using_function;
         params.TransferFunction_data = pfn;
     }
     code = rect_param(&bbox, op);
     if (code < 0)
         return code;
+    check_type(op[-5], t_boolean);
+
     /* Is the colorspace set for this mask ? */
     if (op[-5].value.boolval) {
                 params.ColorSpace = gs_currentcolorspace(igs);
+                /* Lets make sure that it is not an ICC color space that came from
+                a PS CIE color space or a PS color space. These are 1-way color
+                spaces and cannot be used for group color spaces */
+                if (gs_color_space_is_PSCIE(params.ColorSpace))
+                    params.ColorSpace = NULL;
+                else if (gs_color_space_is_ICC(params.ColorSpace) &&
+                    params.ColorSpace->cmm_icc_profile_data != NULL &&
+                    params.ColorSpace->cmm_icc_profile_data->profile_handle != NULL) {
+                    if (gscms_is_input(params.ColorSpace->cmm_icc_profile_data->profile_handle,
+                        params.ColorSpace->cmm_icc_profile_data->memory))
+                        params.ColorSpace = NULL;
+                }
     } else {
         params.ColorSpace = NULL;
     }
@@ -302,18 +347,28 @@ zbegintransparencymaskgroup(i_ctx_t *i_ctx_p)
     return code;
 }
 
-/* - .begintransparencymaskimage - */
+/* <paramdict> .begintransparencymaskimage <paramdict> */
 static int
 zbegintransparencymaskimage(i_ctx_t *i_ctx_p)
 {
+    os_ptr dop = osp;
     gs_transparency_mask_params_t params;
     gs_rect bbox = { { 0, 0} , { 1, 1} };
     int code;
     gs_color_space *gray_cs = gs_cspace_new_DeviceGray(imemory);
 
+    check_type(*dop, t_dictionary);
+    check_dict_read(*dop);
     if (!gray_cs)
-        return_error(e_VMerror);
+        return_error(gs_error_VMerror);
     gs_trans_mask_params_init(&params, TRANSPARENCY_MASK_Luminosity);
+    if ((code = dict_float_array_check_param(imemory, dop, "Matte",
+                                  GS_CLIENT_COLOR_MAX_COMPONENTS,
+                                  params.Matte, NULL, 0,
+                                  gs_error_rangecheck)) < 0)
+        return code;
+    else if (code > 0)
+        params.Matte_components = code;
     code = gs_begin_transparency_mask(igs, &params, &bbox, true);
     if (code < 0)
         return code;
@@ -323,7 +378,7 @@ zbegintransparencymaskimage(i_ctx_t *i_ctx_p)
 
 /* Implement the TransferFunction using a Function. */
 static int
-tf_using_function(floatp in_val, float *out, void *proc_data)
+tf_using_function(double in_val, float *out, void *proc_data)
 {
     float in = in_val;
     gs_function_t *const pfn = proc_data;
@@ -361,7 +416,7 @@ zimage3x(i_ctx_t *i_ctx_p)
     memset(&image, 0, sizeof(gs_image3x_t));
     gs_image3x_t_init(&image, NULL);
     if (dict_find_string(op, "DataDict", &pDataDict) <= 0)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     if ((code = pixel_image_params(i_ctx_p, pDataDict,
                    (gs_pixel_image_t *)&image, &ip_data,
                    16, false, gs_currentcolorspace(igs))) < 0 ||
@@ -415,7 +470,7 @@ image_params *pip_data, const char *dict_name,
         ip_mask.MultipleDataSources ||
         mcode != (pixm->InterleaveType != 3)
         )
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     if (pixm->InterleaveType == 3) {
         /* Insert the mask DataSource before the data DataSources. */
         memmove(&pip_data->DataSource[1], &pip_data->DataSource[0],
@@ -434,8 +489,37 @@ zpushpdf14devicefilter(i_ctx_t *i_ctx_p)
 {
     int code;
     os_ptr op = osp;
+    gx_device *cdev = gs_currentdevice_inline(igs);
 
     check_type(*op, t_integer);
+    /* Bug 698087: In case some program uses our .pushpdf14devicefilter  make	*/
+    /*             sure that the device knows that we are using the pdf14	*/
+    /*             transparency. Note this will close and re-open the device	*/
+    /*             and erase the page. This should not occur with PDF files.	*/
+    if (cdev->page_uses_transparency == 0) {
+        gs_c_param_list list;
+        bool bool_true = 1;
+
+        gs_c_param_list_write(&list, imemory);
+        code = param_write_bool((gs_param_list *)&list, "PageUsesTransparency", &bool_true);
+        if ( code >= 0) {
+            gs_c_param_list_read(&list);
+            code = gs_gstate_putdeviceparams(igs, cdev, (gs_param_list *)&list);
+        }
+        gs_c_param_list_release(&list);
+        if (code < 0)
+            return code;
+        if (cdev->is_open) {
+            if ((code = gs_closedevice((gx_device *)cdev)) < 0)
+                return code;
+            if (dev_proc(cdev, dev_spec_op)(cdev, gxdso_is_pdf14_device, NULL, 0) > 0)
+                pdf14_disable_device(cdev);	/* should already be disabled  (bug 698306) */
+        }
+        if ((code = gs_opendevice((gx_device *)cdev)) < 0)
+            return code;
+        if ((code = gs_erasepage(igs)) < 0)
+            return code;
+    }
     code = gs_push_pdf14trans_device(igs, false);
     if (code < 0)
         return code;
@@ -449,6 +533,13 @@ static int
 zpoppdf14devicefilter(i_ctx_t *i_ctx_p)
 {
     return gs_pop_pdf14trans_device(igs, false);
+}
+
+/* Something has gone terribly wrong */
+static int
+zabortpdf14devicefilter(i_ctx_t *i_ctx_p)
+{
+    return gs_abort_pdf14trans_device(igs);
 }
 
 /* This is used to communicate to the transparency compositor
@@ -477,6 +568,90 @@ zpopextendedgstate(i_ctx_t *i_ctx_p)
     return(code);
 }
 
+static int
+zsetstrokeconstantalpha(i_ctx_t *i_ctx_p)
+{
+    os_ptr op = osp;
+    double value;
+
+    if (real_param(op, &value) < 0)
+        return_op_typecheck(op);
+
+    gs_setstrokeconstantalpha(igs, (float)value);
+    pop(1);
+    return 0;
+}
+
+static int
+zgetstrokeconstantalpha(i_ctx_t *i_ctx_p)
+{
+    return current_float_value(i_ctx_p, gs_getstrokeconstantalpha);
+}
+
+static int
+zsetfillconstantalpha(i_ctx_t *i_ctx_p)
+{
+    os_ptr op = osp;
+    double value;
+
+    if (real_param(op, &value) < 0)
+        return_op_typecheck(op);
+
+    gs_setfillconstantalpha(igs, (float)value);
+    pop(1);
+    return 0;
+}
+
+static int
+zgetfillconstantalpha(i_ctx_t *i_ctx_p)
+{
+    return current_float_value(i_ctx_p, gs_getfillconstantalpha);
+}
+
+static int
+zsetalphaisshape(i_ctx_t *i_ctx_p)
+{
+    os_ptr op = osp;
+
+    check_type(*op, t_boolean);
+    gs_setalphaisshape(igs, op->value.boolval);
+    pop(1);
+
+    return 0;
+}
+
+static int
+zgetalphaisshape(i_ctx_t *i_ctx_p)
+{
+    os_ptr op = osp;
+
+    push(1);
+    make_bool(op, gs_getalphaisshape(igs));
+    return 0;
+}
+
+static int
+zsetSMask(i_ctx_t *i_ctx_p)
+{
+    os_ptr op = osp;
+
+    check_op(1);
+
+    istate->SMask = *op;
+    pop(1);
+    return 0;
+}
+
+static int
+zcurrentSMask(i_ctx_t *i_ctx_p)
+{
+    os_ptr op = osp;
+
+    push(1);
+    *op = istate->SMask;
+    return 0;
+}
+
 /* ------ Initialization procedure ------ */
 
 /* We need to split the table because of the 16-element limit. */
@@ -496,11 +671,26 @@ const op_def ztrans1_op_defs[] = {
 const op_def ztrans2_op_defs[] = {
     {"5.begintransparencygroup", zbegintransparencygroup},
     {"0.endtransparencygroup", zendtransparencygroup},
+    { "0.endtransparencytextgroup", zendtransparencytextgroup },
+    { "0.begintransparencytextgroup", zbegintransparencytextgroup },
     {"5.begintransparencymaskgroup", zbegintransparencymaskgroup},
-    {"5.begintransparencymaskimage", zbegintransparencymaskimage},
+    {"1.begintransparencymaskimage", zbegintransparencymaskimage},
     {"1.endtransparencymask", zendtransparencymask},
     {"1.image3x", zimage3x},
     {"1.pushpdf14devicefilter", zpushpdf14devicefilter},
     {"0.poppdf14devicefilter", zpoppdf14devicefilter},
+    {"0.abortpdf14devicefilter", zabortpdf14devicefilter},
+    op_def_end(0)
+};
+
+const op_def ztrans3_op_defs[] = {
+    {"1.setstrokeconstantalpha", zsetstrokeconstantalpha},
+    {"0.currentstrokeconstantalpha", zgetstrokeconstantalpha},
+    {"1.setfillconstantalpha", zsetfillconstantalpha},
+    {"0.currentfillconstantalpha", zgetfillconstantalpha},
+    {"1.setalphaisshape", zsetalphaisshape},
+    {"0.currentalphaisshape", zgetalphaisshape},
+    {"1.setSMask", zsetSMask},
+    {"0.currentSMask", zcurrentSMask},
     op_def_end(0)
 };

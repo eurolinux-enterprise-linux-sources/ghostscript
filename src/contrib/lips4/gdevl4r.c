@@ -505,11 +505,11 @@ lips4_put_params(gx_device * pdev, gs_param_list * plist)
                 ecode = gs_error_limitcheck;
                 goto pmediae;
             } else {   /* Check the validity of ``MediaType'' characters */
-                if (strcmp(pmedia.data, "PlainPaper") != 0 &&
-                    strcmp(pmedia.data, "OHP") != 0 &&
-                    strcmp(pmedia.data, "TransparencyFilm") != 0 &&	/* same as OHP */
-                    strcmp(pmedia.data, "GlossyFilm") != 0 &&
-                    strcmp(pmedia.data, "CardBoard") != 0
+                if (strcmp((const char *)pmedia.data, "PlainPaper") != 0 &&
+                    strcmp((const char *)pmedia.data, "OHP") != 0 &&
+                    strcmp((const char *)pmedia.data, "TransparencyFilm") != 0 &&	/* same as OHP */
+                    strcmp((const char *)pmedia.data, "GlossyFilm") != 0 &&
+                    strcmp((const char *)pmedia.data, "CardBoard") != 0
                     ) {
                     ecode = gs_error_rangecheck;
                     goto pmediae;
@@ -775,9 +775,9 @@ lips2p_image_out(gx_device_printer * pdev, FILE * prn_stream, int x, int y, int 
     move_cap(pdev, prn_stream, x, y);
 
     Len = lips_mode3format_encode(lprn->TmpBuf, lprn->CompBuf, width / 8 * height);
-    sprintf(raw_str, "%c%d;%d;%d.r", LIPS_CSI,
+    gs_sprintf(raw_str, "%c%d;%d;%d.r", LIPS_CSI,
             width / 8 * height, width / 8, (int)pdev->x_pixels_per_inch);
-    sprintf(comp_str, "%c%d;%d;%d;9;%d.r", LIPS_CSI,
+    gs_sprintf(comp_str, "%c%d;%d;%d;9;%d.r", LIPS_CSI,
             Len, width / 8, (int)pdev->x_pixels_per_inch, height);
 
     if (Len < width / 8 * height - strlen(comp_str) + strlen(raw_str)) {
@@ -806,11 +806,11 @@ lips4_image_out(gx_device_printer * pdev, FILE * prn_stream, int x, int y, int w
     Len = lips_packbits_encode(lprn->TmpBuf, lprn->CompBuf, width / 8 * height);
     Len_rle = lips_rle_encode(lprn->TmpBuf, lprn->CompBuf2, width / 8 * height);
 
-    sprintf(raw_str, "%c%d;%d;%d.r", LIPS_CSI,
+    gs_sprintf(raw_str, "%c%d;%d;%d.r", LIPS_CSI,
             width / 8 * height, width / 8, (int)pdev->x_pixels_per_inch);
 
     if (Len < Len_rle) {
-        sprintf(comp_str, "%c%d;%d;%d;11;%d.r", LIPS_CSI,
+        gs_sprintf(comp_str, "%c%d;%d;%d;11;%d.r", LIPS_CSI,
                 Len, width / 8, (int)pdev->x_pixels_per_inch, height);
         if (Len < width / 8 * height - strlen(comp_str) + strlen(raw_str)) {
             fprintf(prn_stream, "%s", comp_str);
@@ -821,7 +821,7 @@ lips4_image_out(gx_device_printer * pdev, FILE * prn_stream, int x, int y, int w
             fwrite(lprn->TmpBuf, 1, width / 8 * height, prn_stream);
         }
     } else {
-        sprintf(comp_str, "%c%d;%d;%d;10;%d.r", LIPS_CSI,
+        gs_sprintf(comp_str, "%c%d;%d;%d;10;%d.r", LIPS_CSI,
                 Len, width / 8, (int)pdev->x_pixels_per_inch, height);
         if (Len_rle < width / 8 * height - strlen(comp_str) + strlen(raw_str)) {
             fprintf(prn_stream, "%s", comp_str);

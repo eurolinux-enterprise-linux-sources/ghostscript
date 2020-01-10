@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -21,15 +21,15 @@
 #include "gxfrac.h"
 
 /* Forward references */
-static void color_hsb_to_rgb(floatp h, floatp s, floatp b, float rgb[3]);
-static void color_rgb_to_hsb(floatp r, floatp g, floatp b, float hsb[3]);
+static void color_hsb_to_rgb(double h, double s, double b, float rgb[3]);
+static void color_rgb_to_hsb(double r, double g, double b, float hsb[3]);
 
 /* Force a parameter into the range [0.0..1.0]. */
 #define force_unit(p) (p < 0.0 ? 0.0 : p > 1.0 ? 1.0 : p)
 
 /* sethsbcolor */
 int
-gs_sethsbcolor(gs_state * pgs, floatp h, floatp s, floatp b)
+gs_sethsbcolor(gs_gstate * pgs, double h, double s, double b)
 {
     float rgb[3];
 
@@ -39,7 +39,7 @@ gs_sethsbcolor(gs_state * pgs, floatp h, floatp s, floatp b)
 
 /* currenthsbcolor */
 int
-gs_currenthsbcolor(const gs_state * pgs, float pr3[3])
+gs_currenthsbcolor(const gs_gstate * pgs, float pr3[3])
 {
     float rgb[3];
 
@@ -55,7 +55,7 @@ gs_currenthsbcolor(const gs_state * pgs, float pr3[3])
 
 /* Convert RGB to HSB. */
 static void
-color_rgb_to_hsb(floatp r, floatp g, floatp b, float hsb[3])
+color_rgb_to_hsb(double r, double g, double b, float hsb[3])
 {
     frac red = float2frac(r), green = float2frac(g), blue = float2frac(b);
 
@@ -96,14 +96,14 @@ color_rgb_to_hsb(floatp r, floatp g, floatp b, float hsb[3])
 
 /* Convert HSB to RGB. */
 static void
-color_hsb_to_rgb(floatp hue, floatp saturation, floatp brightness, float rgb[3])
+color_hsb_to_rgb(double hue, double saturation, double brightness, float rgb[3])
 {
     if (saturation == 0) {
         rgb[0] = rgb[1] = rgb[2] = brightness;
     } else {			/* Convert hsb to rgb. */
         /* We rely on the fact that the product of two */
         /* fracs fits into an unsigned long. */
-        floatp h6 = hue * 6;
+        double h6 = hue * 6;
         ulong V = float2frac(brightness);	/* force arithmetic to long */
         frac S = float2frac(saturation);
         int I = (int)h6;

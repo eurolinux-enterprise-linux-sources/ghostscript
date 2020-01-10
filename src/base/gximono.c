@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -28,13 +28,12 @@
 #include "gxdevice.h"
 #include "gxcmap.h"
 #include "gxdcolor.h"
-#include "gxistate.h"
+#include "gxgstate.h"
 #include "gxdevmem.h"
 #include "gdevmem.h"            /* for mem_mono_device */
 #include "gxcpath.h"
 #include "gximage.h"
 #include "gzht.h"
-#include "vdtrace.h"
 #include "gsicc.h"
 #include "gsicc_cache.h"
 #include "gsicc_cms.h"
@@ -72,12 +71,10 @@ gs_image_class_3_mono(gx_image_enum * penum)
     /* Set up the link now */
     const gs_color_space *pcs;
     gsicc_rendering_param_t rendering_params;
-    int num_des_comps;
     cmm_dev_profile_t *dev_profile;
     bool dev_color_ok = false;
-    bool is_planar_dev = (dev_proc(penum->dev, dev_spec_op)(penum->dev,
-                                 gxdso_is_native_planar, NULL, 0) > 0);
-            
+    bool is_planar_dev = penum->dev->is_planar;
+
     if (penum->spp == 1) {
         /* At this point in time, only use the ht approach if our device
            uses halftoning, and our source image is a reasonable size.  We
@@ -102,7 +99,8 @@ gs_image_class_3_mono(gx_image_enum * penum)
         if (use_fast_code && penum->pcs != NULL && dev_color_ok &&
             penum->bps == 8 && (penum->posture == image_portrait
             || penum->posture == image_landscape) &&
-            penum->image_parent_type == gs_image_type1) {
+            penum->image_parent_type == gs_image_type1 &&
+            gx_transfer_is_monotonic(penum->pgs, 0)) {
             penum->icc_setup.need_decode = false;
             /* Check if we need to do any decoding.  */
             if ( penum->map[0].decoding != sd_none ) {
@@ -113,13 +111,15 @@ gs_image_class_3_mono(gx_image_enum * penum)
                 }
             }
             code = dev_proc(penum->dev, get_profile)(penum->dev, &dev_profile);
-            num_des_comps = gsicc_get_device_profile_comps(dev_profile);
+            if (code < 0)
+                return NULL;    /* This function does not return errors, best we can do is say 'we can't handle this' */
+
             /* Define the rendering intents */
-            rendering_params.black_point_comp = penum->pis->blackptcomp;
+            rendering_params.black_point_comp = penum->pgs->blackptcomp;
             rendering_params.graphics_type_tag = GS_IMAGE_TAG;
             rendering_params.override_icc = false;
             rendering_params.preserve_black = gsBKPRESNOTSPECIFIED;
-            rendering_params.rendering_intent = penum->pis->renderingintent;
+            rendering_params.rendering_intent = penum->pgs->renderingintent;
             rendering_params.cmm = gsCMM_DEFAULT;
             if (gs_color_space_get_index(penum->pcs) ==
                 gs_color_space_index_Indexed) {
@@ -139,13 +139,12 @@ gs_image_class_3_mono(gx_image_enum * penum)
 
             penum->icc_setup.is_lab = pcs->cmm_icc_profile_data->islab;
             penum->icc_setup.must_halftone = gx_device_must_halftone(penum->dev);
-            /* The effective transfer is built into the threshold array and
-               need require a special lookup to decode it */
-            penum->icc_setup.has_transfer = 
-                gx_has_transfer(penum->pis, num_des_comps);
-            if (penum->icc_setup.is_lab) penum->icc_setup.need_decode = false;
+            /* The effective transfer is built into the threshold array */
+            penum->icc_setup.has_transfer = false;
+            if (penum->icc_setup.is_lab)
+                penum->icc_setup.need_decode = false;
             if (penum->icc_link == NULL) {
-                penum->icc_link = gsicc_get_link(penum->pis, penum->dev, pcs, NULL,
+                penum->icc_link = gsicc_get_link(penum->pgs, penum->dev, pcs, NULL,
                     &rendering_params, penum->memory);
             }
             /* PS CIE color spaces may have addition decoding that needs to
@@ -163,7 +162,7 @@ gs_image_class_3_mono(gx_image_enum * penum)
                 }
             }
             /* If the image has more than 256 pixels then go ahead and
-               precompute the con-tone device colors for all of our 256 source
+               precompute the contone device colors for all of our 256 source
                values.  We should not be taking this path for cases where
                we have lots of tiny little images.  Mark those that are
                transparent or masked also at this time.  Since halftoning will
@@ -211,11 +210,12 @@ not_fast_halftoning:
 }
 
 #define USE_SET_GRAY_FUNCTION 0
+#if USE_SET_GRAY_FUNCTION
 /* Temporary function to make it easier to debug the uber-macro below */
 static inline int
 image_set_gray(byte sample_value, const bool masked, uint mask_base,
                 uint mask_limit, gx_device_color **ppdevc, gs_client_color *cc,
-                const gs_color_space *pcs, const gs_imager_state *pis,
+                const gs_color_space *pcs, const gs_gstate *pgs,
                 gx_device * dev, gs_color_select_t gs_color_select_source,
                 gx_image_enum * penum)
 {
@@ -242,16 +242,17 @@ image_set_gray(byte sample_value, const bool masked, uint mask_base,
               penum->map[0].decode_base + (sample_value) * penum->map[0].decode_factor;
             }
             remap_color = pcs->type->remap_color;
-            code = (*remap_color)(cc, pcs, pdevc, pis, dev, gs_color_select_source);
+            code = (*remap_color)(cc, pcs, pdevc, pgs, dev, gs_color_select_source);
             return(code);
         }
     } else if (!color_is_pure(pdevc)) {
-        code = gx_color_load_select(pdevc, pis, dev, gs_color_select_source);
+        code = gx_color_load_select(pdevc, pgs, dev, gs_color_select_source);
         if (code < 0)
             return(code);
     }
     return(0);
 }
+#endif
 
 /*
  * Rendering procedure for general mono-component images, dealing with
@@ -264,7 +265,7 @@ static int
 image_render_mono(gx_image_enum * penum, const byte * buffer, int data_x,
                   uint w, int h, gx_device * dev)
 {
-    const gs_imager_state *pis = penum->pis;
+    const gs_gstate *pgs = penum->pgs;
     gs_logical_operation_t lop = penum->log_op;
     const bool masked = penum->masked;
     const gs_color_space *pcs = NULL;   /* only set for non-masks */
@@ -278,7 +279,7 @@ image_render_mono(gx_image_enum * penum, const byte * buffer, int data_x,
          penum->mask_color.values[1] - mask_base + 1 : 0);
 /*
  * Free variables of IMAGE_SET_GRAY:
- *   Read: penum, pis, dev, mask_base, mask_limit
+ *   Read: penum, pgs, dev, mask_base, mask_limit
  *   Set: pdevc, code, cc
  */
 #define IMAGE_SET_GRAY(sample_value)\
@@ -289,12 +290,12 @@ image_render_mono(gx_image_enum * penum, const byte * buffer, int data_x,
             color_set_null(pdevc);\
         else {\
             decode_sample(sample_value, cc, 0);\
-            code = (*remap_color)(&cc, pcs, pdevc, pis, dev, gs_color_select_source);\
+            code = (*remap_color)(&cc, pcs, pdevc, pgs, dev, gs_color_select_source);\
             if (code < 0)\
                 goto err;\
         }\
     } else if (!color_is_pure(pdevc)) {\
-        code = gx_color_load_select(pdevc, pis, dev, gs_color_select_source);\
+        code = gx_color_load_select(pdevc, pgs, dev, gs_color_select_source);\
         if (code < 0)\
             goto err;\
     }\
@@ -359,7 +360,7 @@ image_render_mono(gx_image_enum * penum, const byte * buffer, int data_x,
              **********************/
 
             pdevc = penum->icolor1;
-            code = gx_color_load(pdevc, pis, dev);
+            code = gx_color_load(pdevc, pgs, dev);
             if (code < 0)
                 return code;
             if ((stop <= psrc) && (penum->adjust == 0) &&
@@ -394,29 +395,44 @@ image_render_mono(gx_image_enum * penum, const byte * buffer, int data_x,
                 dda_step_add(dxx4, next.x.step);
                 for (;;) {      /* Skip a run of zeros. */
                     while (!psrc[0])
-                        if (!psrc[1]) {
-                            if (!psrc[2]) {
-                                if (!psrc[3]) {
-                                    psrc += 4;
-                                    dda_state_next(next.x.state, dxx4);
-                                    continue;
+                        if (psrc + 4 <= endp) {
+                            /* We can use fast skipping */
+                            if (!psrc[1]) {
+                                if (!psrc[2]) {
+                                    if (!psrc[3]) {
+                                        psrc += 4;
+                                        dda_state_next(next.x.state, dxx4);
+                                        if (psrc >= endp)
+                                            break;
+                                        continue;
+                                    }
+                                    psrc += 3;
+                                    dda_state_next(next.x.state, dxx3);
+                                    break;
                                 }
-                                psrc += 3;
-                                dda_state_next(next.x.state, dxx3);
+                                psrc += 2;
+                                dda_state_next(next.x.state, dxx2);
+                                break;
+                            } else {
+                                ++psrc;
+                                dda_next(next.x);
                                 break;
                             }
-                            psrc += 2;
-                            dda_state_next(next.x.state, dxx2);
-                            break;
                         } else {
-                            ++psrc;
-                            dda_next(next.x);
-                            break;
+                            /* We're too close to the end - skip 1 at a time */
+                            while (!psrc[0]) {
+                                ++psrc;
+                                dda_next(next.x);
+                                if (psrc >= endp)
+                                    break;
+                            }
+                            if (psrc >= endp)
+                                break;
                         }
                     xrun = xl;
                     if (psrc >= stop)
                         break;
-                    for (; *psrc; ++psrc)
+                    for (; psrc < endp && *psrc; ++psrc)
                         dda_next(next.x);
                     code = (*fill_pgram)(dev, xrun, yrun,
                                          xl - xrun + ax, fixed_0, fixed_0, dyy,
@@ -449,12 +465,12 @@ image_render_mono(gx_image_enum * penum, const byte * buffer, int data_x,
                 dda_translate(next.y, -ay);
                 ay <<= 1;
                 for (;;) {
-                    for (; !*psrc; ++psrc)
+                    for (; psrc < endp && !*psrc; ++psrc)
                         dda_next(next.y);
                     yrun = ytf;
                     if (psrc >= stop)
                         break;
-                    for (; *psrc; ++psrc)
+                    for (; psrc < endp && *psrc; ++psrc)
                         dda_next(next.y);
                     code = (*fill_pgram)(dev, xrun, yrun, fixed_0,
                                          ytf - yrun + ay, dyx, fixed_0,
@@ -483,7 +499,7 @@ image_render_mono(gx_image_enum * penum, const byte * buffer, int data_x,
                 stop = endp;
                 for (;;) {
                     /* skip forward until we find a 1 bit */
-                    for (; !*psrc; ++psrc) {
+                    for (; psrc < stop && !*psrc; ++psrc) {
                         dda_next(next.x);
                         dda_next(next.y);
                     }
@@ -509,46 +525,134 @@ image_render_mono(gx_image_enum * penum, const byte * buffer, int data_x,
 
             }
 
-        } else if (penum->posture == image_portrait ||
-                   penum->posture == image_landscape
-            ) {
-
+        } else if (penum->posture == image_portrait) {
             /**************************************
-             * Slow case, not masked, orthogonal. *
+             * Slow case, not masked, portrait. *
              **************************************/
+            dev_proc_fill_rectangle((*fill_proc)) =
+                dev_proc(dev, fill_rectangle);
+            int iy = fixed2int_pixround(yrun);
+            int ih = fixed2int_pixround(yrun + pdyy) - iy;
+            if (ih < 0)
+                iy += ih, ih = -ih;
 
             /* In this case, we can fill runs quickly. */
             /****** DOESN'T DO ADJUSTMENT ******/
             if (stop <= psrc)
                 goto last;
             for (;;) {
-                if (*psrc != run) {
-                    if (run != htrun) {
-                        htrun = run;
+                byte c = *psrc++;
+                if (c != run) {
+                    int ix = fixed2int_pixround(xrun);
+                    int iw = fixed2int_pixround(xl) - ix;
+                    if (iw < 0)
+                        ix += iw, iw = -iw;
+                    switch (run)
+                    {
+                    case 0:
+                        if (!color_is_pure(penum->icolor0))
+                            goto ht_port;
+                        code = (*fill_proc) (dev, ix, iy, iw, ih,
+                                             penum->icolor0->colors.pure);
+                        break;
+                    case 0xff:
+                        if (!color_is_pure(penum->icolor1))
+                            goto ht_port;
+                        code = (*fill_proc) (dev, ix, iy, iw, ih,
+                                             penum->icolor1->colors.pure);
+                        break;
+                    default:
+                        ht_port:
+                        if (run != htrun) {
+                            htrun = run;
 #if USE_SET_GRAY_FUNCTION
-                        code = image_set_gray(run,masked,mask_base,mask_limit,&pdevc,
-                            &cc,pcs,pis,dev,gs_color_select_source,penum);
-                        if (code < 0)
-                            goto err;
+                            code = image_set_gray(run,masked,mask_base,mask_limit,&pdevc,
+                                    &cc,pcs,pgs,dev,gs_color_select_source,penum);
+                            if (code < 0)
+                                goto err;
 #else
-                        IMAGE_SET_GRAY(run);
+                            IMAGE_SET_GRAY(run);
 #endif
+                        }
+                        code = gx_fill_rectangle_device_rop(ix, iy, iw, ih,
+                                                            pdevc, dev, lop);
                     }
-                    code = (*fill_pgram)(dev, xrun, yrun, xl - xrun,
-                                         ytf - yrun, pdyx, pdyy,
-                                         pdevc, lop);
+                    if (code < 0)
+                        goto err;
+                    xrun = xl;
+                    rsrc = psrc;
+                    if (psrc > stop)
+                        break;
+                    run = c;
+                }
+                dda_next(next.x);
+                if (psrc >= endp)
+                    break;
+            }
+        } else if (penum->posture == image_landscape) {
+
+            /**************************************
+             * Slow case, not masked, landscape. *
+             **************************************/
+            dev_proc_fill_rectangle((*fill_proc)) =
+                dev_proc(dev, fill_rectangle);
+            int ix = fixed2int_pixround(xrun);
+            int iw = fixed2int_pixround(xrun + pdyx) - ix;
+            if (iw < 0)
+                ix += iw, iw = -iw;
+
+            /* In this case, we can fill runs quickly. */
+            /****** DOESN'T DO ADJUSTMENT ******/
+            if (stop <= psrc)
+                goto last;
+            for (;;) {
+                byte c = *psrc++;
+                if (c != run) {
+                    int iy = fixed2int_pixround(yrun);
+                    int ih = fixed2int_pixround(ytf) - iy;
+                    if (ih < 0)
+                        iy += ih, ih = -ih;
+                    switch (run)
+                    {
+                    case 0:
+                        if (!color_is_pure(penum->icolor0))
+                            goto ht_land;
+                        code = (*fill_proc) (dev, ix, iy, iw, ih,
+                                             penum->icolor0->colors.pure);
+                        break;
+                    case 0xff:
+                        if (!color_is_pure(penum->icolor1))
+                            goto ht_land;
+                        code = (*fill_proc) (dev, ix, iy, iw, ih,
+                                             penum->icolor1->colors.pure);
+                        break;
+                    default:
+                        ht_land:
+                        if (run != htrun) {
+                            htrun = run;
+#if USE_SET_GRAY_FUNCTION
+                            code = image_set_gray(run,masked,mask_base,mask_limit,&pdevc,
+                                    &cc,pcs,pgs,dev,gs_color_select_source,penum);
+                            if (code < 0)
+                                goto err;
+#else
+                            IMAGE_SET_GRAY(run);
+#endif
+                        }
+                        code = gx_fill_rectangle_device_rop(ix, iy, iw, ih,
+                                                            pdevc, dev, lop);
+                    }
                     if (code < 0)
                         goto err;
                     yrun = ytf;
-                    xrun = xl;
                     rsrc = psrc;
-                    if (psrc >= stop)
+                    if (psrc > stop)
                         break;
-                    run = *psrc;
+                    run = c;
                 }
-                psrc++;
-                dda_next(next.x);
                 dda_next(next.y);
+                if (psrc >= endp)
+                    break;
             }
         } else {
 
@@ -569,7 +673,7 @@ image_render_mono(gx_image_enum * penum, const byte * buffer, int data_x,
                     htrun = run;
 #if USE_SET_GRAY_FUNCTION
                     code = image_set_gray(run,masked,mask_base,mask_limit,&pdevc,
-                        &cc,pcs,pis,dev,gs_color_select_source,penum);
+                        &cc,pcs,pgs,dev,gs_color_select_source,penum);
                     if (code < 0)
                         goto err;
 #else
@@ -596,7 +700,7 @@ image_render_mono(gx_image_enum * penum, const byte * buffer, int data_x,
             if (!masked) {
 #if USE_SET_GRAY_FUNCTION
                     code = image_set_gray(*stop, masked,mask_base,mask_limit,&pdevc,
-                        &cc,pcs,pis,dev,gs_color_select_source,penum);
+                        &cc,pcs,pgs,dev,gs_color_select_source,penum);
                     if (code < 0)
                         goto err;
 #else
@@ -651,6 +755,8 @@ image_render_mono(gx_image_enum * penum, const byte * buffer, int data_x,
                             if (psrc[3] == run) {
                                 psrc += 4;
                                 dda_state_next(next.x.state, dxx4);
+                                if (psrc >= endp)
+                                    break;
                                 goto skf;
                             } else {
                                 psrc += 4;
@@ -704,7 +810,7 @@ image_render_mono(gx_image_enum * penum, const byte * buffer, int data_x,
                             if (run != htrun) {
 #if USE_SET_GRAY_FUNCTION
                                 code = image_set_gray(run, masked,mask_base,mask_limit,&pdevc,
-                                    &cc,pcs,pis,dev,gs_color_select_source,penum);
+                                    &cc,pcs,pgs,dev,gs_color_select_source,penum);
                                 if (code < 0)
                                     goto err;
 #else
@@ -714,8 +820,6 @@ image_render_mono(gx_image_enum * penum, const byte * buffer, int data_x,
                             }
                             code = gx_fill_rectangle_device_rop(xi, yt, wi, iht,
                                                                  pdevc, dev, lop);
-                            vd_rect(int2fixed(xi), int2fixed(yt), int2fixed(xi + wi), int2fixed(yt + iht),
-                                0, pdevc->colors.pure /* wrong with halftones */);
                     }
                     if (code < 0)
                         goto err;
@@ -751,7 +855,7 @@ image_render_mono(gx_image_enum * penum, const byte * buffer, int data_x,
             }
 #if USE_SET_GRAY_FUNCTION
             code = image_set_gray(*stop, masked,mask_base,mask_limit,&pdevc,
-                &cc,pcs,pis,dev,gs_color_select_source,penum);
+                &cc,pcs,pgs,dev,gs_color_select_source,penum);
             if (code < 0)
                 goto err;
 #else
@@ -796,16 +900,17 @@ image_render_mono_ht(gx_image_enum * penum_orig, const byte * buffer, int data_x
     int position, k, j;
     int offset_bits = penum->ht_offset_bits;
     int contone_stride = 0;  /* Not used in landscape case */
-    fixed scale_factor, offset;
+    fixed offset;
     int src_size;
     bool flush_buff = false;
     int offset_contone[GX_DEVICE_COLOR_MAX_COMPONENTS];    /* to ensure 128 bit boundary */
     int offset_threshold;  /* to ensure 128 bit boundary */
-    gx_dda_int_t dda_ht;
+    gx_dda_fixed dda_ht;
+    int xn, xr;		/* destination position (pixel, not contone buffer offset) */
     int code = 0;
     byte *dev_value;
 
-    if (h == 0) {
+    if (h == 0 || penum->line_size == 0) {      /* line_size == 0, nothing to do */
         if (penum->ht_landscape.count == 0 || posture == image_portrait) {
             return 0;
         } else {
@@ -818,15 +923,19 @@ image_render_mono_ht(gx_image_enum * penum_orig, const byte * buffer, int data_x
     }
     src_size = penum->rect.w;
 
+    /* Set up the dda.  We could move this out but the cost is pretty small */
+    dda_ht = (posture == image_portrait) ? penum->dda.pixel0.x : penum->dda.pixel0.y;
+    if (penum->dxx > 0)
+        dda_translate(dda_ht, -fixed_epsilon);      /* to match rounding in non-fast code */
+
     switch (posture) {
         case image_portrait:
             /* Figure out our offset in the contone and threshold data
                buffers so that we ensure that we are on the 128bit
                memory boundaries when we get offset_bits into the data. */
             /* Can't do this earlier, as GC might move the buffers. */
-            xrun = dda_current(penum->dda.pixel0.x);
-            xrun = xrun - penum->adjust + (fixed_half - fixed_epsilon);
-            dest_width = fixed2int_var_rounded(any_abs(penum->x_extent.x));
+            xrun = dda_current(dda_ht);
+            dest_width = gxht_dda_length(&dda_ht, src_size);
             if (penum->x_extent.x < 0)
                 xrun += penum->x_extent.x;
             vdi = penum->hci;
@@ -840,10 +949,9 @@ image_render_mono_ht(gx_image_enum * penum_orig, const byte * buffer, int data_x
             }
             data_length = dest_width;
             dest_height = fixed2int_var_rounded(any_abs(penum->y_extent.y));
-            scale_factor = float2fixed_rounded((float) src_size / (float) dest_width);
 #ifdef DEBUG
             /* Help in spotting problems */
-            memset(penum->ht_buffer,0x00, penum->ht_stride * vdi * spp_out);
+            memset(penum->ht_buffer, 0x00, penum->ht_stride * vdi * spp_out);
 #endif
             break;
         case image_landscape:
@@ -853,11 +961,12 @@ image_render_mono_ht(gx_image_enum * penum_orig, const byte * buffer, int data_x
                Can't do this earlier as GC may move the buffers.
              */
             vdi = penum->wci;
-            contone_stride = penum->line_size;  
+            contone_stride = penum->line_size;
             dest_width = fixed2int_var_rounded(any_abs(penum->y_extent.x));
-            dest_height = fixed2int_var_rounded(any_abs(penum->x_extent.y));
+            /* match height in gxht_thresh.c dev_width calculation */
+            xrun = dda_current(dda_ht);            /* really yrun, but just used here for landscape */
+            dest_height = gxht_dda_length(&dda_ht, src_size);
             data_length = dest_height;
-            scale_factor = float2fixed_rounded((float) src_size / (float) dest_height);
             offset_threshold = (-(long)(penum->thresh_buffer)) & 15;
             for (k = 0; k < spp_out; k ++) {
                 offset_contone[k] = (- ((long)(penum->line) +
@@ -897,24 +1006,26 @@ image_render_mono_ht(gx_image_enum * penum_orig, const byte * buffer, int data_x
             }
             break;
     }
+    if (flush_buff)
+        goto flush;  /* All done */
+
     /* Get the pointers to our buffers */
     for (k = 0; k < spp_out; k++) {
         if (posture == image_portrait) {
-            devc_contone[k] = penum->line + contone_stride * k + 
+            devc_contone[k] = penum->line + contone_stride * k +
                               offset_contone[k];
         } else {
             devc_contone[k] = penum->line + offset_contone[k] +
                               LAND_BITS * k * contone_stride;
         }
     }
-    if (flush_buff) goto flush;  /* All done */
-    /* Set up the dda.  We could move this out but the cost is pretty small */
-    dda_init_half(dda_ht, 0, src_size, data_length);
+    xr = fixed2int_var_rounded(dda_current(dda_ht));	/* indexes in the destination (contone) */
+
     devc_contone_gray = devc_contone[0];
     if (penum->color_cache == NULL) {
         /* No look-up in the cache to fill the source buffer. Still need to
            have the data at device resolution.  Do these in quick small
-           loops.  This likely could be a vectorized function.  Note that 
+           loops.  This likely could be a vectorized function.  Note that
            since the color_cache is NULL we must be in a case where we
            are going to a monochrome device. */
         switch (posture) {
@@ -929,16 +1040,28 @@ image_render_mono_ht(gx_image_enum * penum_orig, const byte * buffer, int data_x
                             *devc_contone_gray = *(devc_contone_gray+1) = *psrc_temp;
                         }
                     } else {
-                        for (k = 0; k < data_length; k++, devc_contone_gray++) {
-                            *devc_contone_gray = psrc[dda_ht.state.Q];
+                        /* Mono case, forward */
+                        for (k=0; k<src_size; k++) {
                             dda_next(dda_ht);
+                            xn = fixed2int_var_rounded(dda_current(dda_ht));
+                            while (xr < xn) {
+                                *devc_contone_gray++ = *psrc;
+                                xr++;
+                            }           /* at loop exit xn will be >= xr */
+                            psrc++;
                         }
                     }
                 } else {
+                    /* Mono case, backwards */
                     devc_contone_gray += (data_length - 1);
-                    for (k = 0; k < data_length; k++, devc_contone_gray--) {
-                        *devc_contone_gray = psrc[dda_ht.state.Q];
+                    for (k=0; k<src_size; k++) {
                         dda_next(dda_ht);
+                        xn = fixed2int_var_rounded(dda_current(dda_ht));
+                        while (xr > xn) {
+                            *devc_contone_gray-- = *psrc;
+                            xr--;
+                        }           /* at loop exit xn will be >= xr */
+                        psrc++;
                     }
                 }
                 break;
@@ -949,10 +1072,15 @@ image_render_mono_ht(gx_image_enum * penum_orig, const byte * buffer, int data_x
                 if (penum->ht_landscape.flipy) {
                     position = penum->ht_landscape.curr_pos +
                                 LAND_BITS * (data_length - 1);
-                    for (k = 0; k < data_length; k++) {
-                        devc_contone_gray[position] = psrc[dda_ht.state.Q];
-                        position -= LAND_BITS;
+                    for (k=0; k<src_size; k++) {
                         dda_next(dda_ht);
+                        xn = fixed2int_var_rounded(dda_current(dda_ht));
+                        while (xr > xn) {
+                            devc_contone_gray[position] = *psrc;
+                            position -= LAND_BITS;
+                            xr--;
+                        }           /* at loop exit xn will be <= xr */
+                        psrc++;
                     }
                 } else {
                     position = penum->ht_landscape.curr_pos;
@@ -964,19 +1092,24 @@ image_render_mono_ht(gx_image_enum * penum_orig, const byte * buffer, int data_x
                             devc_contone_gray[position] = psrc[k];
                             position += LAND_BITS;
                         }
-                    } else if (scale_factor == fixed_half) {
+                    } else if (src_size*2 == dest_height) {
                         for (k = 0; k < data_length; k+=2) {
-                            offset = fixed2int_rounded(scale_factor * k);
+                            offset = fixed2int_rounded(fixed_half * k);
                             devc_contone_gray[position] =
                                 devc_contone_gray[position + LAND_BITS] = psrc[offset];
                             position += LAND_BITS*2;
                         }
                     } else {
                         /* use dda */
-                        for (k = 0; k < data_length; k++) {
-                            devc_contone_gray[position] = psrc[dda_ht.state.Q];
-                            position += LAND_BITS;
+                        for (k=0; k<src_size; k++) {
                             dda_next(dda_ht);
+                            xn = fixed2int_var_rounded(dda_current(dda_ht));
+                            while (xr < xn) {
+                                devc_contone_gray[position] = *psrc;
+                                position += LAND_BITS;
+                                xr++;
+                            }           /* at loop exit xn will be >= xr */
+                            psrc++;
                         }
                     }
                 }
@@ -998,39 +1131,63 @@ image_render_mono_ht(gx_image_enum * penum_orig, const byte * buffer, int data_x
         switch (posture) {
             case image_portrait:
                 if (penum->dst_width > 0) {
+                    /* loop filling contone values selected from the source */
                     if (spp_out == 1) {
-                        /* Mono case */
-                        for (k = 0; k < data_length; k++) {
-                            *devc_contone_gray++ = color_cache[psrc[dda_ht.state.Q]];
+                        /* Mono case, forward */
+                        for (k=0; k<src_size; k++) {
                             dda_next(dda_ht);
+                            xn = fixed2int_var_rounded(dda_current(dda_ht));
+                            while (xr < xn) {
+                                *devc_contone_gray++ = color_cache[*psrc];
+                                xr++;
+                            }           /* at loop exit xn will be >= xr */
+                            psrc++;
                         }
                     } else {
-                        /* CMYK case */
-                        for (k = 0; k < data_length; k++) {
-                            dev_value = color_cache + psrc[dda_ht.state.Q] * spp_out;
-                            for (j = 0; j < spp_out; j++) {
-                                *(devc_contone[j])++ = dev_value[j];
-                            }
+                        /* CMYK case, forward */
+                        for (k=0; k<src_size; k++) {
                             dda_next(dda_ht);
+                            xn = fixed2int_var_rounded(dda_current(dda_ht));
+                            while (xr < xn) {
+                                dev_value = &(color_cache[*psrc * spp_out]);
+                                for (j = 0; j < spp_out; j++) {
+                                    *(devc_contone[j])++ = dev_value[j];
+                                }
+                                xr++;
+                            }           /* at loop exit xn will be >= xr */
+                            psrc++;
                         }
                     }
                 } else {
                     if (spp_out == 1) {
-                        for (k = data_length-1; k >= 0; k--) {
-                            devc_contone_gray[k] = color_cache[psrc[dda_ht.state.Q]];
+                        /* Mono case, backwards */
+                        devc_contone_gray += data_length - 1;		/* move to end */
+                        for (k=0; k<src_size; k++) {
                             dda_next(dda_ht);
+                            xn = fixed2int_var_rounded(dda_current(dda_ht));
+                            while (xr > xn) {
+                                *devc_contone_gray-- = color_cache[*psrc];
+                                xr--;
+                            }           /* at loop exit xn will be <= xr */
+                            psrc++;
                         }
                     } else {
+                        /* CMYK case, backwards */
                         /* Move to the other end and we will decrement */
                         for (j = 0; j < spp_out; j++) {
                             devc_contone[j] = devc_contone[j] + data_length - 1;
                         }
-                        for (k = 0; k < data_length; k++) {
-                            dev_value = color_cache + psrc[dda_ht.state.Q] * spp_out;
-                            for (j = 0; j < spp_out; j++) {
-                                *(devc_contone[j])-- = dev_value[j];
-                            }
-                            dda_next(dda_ht); 
+                        for (k=0; k<src_size; k++) {
+                            dda_next(dda_ht);
+                            xn = fixed2int_var_rounded(dda_current(dda_ht));
+                            while (xr > xn) {
+                                dev_value = &(color_cache[*psrc * spp_out]);
+                                for (j = 0; j < spp_out; j++) {
+                                    *(devc_contone[j])-- = dev_value[j];
+                                }
+                                xr--;
+                            }           /* at loop exit xn will be <= xr */
+                            psrc++;
                         }
                     }
                 }
@@ -1044,30 +1201,49 @@ image_render_mono_ht(gx_image_enum * penum_orig, const byte * buffer, int data_x
                                 LAND_BITS * (data_length - 1);
                     /* use dda */
                     if (spp_out == 1) {
-                        for (k = 0; k < data_length; k++) {
-                            devc_contone_gray[position] = color_cache[psrc[dda_ht.state.Q]];
-                            position -= LAND_BITS;
+                        /* Mono case */
+                        /* loop filling contone values selected from the source */
+                        for (k=0; k<src_size; k++) {
                             dda_next(dda_ht);
+                            xn = fixed2int_var_rounded(dda_current(dda_ht));
+                            while (xr > xn) {
+                                devc_contone_gray[position] = color_cache[*psrc];
+                                position -= LAND_BITS;
+                                xr--;
+                            }           /* at loop exit xn will be <= xr */
+                            psrc++;
                         }
                     } else {
-                        for (k = 0; k < data_length; k++) {
-                            for (j = 0; j < spp_out; j++) {
-                                *(devc_contone[j] + position) = 
-                                    color_cache[psrc[dda_ht.state.Q] * spp_out + j];
-                            }
-                            position -= LAND_BITS;
+                        /* CMYK case */
+                        for (k=0; k<src_size; k++) {
                             dda_next(dda_ht);
+                            xn = fixed2int_var_rounded(dda_current(dda_ht));
+                            while (xr > xn) {
+                                dev_value = &(color_cache[*psrc * spp_out]);
+                                for (j = 0; j < spp_out; j++) {
+                                    *(devc_contone[j] + position) = dev_value[j];
+                                }
+                                position -= LAND_BITS;
+                                xr--;
+                            }           /* at loop exit xn will be <= xr */
+                            psrc++;
                         }
                     }
                 } else {  /* Not flipped in Y */
                     position = penum->ht_landscape.curr_pos;
                     /* use dda */
                     if (spp_out == 1) {
-                        for (k = 0; k < data_length; k++) {
-                            devc_contone_gray[position] = 
-                                color_cache[psrc[dda_ht.state.Q]];
-                            position += LAND_BITS;
+                        /* Mono case */
+                        /* loop filling contone values selected from the source */
+                        for (k=0; k<src_size; k++) {
                             dda_next(dda_ht);
+                            xn = fixed2int_var_rounded(dda_current(dda_ht));
+                            while (xr < xn) {
+                                devc_contone_gray[position] = color_cache[*psrc];
+                                position += LAND_BITS;
+                                xr++;
+                            }           /* at loop exit xn will be >= xr */
+                            psrc++;
                         }
                     } else {
                         /* CMYK case */
@@ -1075,14 +1251,19 @@ image_render_mono_ht(gx_image_enum * penum_orig, const byte * buffer, int data_x
                         for (k = 0; k < spp_out; k++) {
                             devc_contone[k] = devc_contone[k] + position;
                         }
-                        for (k = 0; k < data_length; k++) {
-                            /* Is it better to unwind this?  We know it is 4 */
-                            for (j = 0; j < spp_out; j++) {
-                                *(devc_contone[j]) = 
-                                    color_cache[psrc[dda_ht.state.Q] * spp_out + j];
-                                devc_contone[j] += LAND_BITS;
-                            }
+                        /* CMYK case */
+                        for (k=0; k<src_size; k++) {
                             dda_next(dda_ht);
+                            xn = fixed2int_var_rounded(dda_current(dda_ht));
+                            while (xr < xn) {
+                                dev_value = &(color_cache[*psrc * spp_out]);
+                                for (j = 0; j < spp_out; j++) {
+                                    *(devc_contone[j] + position) = dev_value[j];
+                                }
+                                position += LAND_BITS;
+                                xr++;
+                            }           /* at loop exit xn will be >= xr */
+                            psrc++;
                         }
                     }
                 }

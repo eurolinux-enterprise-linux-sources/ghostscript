@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -64,6 +64,11 @@
  *
  */
 
+/* prevent gp.h redefining fopen */
+#define fopen fopen
+/* prevent gp.h redefining sprintf */
+#define sprintf sprintf
+
 #include "stdpre.h"
 #include "stdint_.h"
 #include "time_.h"
@@ -111,6 +116,26 @@ typedef struct Xlist_element_s {
         void *next;
         char *path;
     } Xlist_element;
+
+
+#define PATH_STR_LEN 1024
+
+#ifndef ARCH_IS_BIG_ENDIAN
+#define ARCH_IS_BIG_ENDIAN 0
+#endif
+/* This gives what we're running on,
+ * whilst ARCH_IS_BIG_ENDIAN gives what we're
+ * building for.
+ */
+static inline int isbigendian(void)
+{
+    union {
+        int i;
+        char c[sizeof(int)];
+    } u = {1};
+
+    return u.c[0] != 1;
+}
 
 /*******************************************************************************
  * The following are non-redirected printing functions to avoid the need for
@@ -206,11 +231,6 @@ eprintf_program_ident(const char *program_name,
         }
         epf(": ");
     }
-}
-void
-lprintf_file_only(FILE * f, const char *file)
-{
-    epf("%s(?): ", file);
 }
 #endif
 
@@ -324,6 +344,7 @@ const gs_malloc_memory_t minimal_memory = {
     0  /* max used */
 };
 
+int cmpstringp(const void *p1, const void *p2);
 void put_uint32(FILE *out, const unsigned int q);
 void put_bytes_padded(FILE *out, unsigned char *p, unsigned int len);
 void inode_clear(romfs_inode* node);
@@ -367,7 +388,12 @@ void put_bytes_padded(FILE *out, unsigned char *p, unsigned int len)
         w2c.c.c2 = p[j++];
         w2c.c.c3 = p[j++];
         w2c.c.c4 = p[j++];
-        fprintf(out, "0x%08x,", w2c.w);
+        if (isbigendian() != ARCH_IS_BIG_ENDIAN) {
+            fprintf (out, "0x%02x%02x%02x%02x,", (w2c.w) & 0xff, (w2c.w>>8) & 0xff, (w2c.w>>16) & 0xff, (w2c.w >>24) & 0xff);
+        }
+        else {
+            fprintf(out, "0x%08x,", w2c.w);
+        }
         if ((i & 7) == 7)
             fprintf(out, "\n\t");
     }
@@ -379,7 +405,12 @@ void put_bytes_padded(FILE *out, unsigned char *p, unsigned int len)
         w2c.c.c2 = p[j+1];
       case 1:
         w2c.c.c1 = p[j];
-        fprintf(out, "0x%08x,", w2c.w);
+        if (isbigendian() != ARCH_IS_BIG_ENDIAN) {
+            fprintf (out, "0x%02x%02x%02x%02x,", (w2c.w) & 0xff, (w2c.w>>8) & 0xff, (w2c.w>>16) & 0xff, (w2c.w >>24) & 0xff);
+        }
+        else {
+            fprintf(out, "0x%08x,", w2c.w);
+        }
       default: ;
     }
     fprintf(out, "\n\t");
@@ -439,9 +470,9 @@ inode_write(FILE *out, romfs_inode *node, int compression, int inode_count, int 
     fprintf(out, "\t0 };\t/* end-of-node */\n");
 
     printf("node '%s' len=%ld", node->name, node->length);
-    printf(" %ld blocks", blocks);
+    printf(" %d blocks", blocks);
     if (compression) {
-        printf(", compressed size=%ld", clen);
+        printf(", compressed size=%d", clen);
     }
     printf("\n");
 }
@@ -953,6 +984,15 @@ static int pscompact_isint(pscompstate *psc, int *i)
     }
     psc->bufferin[psc->inpos] = 0;
     *i = atoi(psc->bufferin);
+
+    /* Check for 32bit overflow */
+    if (psc->inpos > 9) {
+        char *end;
+        double d = strtod(psc->bufferin, &end);
+        if (d != (double)(int)*i)
+            return 0;
+    }
+
     return 1;
 }
 
@@ -1225,7 +1265,7 @@ static unsigned long pscompact_getcompactedblock(pscompstate *psc, unsigned char
                         psc->state = PSC_BufferOut;
                         break;
                     }
-                    if (psc->binary && psc->names && pscompact_isname(psc, &i)) {
+                    if (psc->names && pscompact_isname(psc, &i)) {
                         /* Encode as a name lookup */
                         if (i >= 0) {
                             /* Executable */
@@ -1376,8 +1416,9 @@ static unsigned long pscompact_getcompactedblock(pscompstate *psc, unsigned char
                             pscompact_copyinout_bin(psc);
                             break;
                         } else if (psc->inpos < 65536) {
-                            pscompact_bufferatstart(psc, psc->inpos>>8);
-                            pscompact_bufferatstart(psc, psc->inpos & 255);
+                            int count = psc->inpos;
+                            pscompact_bufferatstart(psc, count>>8);
+                            pscompact_bufferatstart(psc, count & 255);
                             pscompact_bufferatstart(psc, 144);
                             pscompact_copyinout_bin(psc);
                             break;
@@ -1479,8 +1520,9 @@ static unsigned long pscompact_getcompactedblock(pscompstate *psc, unsigned char
                             pscompact_bufferatstart(psc, 142);
                             pscompact_copyinout_bin(psc);
                         } else if (psc->inpos < 65536) {
-                            pscompact_bufferatstart(psc, psc->inpos>>8);
-                            pscompact_bufferatstart(psc, psc->inpos & 255);
+                            int count = psc->inpos;
+                            pscompact_bufferatstart(psc, count>>8);
+                            pscompact_bufferatstart(psc, count & 255);
                             pscompact_bufferatstart(psc, 144);
                             pscompact_copyinout_bin(psc);
                         } else {
@@ -1512,6 +1554,15 @@ static unsigned long pscompact_getcompactedblock(pscompstate *psc, unsigned char
     return out-ubuf;
 }
 
+int cmpstringp(const void *p1, const void *p2)
+{
+   /* The actual arguments to this function are "pointers to
+      pointers to char", but strcmp(3) arguments are "pointers
+      to char", hence the following cast plus dereference */
+
+   return strcmp(* (char * const *) p1, * (char * const *) p2);
+}
+
 /* This relies on the gp_enumerate_* which should not return directories, nor	*/
 /* should it recurse into directories (unlike Adobe's implementation)		*/
 /* paths are checked to see if they are an ordinary file or a path		*/
@@ -1519,7 +1570,7 @@ void process_path(char *path, const char *os_prefix, const char *rom_prefix,
                   Xlist_element *Xlist_head, int compression,
                   int compaction, int *inode_count, int *totlen, FILE *out)
 {
-    int namelen, excluded, save_count=*inode_count;
+    int i, namelen, excluded, save_count=*inode_count;
     Xlist_element *Xlist_scan;
     char *prefixed_path;
     char *found_path, *rom_filename;
@@ -1531,10 +1582,12 @@ void process_path(char *path, const char *os_prefix, const char *rom_prefix,
     FILE *in;
     unsigned long psc_len;
     pscompstate psc = { 0 };
+    unsigned long numfiles = 0;
+    char **foundfiles = NULL, *temp;
 
-    prefixed_path = malloc(1024);
-    found_path = malloc(1024);
-    rom_filename = malloc(1024);
+    prefixed_path = malloc(PATH_STR_LEN);
+    found_path = malloc(PATH_STR_LEN);
+    rom_filename = malloc(PATH_STR_LEN);
     ubuf = malloc(ROMFS_BLOCKSIZE);
     cbuf = malloc(ROMFS_CBUFSIZE);
     if (ubuf == NULL || cbuf == NULL || prefixed_path == NULL ||
@@ -1568,19 +1621,40 @@ void process_path(char *path, const char *os_prefix, const char *rom_prefix,
         if (excluded)
             continue;
 
+        numfiles++;
+        temp = realloc(foundfiles, sizeof(char *) * numfiles);
+        if (temp == NULL) {
+            free(cbuf);
+            free(ubuf);
+            free(found_path);
+            free(foundfiles);
+            free(prefixed_path);
+            free(rom_filename);
+            printf("realloc failed in process_path.\n");
+            exit(1);
+        }
+        foundfiles = (char **)temp;
+        foundfiles[numfiles - 1] = strdup(found_path);
+    }
+
+    qsort(foundfiles, numfiles, sizeof(char *), cmpstringp);
+
+    for (i = 0; i < numfiles; i++) {
+        char *fpath = foundfiles[i];
+
         /* process a file */
         node = calloc(1, sizeof(romfs_inode));
         /* get info for this file */
-        in = fopen(found_path, "rb");
+        in = fopen(fpath, "rb");
         if (in == NULL) {
-            printf("unable to open file for processing: %s\n", found_path);
+            printf("unable to open file for processing: %s\n", fpath);
             continue;
         }
-        /* printf("compacting %s\n", found_path); */
+        /* printf("compacting %s\n", fpath); */
         /* rom_filename + strlen(rom_prefix) is first char after the new prefix we want to add */
-        /* found_path + strlen(os_prefix) is the file name after the -P prefix */
+        /* fpath + strlen(os_prefix) is the file name after the -P prefix */
         rom_filename[strlen(rom_prefix)] = 0;		/* truncate afater prefix */
-        strcat(rom_filename, found_path + strlen(os_prefix));
+        strcat(rom_filename, fpath + strlen(os_prefix));
         node->name = rom_filename;	/* without -P prefix, with -d rom_prefix */
         fseek(in, 0, SEEK_END);
         node->disc_length = node->length = ftell(in);
@@ -1588,8 +1662,8 @@ void process_path(char *path, const char *os_prefix, const char *rom_prefix,
         node->data_lengths = calloc(blocks, sizeof(*node->data_lengths));
         node->data = calloc(blocks, sizeof(*node->data));
         fclose(in);
-        in = fopen(found_path, "rb");
-        ulen = strlen(found_path);
+        in = fopen(fpath, "rb");
+        ulen = strlen(fpath);
         block = 0;
         psc_len = 0;
         if (compaction)
@@ -1621,7 +1695,7 @@ void process_path(char *path, const char *os_prefix, const char *rom_prefix,
         fclose(in);
         if (compaction) {
             /* printf("%s: Compaction saved %d bytes (before compression)\n",
-             *        found_path, node->length - psc_len); */
+             *        fpath, node->length - psc_len); */
             pscompact_end(&psc);
             node->length = psc_len;
         }
@@ -1631,11 +1705,14 @@ void process_path(char *path, const char *os_prefix, const char *rom_prefix,
         inode_clear(node);
         free(node);
         (*inode_count)++;
+        free(fpath);
     }
     free(cbuf);
     free(ubuf);
     free(found_path);
+    free(foundfiles);
     free(prefixed_path);
+    free(rom_filename);
     if (save_count == *inode_count) {
         printf("warning: no files found from path '%s%s'\n", os_prefix, path);
     }
@@ -1721,14 +1798,15 @@ process_initfile(char *initfile, char *gconfig_h, const char *os_prefix,
                  int *totlen, FILE *out)
 {
     int ret, block, blocks;
-    romfs_inode *node;
-    unsigned char *ubuf, *cbuf;
-    char *prefixed_path, *rom_filename;
+    romfs_inode *node = NULL;
+    unsigned char *ubuf = NULL, *cbuf = NULL;
+    char *prefixed_path = NULL, *rom_filename = NULL;
     unsigned long clen;
     FILE *in;
     FILE *config;
     in_block_t *in_block = NULL;
     int compaction = 1;
+    int code = 0;
 
     ubuf = malloc(ROMFS_BLOCKSIZE);
     cbuf = malloc(ROMFS_CBUFSIZE);
@@ -1738,7 +1816,8 @@ process_initfile(char *initfile, char *gconfig_h, const char *os_prefix,
         rom_filename == NULL) {
         printf("malloc fail in process_initfile\n");
         /* should free whichever buffers got allocated, but don't bother */
-        return -1;
+        code = -1;
+        goto done;
     }
 
     prefix_add(os_prefix, initfile, prefixed_path);
@@ -1747,13 +1826,15 @@ process_initfile(char *initfile, char *gconfig_h, const char *os_prefix,
     in = fopen(prefixed_path, "r");
     if (in == 0) {
         printf("cannot open initfile at: %s\n", prefixed_path);
-        return -1;
+        code = -1;
+        goto done;
     }
     config = fopen(gconfig_h, "r");
     if (config == 0) {
         printf("Cannot open gconfig file %s\n", gconfig_h);
         fclose(in);
-        return -1;
+        code = -1;
+        goto done;
     }
     memset(linebuf, 0, sizeof(linebuf));
     node = calloc(1, sizeof(romfs_inode));
@@ -1764,12 +1845,11 @@ process_initfile(char *initfile, char *gconfig_h, const char *os_prefix,
     fclose(in);
     fclose(config);
 
-/**********/
     if (compaction)
     {
         in_block_t *comp_block_head;
         in_block_t *comp_block;
-        pscompstate psc;
+        pscompstate psc = {0};
         in_block_file ibf;
         int ulen;
 
@@ -1824,7 +1904,8 @@ process_initfile(char *initfile, char *gconfig_h, const char *os_prefix,
             ret = compress(cbuf, &clen, in_block->data, block_len);
             if (ret != Z_OK) {
                 printf("error compressing data block!\n");
-                exit(1);
+                code = -1;
+                goto done;
             }
         } else {
             memcpy(cbuf, in_block->data, block_len);
@@ -1841,14 +1922,14 @@ process_initfile(char *initfile, char *gconfig_h, const char *os_prefix,
     inode_write(out, node, compression, *inode_count, totlen);
     /* clean up */
     inode_clear(node);
-    free(node);
     (*inode_count)++;
-
+done:
+    free(node);
     free(cbuf);
     free(ubuf);
     free(prefixed_path);
     free(rom_filename);
-    return 0;
+    return code;
 }
 
 void
@@ -2160,6 +2241,8 @@ mergefile(const char *os_prefix, const char *inname, FILE * in, FILE * config,
                     if (!strncmp(psname, "psfile_(\"", 9)) {
                         FILE *ps;
                         char *quote = strchr(psname + 9, '"');
+                        if (quote == NULL)
+                            exit(1);
 
                         *quote = 0;
                         ps = prefix_open(os_prefix, psname + 9);
@@ -2238,11 +2321,15 @@ main(int argc, char *argv[])
     const char *outfilename = "obj/gsromfs.c";
     const char *os_prefix = "";
     const char *rom_prefix = "";
-    char *initfile, *gconfig_h;
     int atarg = 1;
     int compression = 1;			/* default to doing compression */
     int compaction = 0;
-    Xlist_element *Xlist_scan, *Xlist_head = NULL;
+    Xlist_element *Xlist_scan = NULL, *Xlist_head = NULL;
+    char pa[PATH_STR_LEN];
+    time_t buildtime = 0;
+    char* env_source_date_epoch;
+
+    memset(pa, 0x00, PATH_STR_LEN);
 
     if (argc < 2) {
         printf("\n"
@@ -2297,7 +2384,13 @@ main(int argc, char *argv[])
 #endif
     fprintf(out,"\n#include \"stdint_.h\"\n");
     fprintf(out,"\n#include \"time_.h\"\n\n");
-    fprintf(out,"    time_t gs_romfs_buildtime = %ld;\n\n", time(NULL));
+
+    if ((env_source_date_epoch = getenv("SOURCE_DATE_EPOCH"))) {
+        buildtime = strtoul(env_source_date_epoch, NULL, 10);
+    }
+    if (!buildtime)
+        buildtime = time(NULL);
+    fprintf(out,"    time_t gs_romfs_buildtime = %ld;\n\n", buildtime);
 
     /* process the remaining arguments (options interspersed with paths) */
     for (; atarg < argc; atarg++) {
@@ -2324,14 +2417,19 @@ main(int argc, char *argv[])
                 rom_prefix = argv[atarg];
                 break;
               case 'g':
-                if ((++atarg) + 1 == argc) {
-                    printf("   option %s missing required arguments\n", argv[atarg-1]);
-                    exit(1);
+                {
+                    char initfile[PATH_STR_LEN] = {0};
+                    char gconfig_h[PATH_STR_LEN] = {0};
+                    if ((++atarg) + 1 == argc) {
+                        printf("   option %s missing required arguments\n", argv[atarg-1]);
+                        exit(1);
+                    }
+                    strncpy(initfile, argv[atarg], PATH_STR_LEN - 1);
+                    atarg++;
+                    strncpy(gconfig_h, argv[atarg], PATH_STR_LEN - 1);
+                    process_initfile(initfile, gconfig_h, os_prefix, rom_prefix, compression,
+                                    &inode_count, &totlen, out);
                 }
-                initfile = argv[atarg++];
-                gconfig_h = argv[atarg];
-                process_initfile(initfile, gconfig_h, os_prefix, rom_prefix, compression,
-                                &inode_count, &totlen, out);
                 break;
               case 'P':
                 if (++atarg == argc) {
@@ -2359,18 +2457,21 @@ main(int argc, char *argv[])
             continue;
         }
         /* process a path or file */
-        process_path(argv[atarg], os_prefix, rom_prefix, Xlist_head,
+        strncpy(pa, argv[atarg], PATH_STR_LEN - (strlen(os_prefix) < strlen(rom_prefix) ? strlen(rom_prefix) : strlen(os_prefix)));
+        process_path(pa, os_prefix, rom_prefix, Xlist_head,
                     compression, compaction, &inode_count, &totlen, out);
-
     }
     /* now write out the array of nodes */
     fprintf(out, "    uint32_t *gs_romfs[] = {\n");
     for (i=0; i<inode_count; i++)
         fprintf(out, "\tnode_%d,\n", i);
     fprintf(out, "\t0 };\n");
-
     fclose(out);
-
+    while (Xlist_head) {
+        Xlist_scan = Xlist_head->next;
+        free(Xlist_head);
+        Xlist_head = Xlist_scan;
+    }
     printf("Total %%rom%% structure size is %d bytes.\n", totlen);
 
     return 0;

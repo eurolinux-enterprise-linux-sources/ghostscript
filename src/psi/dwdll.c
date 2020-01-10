@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -152,10 +152,34 @@ gsapi_revision_t rv;
         return 1;
     }
 
+    gsdll->get_default_device_list = (PFN_gsapi_get_default_device_list)
+        GetProcAddress(gsdll->hmodule, "gsapi_get_default_device_list");
+    if (gsdll->get_default_device_list == NULL) {
+        strncpy(last_error, "Can't find gsapi_get_default_device_list\n", len-1);
+        unload_dll(gsdll);
+        return 1;
+    }
+
+    gsdll->set_default_device_list = (PFN_gsapi_set_default_device_list)
+        GetProcAddress(gsdll->hmodule, "gsapi_set_default_device_list");
+    if (gsdll->set_default_device_list == NULL) {
+        strncpy(last_error, "Can't find gsapi_set_default_device_list\n", len-1);
+        unload_dll(gsdll);
+        return 1;
+    }
+
     gsdll->init_with_args = (PFN_gsapi_init_with_args)
         GetProcAddress(gsdll->hmodule, "gsapi_init_with_args");
     if (gsdll->init_with_args == NULL) {
         strncpy(last_error, "Can't find gsapi_init_with_args\n", len-1);
+        unload_dll(gsdll);
+        return 1;
+    }
+
+    gsdll->set_arg_encoding = (PFN_gsapi_set_arg_encoding)
+        GetProcAddress(gsdll->hmodule, "gsapi_set_arg_encoding");
+    if (gsdll->set_arg_encoding == NULL) {
+        strncpy(last_error, "Can't find gsapi_set_arg_encoding\n", len-1);
         unload_dll(gsdll);
         return 1;
     }
@@ -176,14 +200,6 @@ gsapi_revision_t rv;
         return 1;
     }
 
-    gsdll->set_visual_tracer = (PFN_gsapi_set_visual_tracer)
-        GetProcAddress(gsdll->hmodule, "gsapi_set_visual_tracer");
-    if (gsdll->set_visual_tracer == NULL) {
-        strncpy(last_error, "Can't find gsapi_set_visual_tracer\n", len-1);
-        unload_dll(gsdll);
-        return 1;
-    }
-
     return 0;
 }
 
@@ -199,7 +215,6 @@ void unload_dll(GSDLL *gsdll)
     gsdll->set_stdio = NULL;
     gsdll->set_poll = NULL;
     gsdll->set_display_callback = NULL;
-    gsdll->set_visual_tracer = NULL;
 
     if (gsdll->hmodule != (HINSTANCE)NULL)
             FreeLibrary(gsdll->hmodule);

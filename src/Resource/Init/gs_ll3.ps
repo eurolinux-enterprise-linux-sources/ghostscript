@@ -1,4 +1,4 @@
-% Copyright (C) 2001-2012 Artifex Software, Inc.
+% Copyright (C) 2001-2018 Artifex Software, Inc.
 % All Rights Reserved.
 %
 % This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
 % of the license contained in the file LICENSE in this distribution.
 %
 % Refer to licensing information at http://www.artifex.com or contact
-% Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-% CA  94903, U.S.A., +1(415)492-9861, for further information.
+% Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+% CA 94945, U.S.A., +1(415)492-9861, for further information.
 %
 
 % Initialization file for PostScript LanguageLevel 3 functions.
@@ -35,30 +35,64 @@ languagelevel dup 2 .max .setlanguagelevel
 % where IdiomRecognition may not be defined.
 /.bind_ {		% <proc> .bind <proc'>
   //.bind currentuserparams /IdiomRecognition
-  .knownget not { //false } if {
-    (*) {
-      /IdiomSet findresource
-      //false exch {
-                % Stack: proc //false dummykey [template substitute]
-        exch pop dup 1 get exch 0 get
-                % Stack: proc //false substitute template
+  .knownget not { //false } if
+  {
+    //false
+    /IdiomSet .findcategory .Instances
+    {
+      exch pop                                    % pop the IdiomSet identifying key. Stack /proc /false [-dict- status size]
+      0 get                                       % get resource instance, a dictionary. Stack : /proc false -dict-
+      {
+        exch pop                                  % pop the instance identifying key
+                                                  % Stack: proc //false [template substitute]
+        dup 1 get exch 0 get                      % Stack: proc //false substitute template
         3 index .eqproc {
-          2 index gcheck 1 index gcheck not and {
-            pop
-          } {
-            3 -1 roll pop exch not exit
-          } ifelse
+                                                  % Stack: proc //false substitute
+            3 -1 roll pop exch not                % Stack: substitute true
         } {
-          pop
+          pop                                     % Stack: proc //false
         } ifelse
-      } forall { exit } if
-    } //.bindscratch /IdiomSet resourceforall
+      } forall
+      dup {exit} if                               % Stack proc <bool>
+    } forall
+
+    not                                           % Not matched in global resources
+    currentglobal not and                         % must not match local resources if currentglobal is true
+    {
+      //false
+      .LocalInstances
+      {
+        exch pop                                  % pop IdiomSet identifying key. Stack /proc /false [-dict- status size]
+        0 get                                     % get resource instance, a dictionary Stack : /proc false -dict-
+        {
+          exch pop                                % pop instance identifier key
+                                                  % Stack: proc //false [template substitute]
+          dup 1 get exch 0 get                    % Stack: proc //false substitute template
+          3 index .eqproc {
+                                                  % Stack: proc //false substitute
+            2 index gcheck                        % Stack: proc //false substitute _global?_
+            1 index gcheck not and                % Stack: proc //false substitute _global?_ _global?_
+            {                                     % must not match if candidate in global VM and substitute in local
+              pop                                 % Stack: proc //false
+            } {
+                                                  % Stack: proc //false substitute
+              3 -1 roll pop exch not              % Stack: substitute true
+            }ifelse
+          } {
+            pop                                   % Stack: proc //false
+          } ifelse
+        } forall
+        dup {exit} if
+      } forall
+      pop                                         % Stack: proc/substitute
+    } if
+    end                                           % .findcategory makes the category dictionary the current dict, so we must pop it from dict stack
   } if
 } def
 /.bind /.bind_ load odef	% note that .bind_ will get bound
 currentdict /.bindscratch .undef
 
-DELAYBIND NOBIND or not {
+DELAYBIND not {
 % We can't just do
 %   /bind /.bind load def
 % because then /bind load == prints --.bind-- .
@@ -406,6 +440,11 @@ systemdict /.reuseparamdict mark
     /shfill .systemvar /undefined signalerror
   } ifelse
 } bind def
+
+/.buildshading_and_shfill {
+  .buildshading .shfill
+} bind def
+
 systemdict /.reuseparamdict undef
 
 /.buildpattern2 {	% <template> <matrix> .buildpattern2
@@ -430,7 +469,7 @@ systemdict /.reuseparamdict undef
         % Currently, .shfill requires that the color space
         % in the pattern be the current color space.
         % Disable overprintmode for shfill
-  { dup gsave 0 .setoverprintmode .buildshading .shfill } stopped
+  { dup gsave 0 .setoverprintmode .buildshading_and_shfill } stopped
   grestore {
     /$error .systemvar /errorinfo 2 copy known {
       pop pop
@@ -488,6 +527,13 @@ end
     /InstanceType /dicttype def
   currentdict end /Category defineresource pop
 } forall
+
+(*) {
+  dup type /nametype eq not {
+    cvn
+  } if
+  /IdiomSet findresource pop
+} 256 string /IdiomSet resourceforall
 
 /languagelevel 3 def
 % When running in LanguageLevel 3 mode, this interpreter is supposed to be

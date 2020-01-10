@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -119,10 +119,10 @@ gs_pattern1_init(gs_pattern1_template_t * ppat)
 
 /* Make an instance of a PatternType 1 pattern. */
 static int compute_inst_matrix(gs_pattern1_instance_t * pinst,
-        gs_state * saved, gs_rect * pbbox, int width, int height);
+        gs_gstate * saved, gs_rect * pbbox, int width, int height);
 int
 gs_makepattern(gs_client_color * pcc, const gs_pattern1_template_t * pcp,
-               const gs_matrix * pmat, gs_state * pgs, gs_memory_t * mem)
+               const gs_matrix * pmat, gs_gstate * pgs, gs_memory_t * mem)
 {
     return gs_pattern1_make_pattern(pcc, (const gs_pattern_template_t *)pcp,
                                     pmat, pgs, mem);
@@ -130,13 +130,13 @@ gs_makepattern(gs_client_color * pcc, const gs_pattern1_template_t * pcp,
 static int
 gs_pattern1_make_pattern(gs_client_color * pcc,
                          const gs_pattern_template_t * ptemp,
-                         const gs_matrix * pmat, gs_state * pgs,
+                         const gs_matrix * pmat, gs_gstate * pgs,
                          gs_memory_t * mem)
 {
     const gs_pattern1_template_t *pcp = (const gs_pattern1_template_t *)ptemp;
     gs_pattern1_instance_t inst;
     gs_pattern1_instance_t *pinst;
-    gs_state *saved;
+    gs_gstate *saved;
     gs_rect bbox;
     gs_fixed_rect cbox;
     gx_device * pdev = pgs->device;
@@ -149,8 +149,22 @@ gs_pattern1_make_pattern(gs_client_color * pcc,
     if (code < 0)
         return code;
     if (mem == 0)
-        mem = gs_state_memory(pgs);
+        mem = gs_gstate_memory(pgs);
     pinst = (gs_pattern1_instance_t *)pcc->pattern;
+#ifdef PACIFY_VALGRIND
+    /* The following memset is required to avoid a valgrind warning
+     * in:
+     *   gs -I./gs/lib -sOutputFile=out.pgm -dMaxBitmap=10000
+     *      -sDEVICE=pgmraw -r300 -Z: -sDEFAULTPAPERSIZE=letter
+     *      -dNOPAUSE -dBATCH -K2000000 -dClusterJob -dJOBSERVER
+     *      tests_private/ps/ps3cet/11-14.PS
+     * Setting the individual elements of the structure directly is
+     * not enough, which leads me to believe that we are writing the
+     * entire struct out, padding and all.
+     */
+    memset(((char *)&inst) + sizeof(gs_pattern_instance_t), 0,
+           sizeof(inst) - sizeof(gs_pattern_instance_t));
+#endif
     *(gs_pattern_instance_t *)&inst = *(gs_pattern_instance_t *)pinst;
     saved = inst.saved;
     switch (pcp->PaintType) {
@@ -158,7 +172,9 @@ gs_pattern1_make_pattern(gs_client_color * pcc,
             gs_set_logical_op(saved, lop_default);
             break;
         case 2:         /* uncolored */
-            gx_set_device_color_1(saved);
+            code = gx_set_device_color_1(saved);
+            if (code < 0)
+                goto fsaved;
             break;
         default:
             code = gs_note_error(gs_error_rangecheck);
@@ -375,7 +391,7 @@ gs_pattern1_make_pattern(gs_client_color * pcc,
     inst.id = gs_next_ids(mem, 1);
     *pinst = inst;
     return 0;
-  fsaved:gs_state_free(saved);
+  fsaved:gs_gstate_free(saved);
     gs_free_object(mem, pinst, "gs_makepattern");
     return code;
 }
@@ -405,11 +421,22 @@ clamp_pattern_bbox(gs_pattern1_instance_t * pinst, gs_rect * pbbox,
     gs_point dev_pat_origin, dev_step;
     int code;
 
+    double xepsilon = FLT_EPSILON * width;
+    double yepsilon = FLT_EPSILON * height;
+
     /*
      * Scan across the page.  We determine the region to be scanned
      * by working in the pattern coordinate space.  This is logically
      * simpler since XStep and YStep are on axis in the pattern space.
      */
+    /* But, since we are starting below bottom left, and 'incrementing' by
+     * xstep and ystep, make sure they are not negative, or we will be in
+     * a very long loop indeed.
+     */
+    if (xstep < 0)
+        xstep *= -1;
+    if (ystep < 0)
+        ystep *= -1;
     /*
      * Convert the page dimensions from device coordinates into the
      * pattern coordinate frame.
@@ -450,7 +477,21 @@ clamp_pattern_bbox(gs_pattern1_instance_t * pinst, gs_rect * pbbox,
             xupper = (xdev + pbbox->q.x < width) ? pbbox->q.x : -xdev + width;
             ylower = (ydev + pbbox->p.y > 0) ? pbbox->p.y : -ydev;
             yupper = (ydev + pbbox->q.y < height) ? pbbox->q.y : -ydev + height;
-            if (xlower < xupper && ylower < yupper) {
+
+            /* The use of floating point in these calculations causes us
+             * problems. Values which go through the calculation without ever
+             * being 'large' retain more accuracy in the lower bits than ones
+             * which momentarily become large. This is seen in bug 694528
+             * where a y value of 0.00017... becomes either 0 when 8000 is
+             * first added to it, then subtracted. This can lead to yupper
+             * and ylower being different.
+             *
+             * The "fix" implemented here is to amend the following test to
+             * ensure that the region found is larger that 'epsilon'. The
+             * epsilon values are calculated to reflect the floating point
+             * innacuracies at the appropriate range.
+             */
+            if (xlower + xepsilon < xupper && ylower + yepsilon < yupper) {
                 /*
                  * The pattern intersects the page.  Expand required area if
                  * needed.
@@ -487,7 +528,7 @@ clamp_pattern_bbox(gs_pattern1_instance_t * pinst, gs_rect * pbbox,
 /* Compute the stepping matrix and device space instance bounding box */
 /* from the step values and the saved matrix. */
 static int
-compute_inst_matrix(gs_pattern1_instance_t * pinst, gs_state * saved,
+compute_inst_matrix(gs_pattern1_instance_t * pinst, gs_gstate * saved,
                             gs_rect * pbbox, int width, int height)
 {
     float xx, xy, yx, yy, dx, dy, temp;
@@ -571,14 +612,18 @@ gs_pattern1_get_pattern(const gs_pattern_instance_t *pinst)
 void *
 gx_pattern1_get_transptr(const gx_device_color *pdevc)
 {
-    return pdevc->colors.pattern.p_tile->ttrans;
+    if (pdevc->colors.pattern.p_tile != NULL)
+        return pdevc->colors.pattern.p_tile->ttrans;
+    else
+        return NULL;
 }
 
 /* Check for if the clist in the pattern has transparency */
 int
 gx_pattern1_clist_has_trans(const gx_device_color *pdevc)
 {
-    if (pdevc->colors.pattern.p_tile->cdev != NULL) {
+    if (pdevc->colors.pattern.p_tile != NULL &&
+        pdevc->colors.pattern.p_tile->cdev != NULL) {
         return pdevc->colors.pattern.p_tile->cdev->common.page_uses_transparency;
     } else {
         return 0;
@@ -645,7 +690,7 @@ gs_dc_get_pattern_id(const gx_device_color *pdevc)
  *     reset the overprint information as required.
  */
 static int
-gs_pattern1_set_color(const gs_client_color * pcc, gs_state * pgs)
+gs_pattern1_set_color(const gs_client_color * pcc, gs_gstate * pgs)
 {
     gs_pattern1_instance_t * pinst = (gs_pattern1_instance_t *)pcc->pattern;
     gs_pattern1_template_t * ptmplt = &pinst->templat;
@@ -660,7 +705,7 @@ gs_pattern1_set_color(const gs_client_color * pcc, gs_state * pgs)
 
         params.retain_any_comps = false;
         pgs->effective_overprint_mode = 0;
-        return gs_state_update_overprint(pgs, &params);
+        return gs_gstate_update_overprint(pgs, &params);
     }
 }
 
@@ -742,14 +787,14 @@ free_pixmap_pattern(
  *  PaintProcs for bitmap and pixmap patterns.
  */
 static int bitmap_paint(gs_image_enum * pen, gs_data_image_t * pim,
-                         const gs_depth_bitmap * pbitmap, gs_state * pgs);
+                         const gs_depth_bitmap * pbitmap, gs_gstate * pgs);
 static int
-mask_PaintProc(const gs_client_color * pcolor, gs_state * pgs)
+mask_PaintProc(const gs_client_color * pcolor, gs_gstate * pgs)
 {
     const pixmap_info *ppmap = gs_getpattern(pcolor)->client_data;
     const gs_depth_bitmap *pbitmap = &(ppmap->bitmap);
     gs_image_enum *pen =
-    gs_image_enum_alloc(gs_state_memory(pgs), "mask_PaintProc");
+    gs_image_enum_alloc(gs_gstate_memory(pgs), "mask_PaintProc");
     gs_image1_t mask;
 
     if (pen == 0)
@@ -757,16 +802,16 @@ mask_PaintProc(const gs_client_color * pcolor, gs_state * pgs)
     gs_image_t_init_mask(&mask, true);
     mask.Width = pbitmap->size.x;
     mask.Height = pbitmap->size.y;
-    gs_image_init(pen, &mask, false, pgs);
+    gs_image_init(pen, &mask, false, false, pgs);
     return bitmap_paint(pen, (gs_data_image_t *) & mask, pbitmap, pgs);
 }
 static int
-image_PaintProc(const gs_client_color * pcolor, gs_state * pgs)
+image_PaintProc(const gs_client_color * pcolor, gs_gstate * pgs)
 {
     const pixmap_info *ppmap = gs_getpattern(pcolor)->client_data;
     const gs_depth_bitmap *pbitmap = &(ppmap->bitmap);
     gs_image_enum *pen =
-        gs_image_enum_alloc(gs_state_memory(pgs), "image_PaintProc");
+        gs_image_enum_alloc(gs_gstate_memory(pgs), "image_PaintProc");
     gs_color_space *pcspace;
     gx_image_enum_common_t *pie;
     /*
@@ -793,11 +838,13 @@ image_PaintProc(const gs_client_color * pcolor, gs_state * pgs)
 
     if (ppmap->pcspace == 0) {
         pcspace = gs_cspace_new_DeviceGray(pgs->memory);
+        if (pcspace == NULL)
+            return_error(gs_error_VMerror);
     } else
         pcspace = ppmap->pcspace;
     code = gs_gsave(pgs);
     if (code < 0)
-        return code;
+        goto fail;
     code = gs_setcolorspace(pgs, pcspace);
     if (code < 0)
         return code;
@@ -823,19 +870,24 @@ image_PaintProc(const gs_client_color * pcolor, gs_state * pgs)
     if ( (code = gs_image_begin_typed( (const gs_image_common_t *)&image,
                                        pgs,
                                        false,
+                                       false,
                                        &pie )) >= 0 &&
          (code = gs_image_enum_init( pen,
                                      pie,
                                      (gs_data_image_t *)&image,
-                                     pgs )) >= 0      )
-        code = bitmap_paint(pen, (gs_data_image_t *) & image, pbitmap, pgs);
-    gs_grestore(pgs);
+                                     pgs )) >= 0 &&
+        (code = bitmap_paint(pen, (gs_data_image_t *) & image, pbitmap, pgs)) >= 0) {
+        return gs_grestore(pgs);
+    }
+
+fail:
+    gs_free_object(gs_gstate_memory(pgs), pen, "image_PaintProc");
     return code;
 }
 /* Finish painting any kind of bitmap pattern. */
 static int
 bitmap_paint(gs_image_enum * pen, gs_data_image_t * pim,
-             const gs_depth_bitmap * pbitmap, gs_state * pgs)
+             const gs_depth_bitmap * pbitmap, gs_gstate * pgs)
 {
     uint raster = pbitmap->raster;
     uint nbytes = (pim->Width * pbitmap->pix_depth + 7) >> 3;
@@ -855,6 +907,143 @@ bitmap_paint(gs_image_enum * pen, gs_data_image_t * pim,
     return code;
 }
 
+int pixmap_high_level_pattern(gs_gstate * pgs)
+{
+    gs_matrix m;
+    gs_rect bbox;
+    gs_fixed_rect clip_box;
+    int code;
+    gx_device_color *pdc = gs_currentdevicecolor_inline(pgs);
+    const gs_client_pattern *ppat = gs_getpattern(&pdc->ccolor);
+    gs_color_space *pcs;
+    gs_pattern1_instance_t *pinst =
+        (gs_pattern1_instance_t *)gs_currentcolor(pgs)->pattern;
+    const pixmap_info *ppmap = ppat->client_data;
+
+    code = gx_pattern_cache_add_dummy_entry(pgs, pinst, pgs->device->color_info.depth);
+    if (code < 0)
+        return code;
+
+    code = gs_gsave(pgs);
+    if (code < 0)
+        return code;
+
+    dev_proc(pgs->device, get_initial_matrix)(pgs->device, &m);
+    gs_setmatrix(pgs, &m);
+    code = gs_bbox_transform(&ppat->BBox, &ctm_only(pgs), &bbox);
+    if (code < 0) {
+        gs_grestore(pgs);
+            return code;
+    }
+    clip_box.p.x = float2fixed(bbox.p.x);
+    clip_box.p.y = float2fixed(bbox.p.y);
+    clip_box.q.x = float2fixed(bbox.q.x);
+    clip_box.q.y = float2fixed(bbox.q.y);
+    code = gx_clip_to_rectangle(pgs, &clip_box);
+    if (code < 0) {
+        gs_grestore(pgs);
+        return code;
+    }
+
+    {
+        pattern_accum_param_s param;
+        param.pinst = (void *)pinst;
+        param.graphics_state = (void *)pgs;
+        param.pinst_id = pinst->id;
+
+        code = dev_proc(pgs->device, dev_spec_op)(pgs->device,
+                                gxdso_pattern_start_accum, &param, sizeof(pattern_accum_param_s));
+    }
+
+    if (code < 0) {
+        gs_grestore(pgs);
+        return code;
+    }
+
+    if (ppmap->pcspace != 0)
+        code = image_PaintProc(&pdc->ccolor, pgs);
+    else {
+        pcs = gs_cspace_new_DeviceGray(pgs->memory);
+        if (pcs == NULL)
+            return_error(gs_error_VMerror);
+        gs_setcolorspace(pgs, pcs);
+        code = mask_PaintProc(&pdc->ccolor, pgs);
+    }
+    if (code < 0)
+        return code;
+
+    code = gs_grestore(pgs);
+    if (code < 0)
+        return code;
+
+    {
+        pattern_accum_param_s param;
+        param.pinst = (void *)pinst;
+        param.graphics_state = (void *)pgs;
+        param.pinst_id = pinst->id;
+
+        code = dev_proc(pgs->device, dev_spec_op)(pgs->device,
+                          gxdso_pattern_finish_accum, &param, sizeof(pattern_accum_param_s));
+    }
+
+    return code;
+}
+
+static int pixmap_remap_mask_pattern(const gs_client_color *pcc, gs_gstate *pgs)
+{
+    const gs_client_pattern *ppat = gs_getpattern(pcc);
+    int code = 0;
+
+    /* pgs->device is the newly created pattern accumulator, but we want to test the device
+     * that is 'behind' that, the actual output device, so we use the one from
+     * the saved graphics state.
+     */
+    if (pgs->have_pattern_streams)
+        code = dev_proc(pcc->pattern->saved->device, dev_spec_op)(pcc->pattern->saved->device,
+                                gxdso_pattern_can_accum, (void *)ppat, ppat->uid.id);
+
+    if (code == 1) {
+        /* Device handles high-level patterns, so return 'remap'.
+         * This closes the internal accumulator device, as we no longer need
+         * it, and the error trickles back up to the PDL client. The client
+         * must then take action to start the device's accumulator, draw the
+         * pattern, close the device's accumulator and generate a cache entry.
+         * See px_high_level_pattern above.
+         */
+        return_error(gs_error_Remap_Color);
+    } else {
+        mask_PaintProc(pcc, pgs);
+        return 0;
+    }
+}
+
+static int pixmap_remap_image_pattern(const gs_client_color *pcc, gs_gstate *pgs)
+{
+    const gs_client_pattern *ppat = gs_getpattern(pcc);
+    int code = 0;
+
+    /* pgs->device is the newly created pattern accumulator, but we want to test the device
+     * that is 'behind' that, the actual output device, so we use the one from
+     * the saved graphics state.
+     */
+    if (pgs->have_pattern_streams)
+        code = dev_proc(pcc->pattern->saved->device, dev_spec_op)(pcc->pattern->saved->device,
+                                gxdso_pattern_can_accum, (void *)ppat, ppat->uid.id);
+
+    if (code == 1) {
+        /* Device handles high-level patterns, so return 'remap'.
+         * This closes the internal accumulator device, as we no longer need
+         * it, and the error trickles back up to the PDL client. The client
+         * must then take action to start the device's accumulator, draw the
+         * pattern, close the device's accumulator and generate a cache entry.
+         * See px_high_level_pattern above.
+         */
+        return_error(gs_error_Remap_Color);
+    } else {
+        return image_PaintProc(pcc, pgs);
+    }
+}
+
 /*
  * Make a pattern from a bitmap or pixmap. The pattern may be colored or
  * uncolored, as determined by the mask operand. This code is intended
@@ -872,7 +1061,7 @@ gs_makepixmappattern(
                         long id,
                         gs_color_space * pcspace,
                         uint white_index,
-                        gs_state * pgs,
+                        gs_gstate * pgs,
                         gs_memory_t * mem
 )
 {
@@ -894,7 +1083,7 @@ gs_makepixmappattern(
 
     /* allocate and initialize a pixmap_info structure for the paint proc */
     if (mem == 0)
-        mem = gs_state_memory(pgs);
+        mem = gs_gstate_memory(pgs);
     ppmap = gs_alloc_struct(mem,
                             pixmap_info,
                             &st_pixmap_info,
@@ -917,7 +1106,7 @@ gs_makepixmappattern(
     pat.BBox.q.y = pbitmap->size.y;
     pat.XStep = (float)pbitmap->size.x;
     pat.YStep = (float)pbitmap->size.y;
-    pat.PaintProc = (mask ? mask_PaintProc : image_PaintProc);
+    pat.PaintProc = (mask ? pixmap_remap_mask_pattern : pixmap_remap_image_pattern);
     pat.client_data = ppmap;
 
     /* set the ctm to be the identity */
@@ -953,7 +1142,7 @@ gs_makepixmappattern(
          * color, clear these so that there isn't an extra retained
          * reference to the Pattern object.
          */
-        gs_setgray(pinst->saved, 0.0);
+        code = gs_setgray(pinst->saved, 0.0);
 
     }
     gs_setmatrix(pgs, &smat);
@@ -970,7 +1159,7 @@ gs_makebitmappattern_xform(
                               bool mask,
                               const gs_matrix * pmat,
                               long id,
-                              gs_state * pgs,
+                              gs_gstate * pgs,
                               gs_memory_t * mem
 )
 {
@@ -1160,10 +1349,12 @@ static RELOC_PTRS_WITH(dc_colored_masked_reloc_ptrs, gx_device_color *cptr)
 RELOC_PTRS_END
 static ENUM_PTRS_WITH(dc_devn_masked_enum_ptrs, gx_device_color *cptr)
 ENUM_SUPER(gx_device_color, st_client_color, ccolor, 0);
+(void)cptr; /* Avoid unused warning */
 ENUM_PTRS_END
 static RELOC_PTRS_WITH(dc_devn_masked_reloc_ptrs, gx_device_color *cptr)
 {
     RELOC_SUPER(gx_device_color, st_client_color, ccolor);
+    (void)cptr; /* Avoid unused warning */
 }
 RELOC_PTRS_END
 static ENUM_PTRS_BEGIN(dc_binary_masked_enum_ptrs)
@@ -1243,15 +1434,15 @@ gx_dc_colored_masked_get_dev_halftone(const gx_device_color * pdevc)
 
 /* Macros for pattern loading */
 #define FINISH_PATTERN_LOAD\
-        while ( !gx_pattern_cache_lookup(pdevc, pis, dev, select) )\
-         { code = gx_pattern_load(pdevc, pis, dev, select);\
+        while ( !gx_pattern_cache_lookup(pdevc, pgs, dev, select) )\
+         { code = gx_pattern_load(pdevc, pgs, dev, select);\
            if ( code < 0 ) break;\
          }\
         return code;
 
 /* Ensure that a colored Pattern is loaded in the cache. */
 static int
-gx_dc_pattern_load(gx_device_color * pdevc, const gs_imager_state * pis,
+gx_dc_pattern_load(gx_device_color * pdevc, const gs_gstate * pgs,
                    gx_device * dev, gs_color_select_t select)
 {
     int code = 0;
@@ -1260,40 +1451,40 @@ gx_dc_pattern_load(gx_device_color * pdevc, const gs_imager_state * pis,
 }
 /* Ensure that an uncolored Pattern is loaded in the cache. */
 static int
-gx_dc_pure_masked_load(gx_device_color * pdevc, const gs_imager_state * pis,
+gx_dc_pure_masked_load(gx_device_color * pdevc, const gs_gstate * pgs,
                        gx_device * dev, gs_color_select_t select)
 {
-    int code = (*gx_dc_type_data_pure.load) (pdevc, pis, dev, select);
+    int code = (*gx_dc_type_data_pure.load) (pdevc, pgs, dev, select);
 
     if (code < 0)
         return code;
     FINISH_PATTERN_LOAD
 }
 static int
-gx_dc_devn_masked_load(gx_device_color * pdevc, const gs_imager_state * pis,
+gx_dc_devn_masked_load(gx_device_color * pdevc, const gs_gstate * pgs,
                        gx_device * dev, gs_color_select_t select)
 {
-    int code = (*gx_dc_type_data_devn.load) (pdevc, pis, dev, select);
+    int code = (*gx_dc_type_data_devn.load) (pdevc, pgs, dev, select);
 
     if (code < 0)
         return code;
     FINISH_PATTERN_LOAD
 }
 static int
-gx_dc_binary_masked_load(gx_device_color * pdevc, const gs_imager_state * pis,
+gx_dc_binary_masked_load(gx_device_color * pdevc, const gs_gstate * pgs,
                          gx_device * dev, gs_color_select_t select)
 {
-    int code = (*gx_dc_type_data_ht_binary.load) (pdevc, pis, dev, select);
+    int code = (*gx_dc_type_data_ht_binary.load) (pdevc, pgs, dev, select);
 
     if (code < 0)
         return code;
     FINISH_PATTERN_LOAD
 }
 static int
-gx_dc_colored_masked_load(gx_device_color * pdevc, const gs_imager_state * pis,
+gx_dc_colored_masked_load(gx_device_color * pdevc, const gs_gstate * pgs,
                           gx_device * dev, gs_color_select_t select)
 {
-    int code = (*gx_dc_type_data_ht_colored.load) (pdevc, pis, dev, select);
+    int code = (*gx_dc_type_data_ht_colored.load) (pdevc, pgs, dev, select);
 
     if (code < 0)
         return code;
@@ -1302,10 +1493,10 @@ gx_dc_colored_masked_load(gx_device_color * pdevc, const gs_imager_state * pis,
 
 /* Look up a pattern color in the cache. */
 bool
-gx_pattern_cache_lookup(gx_device_color * pdevc, const gs_imager_state * pis,
+gx_pattern_cache_lookup(gx_device_color * pdevc, const gs_gstate * pgs,
                         gx_device * dev, gs_color_select_t select)
 {
-    gx_pattern_cache *pcache = pis->pattern_cache;
+    gx_pattern_cache *pcache = pgs->pattern_cache;
     gx_bitmap_id id = pdevc->mask.id;
 
     if (id == gx_no_bitmap_id) {
@@ -1315,7 +1506,7 @@ gx_pattern_cache_lookup(gx_device_color * pdevc, const gs_imager_state * pis,
     if (pcache != 0) {
         gx_color_tile *ctile = &pcache->tiles[id % pcache->num_tiles];
         bool internal_accum = true;
-        if (pis->have_pattern_streams) {
+        if (pgs->have_pattern_streams) {
             int code = dev_proc(dev, dev_spec_op)(dev, gxdso_pattern_load, NULL, id);
             internal_accum = (code == 0);
             if (code < 0)
@@ -1324,8 +1515,8 @@ gx_pattern_cache_lookup(gx_device_color * pdevc, const gs_imager_state * pis,
         if (ctile->id == id &&
             ctile->is_dummy == !internal_accum
             ) {
-            int px = pis->screen_phase[select].x;
-            int py = pis->screen_phase[select].y;
+            int px = pgs->screen_phase[select].x;
+            int py = pgs->screen_phase[select].y;
 
             if (gx_dc_is_pattern1_color(pdevc)) {       /* colored */
                 pdevc->colors.pattern.p_tile = ctile;
@@ -1413,9 +1604,9 @@ typedef struct tile_trans_clist_info_s {
     int rowstride;
     int planestride;
     int n_chan; /* number of pixel planes including alpha */
+    bool has_tags;	/* extra plane for tags */
     int width;
     int height;
-    gs_blend_mode_t blend_mode;
 } tile_trans_clist_info_t;
 
 typedef struct gx_dc_serialized_tile_s {
@@ -1425,6 +1616,7 @@ typedef struct gx_dc_serialized_tile_s {
     gs_matrix step_matrix;
     gs_rect bbox;
     int flags;
+    gs_blend_mode_t blending_mode;	/* in case tile has transparency */
 } gx_dc_serialized_tile_t;
 
 enum {
@@ -1438,7 +1630,7 @@ enum {
 };
 
 static int
-gx_dc_pattern_write_raster(gx_color_tile *ptile, int64_t offset, byte *data, 
+gx_dc_pattern_write_raster(gx_color_tile *ptile, int64_t offset, byte *data,
                            uint *psize, const gx_device *dev)
 {
     int size_b, size_c;
@@ -1446,7 +1638,7 @@ gx_dc_pattern_write_raster(gx_color_tile *ptile, int64_t offset, byte *data,
     int left = *psize;
     int64_t offset1 = offset;
 
-    size_b = sizeof(gx_strip_bitmap) + 
+    size_b = sizeof(gx_strip_bitmap) +
          ptile->tbits.size.y * ptile->tbits.raster * ptile->tbits.num_planes;
     size_c = ptile->tmask.data ? sizeof(gx_strip_bitmap) + ptile->tmask.size.y * ptile->tmask.raster : 0;
     if (data == NULL) {
@@ -1543,6 +1735,8 @@ gx_dc_pattern_trans_write_raster(gx_color_tile *ptile, int64_t offset, byte *dat
     /* Everything that we need to handle the transparent tile */
 
     size = size_h + ptile->ttrans->n_chan * ptile->ttrans->planestride;
+    if (ptile->ttrans->has_tags)
+        size += ptile->ttrans->planestride;
 
     /* data is sent with NULL if the clist writer just wanted the size */
     if (data == NULL) {
@@ -1565,6 +1759,7 @@ gx_dc_pattern_trans_write_raster(gx_color_tile *ptile, int64_t offset, byte *dat
                   | (ptile->has_overlap ? TILE_HAS_OVERLAP : 0);
         buf.step_matrix = ptile->step_matrix;
         buf.bbox = ptile->bbox;
+        buf.blending_mode = ptile->blending_mode;
         if (sizeof(buf) > left) {
             /* For a while we require the client to provide enough buffer size. */
             return_error(gs_error_unregistered); /* Must not happen. */
@@ -1575,9 +1770,9 @@ gx_dc_pattern_trans_write_raster(gx_color_tile *ptile, int64_t offset, byte *dat
         offset1 += sizeof(buf);
 
         /* Do the transparency information now */
-        trans_info.blend_mode = ptile->ttrans->blending_mode;
         trans_info.height = ptile->ttrans->height;
         trans_info.n_chan = ptile->ttrans->n_chan;
+        trans_info.has_tags = ptile->ttrans->has_tags;
         trans_info.planestride = ptile->ttrans->planestride;
         trans_info.rect.p.x = ptile->ttrans->rect.p.x;
         trans_info.rect.p.y = ptile->ttrans->rect.p.y;
@@ -1595,11 +1790,11 @@ gx_dc_pattern_trans_write_raster(gx_color_tile *ptile, int64_t offset, byte *dat
         offset1 += sizeof(trans_info);
     }
 
-    /* Now do the transparency tile data itself.  Note that it may
-       be split up in the writing stage if it is large */
+    /* Now do the transparency tile data itself.  Note that it may be split up
+     * in the writing stage if it is large. The size include n_chan + the tag
+     * plane if this buffer has_tags. */
 
     /* check if we have written it all */
-
     if (offset1 <= size) {
         /* Get the most that we can write */
         int u = min(size, left);
@@ -1607,9 +1802,6 @@ gx_dc_pattern_trans_write_raster(gx_color_tile *ptile, int64_t offset, byte *dat
         /* copy that amount */
         ptr = ptile->ttrans->transbytes;
         memcpy(dp, ptr + (offset1 - size_h), u);
-        left -= u;
-        dp += u;
-        offset1 += u;
     }
     return 0;
 }
@@ -1643,7 +1835,9 @@ gx_dc_pattern_write(
         /* A special case for writing a known pattern :
            Just write the tile id. */
         gs_id id = ptile->id; /* Ensure sizeof(gs_id). */
-
+        if_debug2m('v', dev->memory,
+                   "[v*] Writing trans tile ID into clist, uid = %ld id = %ld \n",
+                   ptile->uid.id, ptile->id);
         memcpy(dp, &ptile->id, sizeof(id));
         *psize = sizeof(gs_id);
         return 0;
@@ -1652,9 +1846,12 @@ gx_dc_pattern_write(
     /* Check if pattern has transparency object
        If so then that is what we will stuff in
        the clist */
-
-    if (ptile->ttrans != NULL)
-        return gx_dc_pattern_trans_write_raster(ptile, offset, data, psize);
+        if (ptile->ttrans != NULL) {
+            if_debug2m('v', dev->memory,
+                       "[v*] Writing trans tile into clist, uid = %ld id = %ld \n",
+                       ptile->uid.id, ptile->id);
+            return gx_dc_pattern_trans_write_raster(ptile, offset, data, psize);
+        }
 
     if (ptile->cdev == NULL)
         return gx_dc_pattern_write_raster(ptile, offset, data, psize, dev);
@@ -1685,6 +1882,7 @@ gx_dc_pattern_write(
                   | (ptile->is_simple ? TILE_IS_SIMPLE : 0)
                   | (ptile->has_overlap ? TILE_HAS_OVERLAP : 0)
                   | (ptile->cdev->common.page_uses_transparency ? TILE_USES_TRANSP : 0);
+        buf.blending_mode = ptile->blending_mode;    /* in case tile has transparency */
         if (sizeof(buf) > left) {
             /* For a while we require the client to provide enough buffer size. */
             return_error(gs_error_unregistered); /* Must not happen. */
@@ -1781,8 +1979,6 @@ gx_dc_pattern_read_raster(gx_color_tile *ptile, const gx_dc_serialized_tile_t *b
         memcpy(ptile->tmask.data +
                 (offset1 - sizeof(gx_dc_serialized_tile_t) - size_b - sizeof(gx_strip_bitmap)), dp, l);
         left -= l;
-        offset1 += l;
-        dp += l;
     }
     return size - left;
 }
@@ -1799,6 +1995,9 @@ gx_dc_pattern_read_trans_buff(gx_color_tile *ptile, int64_t offset,
     int data_size;
 
     data_size = trans_pat->planestride * trans_pat->n_chan;
+    if (trans_pat->has_tags)
+        data_size += trans_pat->planestride;
+
     /* Allocate the bytes */
     if (trans_pat->transbytes == NULL){
         trans_pat->transbytes = gs_alloc_bytes(mem, data_size, "gx_dc_pattern_read_raster");
@@ -1816,8 +2015,6 @@ gx_dc_pattern_read_trans_buff(gx_color_tile *ptile, int64_t offset,
                                     sizeof(tile_trans_clist_info_t), dp, u);
         trans_pat->transbytes = save;
         left -= u;
-        offset1 += u;
-        dp += u;
     }
      return size - left;
 }
@@ -1825,7 +2022,7 @@ gx_dc_pattern_read_trans_buff(gx_color_tile *ptile, int64_t offset,
 int
 gx_dc_pattern_read(
     gx_device_color *       pdevc,
-    const gs_imager_state * pis,
+    const gs_gstate * pgs,
     const gx_device_color * prior_devc,
     const gx_device *       dev,
     int64_t                    offset,
@@ -1840,7 +2037,7 @@ gx_dc_pattern_read(
     int64_t offset1 = offset;
     gx_color_tile *ptile;
     int code, l;
-    tile_trans_clist_info_t trans_info;
+    tile_trans_clist_info_t trans_info = { { { 0 } } };
     int cache_space_needed;
 
     if (offset == 0) {
@@ -1890,13 +2087,13 @@ gx_dc_pattern_read(
             /* the following works for raster or clist patterns */
             cache_space_needed = buf.size_b + buf.size_c;
         }
-        gx_pattern_cache_ensure_space((gs_imager_state *)pis, cache_space_needed);
+        gx_pattern_cache_ensure_space((gs_gstate *)pgs, cache_space_needed);
 
-        code = gx_pattern_cache_get_entry((gs_imager_state *)pis, /* Break 'const'. */
+        code = gx_pattern_cache_get_entry((gs_gstate *)pgs, /* Break 'const'. */
                         buf.id, &ptile);
         if (code < 0)
             return code;
-        gx_pattern_cache_update_used((gs_imager_state *)pis, cache_space_needed);
+        gx_pattern_cache_update_used((gs_gstate *)pgs, cache_space_needed);
         ptile->bits_used = cache_space_needed;
         pdevc->type = &gx_dc_pattern;
         pdevc->colors.pattern.p_tile = ptile;
@@ -1908,6 +2105,7 @@ gx_dc_pattern_read(
         ptile->tiling_type = (buf.flags & TILE_TYPE_MASK)>>TILE_TYPE_SHIFT;
         ptile->is_simple = !!(buf.flags & TILE_IS_SIMPLE);
         ptile->has_overlap = !!(buf.flags & TILE_HAS_OVERLAP);
+        ptile->blending_mode = buf.blending_mode;
         ptile->is_dummy = 0;
 
         if (!(buf.flags & TILE_IS_CLIST)) {
@@ -1919,9 +2117,9 @@ gx_dc_pattern_read(
                 ptile->ttrans = new_pattern_trans_buff(mem);
                 /* trans_info was loaded above */
 
-                ptile->ttrans->blending_mode = trans_info.blend_mode;
                 ptile->ttrans->height = trans_info.height;
                 ptile->ttrans->n_chan = trans_info.n_chan;
+                ptile->ttrans->has_tags = trans_info.has_tags;
                 ptile->ttrans->pdev14 = NULL;
                 ptile->ttrans->planestride = trans_info.planestride;
                 ptile->ttrans->rect.p.x = trans_info.rect.p.x;
@@ -1931,6 +2129,9 @@ gx_dc_pattern_read(
                 ptile->ttrans->rowstride = trans_info.rowstride;
                 ptile->ttrans->width = trans_info.width;
                 pdevc->type = &gx_dc_pattern_trans;
+                if_debug2m('v', pgs->memory,
+                           "[v*] Reading trans tile from clist into cache, uid = %ld id = %ld \n",
+                           ptile->uid.id, ptile->id);
 
                 code = gx_dc_pattern_read_trans_buff(ptile, offset1, dp, left, mem);
                 if (code < 0)
@@ -1952,7 +2153,7 @@ gx_dc_pattern_read(
         ptile->tbits.size.x = size_b; /* HACK: Use unrelated field for saving size_b between calls. */
         ptile->tbits.size.y = size_c; /* HACK: Use unrelated field for saving size_c between calls. */
         {
-            gs_state state;
+            gs_gstate state;
             gs_pattern1_instance_t inst;
 
             memset(&state, 0, sizeof(state));
@@ -1968,8 +2169,6 @@ gx_dc_pattern_read(
                                &inst, "gx_dc_pattern_read");
             if (ptile->cdev == NULL)
                 return_error(gs_error_VMerror);
-            ptile->cdev->common.band_params.page_uses_transparency =
-                                                         !!(buf.flags & TILE_USES_TRANSP);
             ptile->cdev->common.page_uses_transparency = !!(buf.flags & TILE_USES_TRANSP);
             code = dev_proc(&ptile->cdev->writer, open_device)((gx_device *)&ptile->cdev->writer);
             if (code < 0)
@@ -1985,7 +2184,6 @@ gx_dc_pattern_read(
             return gx_dc_pattern_read_raster(ptile, NULL, offset1, dp, left, mem);
 
         size_b = ptile->tbits.size.x;
-        size_c = ptile->tbits.size.y;
     }
     if (offset1 <= sizeof(buf) + size_b) {
         l = min(left, size_b - (offset1 - sizeof(buf)));
@@ -2005,7 +2203,6 @@ gx_dc_pattern_read(
             return code;
         l = code;
         left -= l;
-        offset1 += l;
     }
     return size - left;
 }

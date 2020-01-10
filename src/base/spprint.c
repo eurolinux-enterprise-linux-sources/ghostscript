@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -83,7 +83,7 @@ pprintd1(stream * s, const char *format, int v)
     if (*fp == 0 || fp[1] != 'd')	/* shouldn't happen! */
         lprintf1("Bad format in pprintd1: %s\n", format);
 #endif
-    sprintf(str, "%d", v);
+    gs_sprintf(str, "%d", v);
     pputs_short(s, str);
     return pprintf_scan(s, fp + 2);
 }
@@ -106,7 +106,7 @@ pprintd4(stream * s, const char *format, int v1, int v2, int v3, int v4)
 /* Print (a) floating point number(s) using a format. */
 /* See gdevpdfx.h for why this is needed. */
 const char *
-pprintg1(stream * s, const char *format, floatp v)
+pprintg1(stream * s, const char *format, double v)
 {
     const char *fp = pprintf_scan(s, format);
     char dot, str[150];
@@ -115,12 +115,12 @@ pprintg1(stream * s, const char *format, floatp v)
     if (*fp == 0 || fp[1] != 'g')	/* shouldn't happen! */
         lprintf1("Bad format in pprintg: %s\n", format);
 #endif
-    sprintf(str, "%f", 1.5);
+    gs_sprintf(str, "%f", 1.5);
     dot = str[1]; /* locale-dependent */
-    sprintf(str, "%g", v);
+    gs_sprintf(str, "%g", v);
     if (strchr(str, 'e')) {
         /* Bad news.  Try again using f-format. */
-        sprintf(str, (fabs(v) > 1 ? "%1.1f" : "%1.8f"), v);
+        gs_sprintf(str, (fabs(v) > 1 ? "%1.1f" : "%1.8f"), v);
     }
     /* Juggling locales isn't thread-safe. Posix me harder. */
     if (dot != '.') {
@@ -132,24 +132,24 @@ pprintg1(stream * s, const char *format, floatp v)
     return pprintf_scan(s, fp + 2);
 }
 const char *
-pprintg2(stream * s, const char *format, floatp v1, floatp v2)
+pprintg2(stream * s, const char *format, double v1, double v2)
 {
     return pprintg1(s, pprintg1(s, format, v1), v2);
 }
 const char *
-pprintg3(stream * s, const char *format, floatp v1, floatp v2, floatp v3)
+pprintg3(stream * s, const char *format, double v1, double v2, double v3)
 {
     return pprintg2(s, pprintg1(s, format, v1), v2, v3);
 }
 const char *
-pprintg4(stream * s, const char *format, floatp v1, floatp v2, floatp v3,
-         floatp v4)
+pprintg4(stream * s, const char *format, double v1, double v2, double v3,
+         double v4)
 {
     return pprintg2(s, pprintg2(s, format, v1, v2), v3, v4);
 }
 const char *
-pprintg6(stream * s, const char *format, floatp v1, floatp v2, floatp v3,
-         floatp v4, floatp v5, floatp v6)
+pprintg6(stream * s, const char *format, double v1, double v2, double v3,
+         double v4, double v5, double v6)
 {
     return pprintg3(s, pprintg3(s, format, v1, v2, v3), v4, v5, v6);
 }
@@ -165,7 +165,7 @@ pprintld1(stream * s, const char *format, long v)
     if (*fp == 0 || fp[1] != 'l' || fp[2] != 'd')	/* shouldn't happen! */
         lprintf1("Bad format in pprintld: %s\n", format);
 #endif
-    sprintf(str, "%ld", v);
+    gs_sprintf(str, "%ld", v);
     pputs_short(s, str);
     return pprintf_scan(s, fp + 3);
 }

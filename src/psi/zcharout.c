@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -105,7 +105,7 @@ zchar_get_metrics(const gs_font_base * pbfont, const ref * pcnref,
                                           4, psbw);
                         break;
                     default:
-                        return_error(e_rangecheck);
+                        return_error(gs_error_rangecheck);
                 }
                 if (code < 0)
                     return code;
@@ -311,7 +311,7 @@ zchar_charstring_data(gs_font *font, const ref *pgref, gs_glyph_data_t *pgd)
     ref *pcstr;
 
     if (dict_find(&pfont_data(font)->CharStrings, pgref, &pcstr) <= 0)
-        return_error(e_undefined);
+        return_error(gs_error_undefined);
     if (!r_has_type(pcstr, t_string)) {
         /*
          * The ADOBEPS4 Windows driver replaces the .notdef entry of
@@ -327,7 +327,7 @@ zchar_charstring_data(gs_font *font, const ref *pgref, gs_glyph_data_t *pgd)
             )
             return charstring_make_notdef(pgd, font);
         else
-            return_error(e_typecheck);
+            return_error(gs_error_typecheck);
     }
     gs_glyph_data_from_string(pgd, pcstr->value.const_bytes, r_size(pcstr),
                               NULL);
@@ -373,7 +373,7 @@ charstring_make_notdef(gs_glyph_data_t *pgd, gs_font *font)
     byte *chars = gs_alloc_string(font->memory, len, "charstring_make_notdef");
 
     if (chars == 0)
-        return_error(e_VMerror);
+        return_error(gs_error_VMerror);
     gs_glyph_data_from_string(pgd, chars, len, font);
     if (pfont->data.lenIV < 0)
         memcpy(chars, char_data, sizeof(char_data));
@@ -410,7 +410,7 @@ next:
     if (index >= 0) {
         switch (r_type(elt)) {
             case t_integer:
-                *pglyph = gs_min_cid_glyph + elt[0].value.intval;
+                *pglyph = GS_MIN_CID_GLYPH + elt[0].value.intval;
                 break;
             case t_name:
                 *pglyph = name_index(mem, elt);

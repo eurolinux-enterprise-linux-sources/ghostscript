@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -112,13 +112,13 @@ int gp_serialnumber(void);
  * Read the current time (in seconds since an implementation-defined epoch)
  * into ptm[0], and fraction (in nanoseconds) into ptm[1].
  */
-void gp_get_realtime(long ptm[2]);
+void gp_get_realtime(long *ptm);
 
 /*
  * Read the current user CPU time (in seconds) into ptm[0],
  * and fraction (in nanoseconds) into ptm[1].
  */
-void gp_get_usertime(long ptm[2]);
+void gp_get_usertime(long *ptm);
 
 /* ------ Reading lines from stdin ------ */
 
@@ -177,8 +177,13 @@ const char *gp_getenv_display(void);
  * parameter, but it would break too many clients to make this change now.)
  * Note that this is the size of the buffer, not the maximum number of
  * characters: the latter is one less, because of the terminating \0.
+ *
+ * This used to be 260, the same as the MAX_PATH value on Windows,
+ * but although MAX_PATH still exists on Windows, it is no longer
+ * the maximum length of a path - doh??
+ * We now use 4k as a reasonable limit for most environments.
  */
-#define gp_file_name_sizeof 260 /* == MAX_PATH on Windows */
+#define gp_file_name_sizeof 4096
 
 /* Define the character used for separating file names in a list. */
 extern const char gp_file_name_list_separator;
@@ -226,6 +231,26 @@ FILE *gp_open_scratch_file(const gs_memory_t *mem,
 
 /* Open a file with the given name, as a stream of uninterpreted bytes. */
 FILE *gp_fopen(const char *fname, const char *mode);
+
+/* gp_stat is defined in stat_.h rather than here due to macro problems */
+
+/* Test whether this platform supports the sharing of file descriptors */
+int gp_can_share_fdesc(void);
+
+/* Create a self-deleting scratch file */
+FILE *gp_open_scratch_file_rm(const gs_memory_t *mem,
+                              const char        *prefix,
+                                    char         fname[gp_file_name_sizeof],
+                              const char        *mode);
+
+/* Create a second open FILE on the basis of a given one */
+FILE *gp_fdup(FILE *f, const char *mode);
+
+/* Read from a specified offset within a FILE into a buffer */
+int gp_fpread(char *buf, uint count, int64_t offset, FILE *f);
+
+/* Write to a specified offset within a FILE from a buffer */
+int gp_fpwrite(char *buf, uint count, int64_t offset, FILE *f);
 
 /* Force given file into binary mode (no eol translations, etc) */
 /* if 2nd param true, text mode if 2nd param false */
@@ -306,7 +331,7 @@ const char *gp_file_name_parent(void);
 /* Answer whether the platform allows parent refenences. */
 /*	unix, Win, Mac: yes */
 /*	VMS:	no.         */
-bool gp_file_name_is_partent_allowed(void);
+bool gp_file_name_is_parent_allowed(void);
 
 /* Answer whether an empty item is meanful in file names on the platform. */
 /*	unix, Win:  no	    */
@@ -323,37 +348,6 @@ int gp_read_macresource(byte *buf, const char *fname,
 
 /* Returns true when the character can be used in the file name. */
 bool gp_file_name_good_char(unsigned char c);
-
-/* ------ persistent cache interface ------ */
-
-/*
- * This is used for access to data cached between invocations of
- * Ghostscript. It is generally used for saving reusable data that
- * is expensive to compute. Concurrent access by multiple instances
- * is safe. Because of this care should be taken to use a new data
- * type when the format of the cached data changes.
- *
- * Generic data buffers are stored under a combination of type and
- * key. It is up the to client to interpret the data buffer appropriately.
- * An insert overwrites any previous entry under that type and key.
- * A query if successful uses the passed callback to allocate a buffer
- * and fills it with the retrieved data. The caller is thus responsible
- * for the buffer's memory management.
- *
- * See zmisc.c for postscript test operators and an example implementation.
- */
-
-/* return 0 on successful insert, non-zero otherwise */
-int gp_cache_insert(int type, byte *key, int keylen, void *buffer, int buflen);
-
-/* return the length of the buffer on success, a negative value otherwise */
-typedef void *(*gp_cache_alloc)(void *userdata, int bytes);
-int gp_cache_query(int type, byte* key, int keylen, void **buffer,
-    gp_cache_alloc alloc, void *userdata);
-
-/* cache data types */
-#define GP_CACHE_TYPE_TEST 0
-#define GP_CACHE_TYPE_FONTMAP 1
 
 /* ------ Printer accessing ------ */
 
@@ -489,6 +483,8 @@ int64_t gp_ftell_64(FILE *strm);
 
 int gp_fseek_64(FILE *strm, int64_t offset, int origin);
 
+bool gp_fseekable (FILE *f);
+
 /* We don't define gp_fread_64, gp_fwrite_64,
    because (1) known platforms allow regular fread, fwrite
    to be applied to a file opened with O_LARGEFILE,
@@ -496,5 +492,16 @@ int gp_fseek_64(FILE *strm, int64_t offset, int origin);
    perform writing/reading a long (over 4gb) block
    in one operation.
  */
+
+/* Some platforms (currently only windows) may supply a function to convert
+ * characters from an encoded command line arg from the local encoding into
+ * a unicode codepoint. Returns EOF for end of file (or string).
+ */
+int
+gp_local_arg_encoding_get_codepoint(FILE *file, const char **astr);
+
+int
+gp_xpsprint(char *filename, char *printername, int *result);
+
 
 #endif /* gp_INCLUDED */

@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -24,7 +24,7 @@
 #include "gxdevice.h"
 #include "gdevbbox.h"
 #include "gxiparam.h"
-#include "gxistate.h"
+#include "gxgstate.h"
 #include "gxhldevc.h"
 #include "stream.h"
 
@@ -66,9 +66,6 @@ typedef struct gx_device_vector_s gx_device_vector;
 /* Define the maximum size of the output file name. */
 #define fname_size (gp_file_name_sizeof - 1)
 
-/* Define the longest dash pattern we can remember. */
-#define max_dash 11
-
 /*
  * Define procedures for writing common output elements.  Not all devices
  * will support all of these elements.  Note that these procedures normally
@@ -89,6 +86,7 @@ typedef enum {
     gx_path_type_even_odd = 8,
     gx_path_type_optimize = 16,	/* OK to optimize paths by merging seg.s */
     gx_path_type_always_close = 32, /* include final closepath even if not stroke */
+    gx_path_type_dashed_stroke = 64, /* for high level devices, safe to optimise rectangular subpaths as rectangles if available (not legal if dashing strokes) */
     gx_path_type_rule = gx_path_type_winding_number | gx_path_type_even_odd
 } gx_path_type_t;
 typedef enum {
@@ -104,22 +102,22 @@ typedef struct gx_device_vector_procs_s {
        beginpage. in_page must also be set to false in the device's
        output_page method to request that beginpage be called again
        when drawing next occurs. */
-    /* Imager state */
-    int (*setlinewidth) (gx_device_vector * vdev, floatp width);
+    /* gs_gstate */
+    int (*setlinewidth) (gx_device_vector * vdev, double width);
     int (*setlinecap) (gx_device_vector * vdev, gs_line_cap cap);
     int (*setlinejoin) (gx_device_vector * vdev, gs_line_join join);
-    int (*setmiterlimit) (gx_device_vector * vdev, floatp limit);
+    int (*setmiterlimit) (gx_device_vector * vdev, double limit);
     int (*setdash) (gx_device_vector * vdev, const float *pattern,
-                    uint count, floatp offset);
-    int (*setflat) (gx_device_vector * vdev, floatp flatness);
+                    uint count, double offset);
+    int (*setflat) (gx_device_vector * vdev, double flatness);
     int (*setlogop) (gx_device_vector * vdev, gs_logical_operation_t lop,
                      gs_logical_operation_t diff);
     /* Other state */
-    bool (*can_handle_hl_color) (gx_device_vector * vdev, const gs_imager_state * pis,
+    bool (*can_handle_hl_color) (gx_device_vector * vdev, const gs_gstate * pgs,
                          const gx_drawing_color * pdc);
-    int (*setfillcolor) (gx_device_vector * vdev, const gs_imager_state * pis,
+    int (*setfillcolor) (gx_device_vector * vdev, const gs_gstate * pgs,
                          const gx_drawing_color * pdc);
-    int (*setstrokecolor) (gx_device_vector * vdev, const gs_imager_state * pis,
+    int (*setstrokecolor) (gx_device_vector * vdev, const gs_gstate * pgs,
                            const gx_drawing_color * pdc);
     /* Paths */
     /* dopath and dorect are normally defaulted */
@@ -128,21 +126,21 @@ typedef struct gx_device_vector_procs_s {
     int (*dorect) (gx_device_vector * vdev, fixed x0, fixed y0, fixed x1,
                    fixed y1, gx_path_type_t type);
     int (*beginpath) (gx_device_vector * vdev, gx_path_type_t type);
-    int (*moveto) (gx_device_vector * vdev, floatp x0, floatp y0,
-                   floatp x, floatp y, gx_path_type_t type);
-    int (*lineto) (gx_device_vector * vdev, floatp x0, floatp y0,
-                   floatp x, floatp y, gx_path_type_t type);
-    int (*curveto) (gx_device_vector * vdev, floatp x0, floatp y0,
-                    floatp x1, floatp y1, floatp x2, floatp y2,
-                    floatp x3, floatp y3, gx_path_type_t type);
-    int (*closepath) (gx_device_vector * vdev, floatp x0, floatp y0,
-                      floatp x_start, floatp y_start, gx_path_type_t type);
+    int (*moveto) (gx_device_vector * vdev, double x0, double y0,
+                   double x, double y, gx_path_type_t type);
+    int (*lineto) (gx_device_vector * vdev, double x0, double y0,
+                   double x, double y, gx_path_type_t type);
+    int (*curveto) (gx_device_vector * vdev, double x0, double y0,
+                    double x1, double y1, double x2, double y2,
+                    double x3, double y3, gx_path_type_t type);
+    int (*closepath) (gx_device_vector * vdev, double x0, double y0,
+                      double x_start, double y_start, gx_path_type_t type);
     int (*endpath) (gx_device_vector * vdev, gx_path_type_t type);
 } gx_device_vector_procs;
 
 /* Default implementations of procedures */
 /* setflat does nothing */
-int gdev_vector_setflat(gx_device_vector * vdev, floatp flatness);
+int gdev_vector_setflat(gx_device_vector * vdev, double flatness);
 
 /* dopath may call dorect, beginpath, moveto/lineto/curveto/closepath, */
 /* endpath */
@@ -167,8 +165,9 @@ int gdev_vector_dorect(gx_device_vector * vdev, fixed x0, fixed y0,
         uint strmbuf_size;\
         int open_options;	/* see below */\
                 /* Graphics state */\
-        gs_imager_state state;\
-        float dash_pattern[max_dash];\
+        gs_gstate state;\
+        float *dash_pattern;\
+        uint dash_pattern_size;\
         bool fill_used_process_color;\
         bool stroke_used_process_color;\
         gx_hl_saved_color saved_fill_color;\
@@ -194,7 +193,8 @@ int gdev_vector_dorect(gx_device_vector * vdev, fixed x0, fixed y0,
         0,		/* strmbuf_size */\
         0,		/* open_options */\
          { 0 },		/* state */\
-         { 0 },		/* dash_pattern */\
+        0,      /* dash_pattern */\
+        0,      /* dash pattern size */\
         true,		/* fill_used_process_color */\
         true,		/* stroke_used_process_color */\
          { 0 },		/* fill_color ****** WRONG ****** */\
@@ -216,11 +216,11 @@ struct gx_device_vector_s {
 /* extern its descriptor for the sake of subclasses. */
 extern_st(st_device_vector);
 #define public_st_device_vector()	/* in gdevvec.c */\
-  gs_public_st_suffix_add3_final(st_device_vector, gx_device_vector,\
+  gs_public_st_suffix_add4_final(st_device_vector, gx_device_vector,\
     "gx_device_vector", device_vector_enum_ptrs,\
     device_vector_reloc_ptrs, gx_device_finalize, st_device, strm, strmbuf,\
-    bbox_device)
-#define st_device_vector_max_ptrs (st_device_max_ptrs + 3)
+    dash_pattern, bbox_device)
+#define st_device_vector_max_ptrs (st_device_max_ptrs + 4)
 
 /* ================ Utility procedures ================ */
 
@@ -258,13 +258,13 @@ int gdev_vector_update_log_op(gx_device_vector * vdev,
 /* Bring the fill color up to date. */
 /* May call setfillcolor. */
 int gdev_vector_update_fill_color(gx_device_vector * vdev,
-                                  const gs_imager_state * pis,
+                                  const gs_gstate * pgs,
                                   const gx_drawing_color * pdcolor);
 
 /* Bring state up to date for filling. */
 /* May call setflat, setfillcolor, setlogop. */
 int gdev_vector_prepare_fill(gx_device_vector * vdev,
-                             const gs_imager_state * pis,
+                             const gs_gstate * pgs,
                              const gx_fill_params * params,
                              const gx_drawing_color * pdcolor);
 
@@ -272,12 +272,12 @@ int gdev_vector_prepare_fill(gx_device_vector * vdev,
 /* for the line width and dash offset explicitly. */
 /* May call setlinewidth, setlinecap, setlinejoin, setmiterlimit, */
 /* setdash, setflat, setstrokecolor, setlogop. */
-/* Any of pis, params, and pdcolor may be NULL. */
+/* Any of pgs, params, and pdcolor may be NULL. */
 int gdev_vector_prepare_stroke(gx_device_vector * vdev,
-                               const gs_imager_state * pis,
+                               const gs_gstate * pgs,
                                const gx_stroke_params * params,
                                const gx_drawing_color * pdcolor,
-                               floatp scale);
+                               double scale);
 
 /*
  * Compute the scale for transforming the line width and dash pattern for a
@@ -286,7 +286,7 @@ int gdev_vector_prepare_stroke(gx_device_vector * vdev,
  * Return 0 if only scaling, 1 if a full matrix is needed.
  */
 int gdev_vector_stroke_scaling(const gx_device_vector *vdev,
-                               const gs_imager_state *pis,
+                               const gs_gstate *pgs,
                                double *pscale, gs_matrix *pmat);
 
 /* Prepare to write a path using the default implementation. */
@@ -307,6 +307,11 @@ void gdev_vector_dopath_init(gdev_vector_dopath_state_t *state,
 /* Write a segment of a path using the default implementation. */
 int gdev_vector_dopath_segment(gdev_vector_dopath_state_t *state, int pe_op,
                                gs_fixed_point vs[3]);
+
+typedef struct gdev_vector_path_seg_record_s {
+    int op;
+    gs_fixed_point vs[3];
+} gdev_vector_path_seg_record;
 
 /* Write a polygon as part of a path (type = gx_path_type_none) */
 /* or as a path. */
@@ -363,7 +368,7 @@ extern_st(st_vector_image_enum);
  * enumerator.
  */
 int gdev_vector_begin_image(gx_device_vector * vdev,
-                        const gs_imager_state * pis, const gs_image_t * pim,
+                        const gs_gstate * pgs, const gs_image_t * pim,
                         gs_image_format_t format, const gs_int_rect * prect,
               const gx_drawing_color * pdcolor, const gx_clip_path * pcpath,
                     gs_memory_t * mem, const gx_image_enum_procs_t * pprocs,
@@ -379,6 +384,7 @@ int gdev_vector_end_image(gx_device_vector * vdev,
 /* Redefine get/put_params to handle OutputFile. */
 dev_proc_put_params(gdev_vector_put_params);
 dev_proc_get_params(gdev_vector_get_params);
+int gdev_vector_get_param(gx_device *dev, char *Param, void *list);
 
 /* ---------------- Defaults ---------------- */
 
@@ -393,5 +399,6 @@ dev_proc_stroke_path(gdev_vector_stroke_path);
 dev_proc_fill_trapezoid(gdev_vector_fill_trapezoid);
 dev_proc_fill_parallelogram(gdev_vector_fill_parallelogram);
 dev_proc_fill_triangle(gdev_vector_fill_triangle);
+dev_proc_dev_spec_op(gdev_vector_dev_spec_op);
 
 #endif /* gdevvec_INCLUDED */

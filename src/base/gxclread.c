@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -28,14 +28,13 @@
 #include "gxgetbit.h"
 #include "gxhttile.h"
 #include "gdevplnx.h"
+#include "gdevp14.h"
 #include "gsmemory.h"
-#include "gsmemlok.h"
-#include "vdtrace.h"
 #include "gsicc_cache.h"
 /*
  * We really don't like the fact that gdevprn.h is included here, since
  * command lists are supposed to be usable for purposes other than printer
- * devices; but gdev_prn_colors_used and gdev_create_buf_device are
+ * devices; but gdev_prn_color_usage and gdev_create_buf_device are
  * currently only applicable to printer devices.
  */
 #include "gdevprn.h"
@@ -43,7 +42,6 @@
 #include "strimpl.h"
 
 /* forward decl */
-static int gx_clist_reader_read_band_complexity(gx_device_clist *dev);
 private_st_clist_icctable_entry();
 private_st_clist_icctable();
 
@@ -199,12 +197,10 @@ rb:
                 ss->offset_map_length++;
             }
 #	    endif
-            if_debug7m('l', ss->local_memory,
-                       "[l]reading for bands (%d,%d) at bfile %ld, cfile %ld, length %u color %d rop %d\n",
-                       bmin, bmax,
-                       (long)(io_procs->ftell(bfile) - sizeof(ss->b_this)), /* stefan foo was: 2 * sizeof ?? */
-                       (long)pos, left, ss->b_this.band_complexity.uses_color,
-                       ss->b_this.band_complexity.nontrivial_rops);
+            if_debug5m('l', ss->local_memory,
+                      "[l]reading for bands (%d,%d) at bfile %ld, cfile %ld, length %u\n",
+                      bmin, bmax,
+                      (long)(io_procs->ftell(bfile) - sizeof(ss->b_this)), (long)pos, left);
         }
     }
     pw->ptr = q;
@@ -231,7 +227,7 @@ buffer_segment_index(const stream_band_read_state *ss, uint buffer_offset, uint 
             return i;
         }
     }
-    gs_note_error(gs_error_unregistered); /* Must not happen. */
+    (void)gs_note_error(gs_error_unregistered); /* Must not happen. */
     return -1;
 }
 
@@ -290,9 +286,7 @@ top_up_offset_map(stream_state * st, const byte *buf, const byte *ptr, const byt
 static int
 clist_plane_raster(const gx_device *dev, const gx_render_plane_t *render_plane)
 {
-    return bitmap_raster(dev->width *
-                         (render_plane && render_plane->index >= 0 ?
-                          render_plane->depth : dev->color_info.depth));
+    return gx_device_raster_plane(dev, render_plane);
 }
 
 /* Select full-pixel rendering if required for RasterOp. */
@@ -355,7 +349,11 @@ clist_close_writer_and_init_reader(gx_device_clist *cldev)
         code = clist_render_init(cldev);
         if (code < 0)
             return code;
-         /* Check for and get ICC profile table */
+        /* allocate and load the color_usage_array */
+        code = clist_read_color_usage_array(crdev);
+        if (code < 0)
+            return code;
+        /* Check for and get ICC profile table */
         code = clist_read_icctable(crdev);
         if (code < 0)
             return code;
@@ -367,40 +365,66 @@ clist_close_writer_and_init_reader(gx_device_clist *cldev)
             return_error(gs_error_VMerror);
         }
 
-        code = (crdev->icc_cache_cl = gsicc_cache_new(base_mem)) == NULL ? gs_error_VMerror : code;
+        if (crdev->icc_cache_cl == NULL) {
+            code = (crdev->icc_cache_cl = gsicc_cache_new(base_mem)) == NULL ? gs_error_VMerror : code;
+        }
     }
+
+    check_device_compatible_encoding((gx_device *)cldev);
+
     return code;
 }
 
 /* Used to find the command block information in the bfile
    that is related to extra information stored in a psuedo band.
    Currently application of this is storage of the ICC profile
-   table.  We may eventually use this for storing other information
-   like compressed images.   */
+   table and the per-band color_usage array.  We may eventually
+   use this for storing other information like compressed images.   */
 
 static int
 clist_find_pseudoband(gx_device_clist_reader *crdev, int band, cmd_block *cb)
 {
 
-    clist_file_ptr bfile = crdev->page_info.bfile;
-    int64_t save_pos = crdev->page_info.bfile_end_pos;
+    gx_band_page_info_t *page_info = &(crdev->page_info);
+    clist_file_ptr bfile = page_info->bfile;
+    int64_t save_pos = page_info->bfile_end_pos;
     int64_t start_pos;
+    int code;
 
+    if (bfile == NULL) {
+        /* files haven't been opened yet. Do it now */
+        char fmode[4];
+
+        strcpy(fmode, "r");
+        strncat(fmode, gp_fmode_binary_suffix, 1);
+        if ((code=page_info->io_procs->fopen(page_info->cfname, fmode,
+                      &page_info->cfile,
+                      crdev->memory, crdev->memory, true)) < 0 ||
+                      (code=page_info->io_procs->fopen(page_info->bfname, fmode,
+                      &page_info->bfile,
+                      crdev->memory, crdev->memory, false)) < 0) {
+            return code;
+        }
+        bfile = page_info->bfile;
+    }
     /* Go to the start of the last command block */
-    start_pos = crdev->page_info.bfile_end_pos - sizeof(cmd_block);
-    crdev->page_info.io_procs->fseek(bfile, start_pos, SEEK_SET, crdev->page_info.bfname);
+    start_pos = page_info->bfile_end_pos - sizeof(cmd_block);
+    page_info->io_procs->fseek(bfile, start_pos, SEEK_SET, page_info->bfname);
     while( 1 ) {
-        crdev->page_info.io_procs->fread_chars(cb, sizeof(cmd_block), bfile);
+        int read = page_info->io_procs->fread_chars(cb, sizeof(cmd_block), bfile);
+
+        if (read < sizeof(cmd_block))
+	    return -1;
         if (cb->band_max == band && cb->band_min == band) {
-            crdev->page_info.io_procs->fseek(bfile, save_pos, SEEK_SET, crdev->page_info.bfname);
+            page_info->io_procs->fseek(bfile, save_pos, SEEK_SET, page_info->bfname);
             return(0);  /* Found it */
         }
         start_pos -= sizeof(cmd_block);
         if (start_pos < 0) {
-           crdev->page_info.io_procs->fseek(bfile, save_pos, SEEK_SET, crdev->page_info.bfname);
+           page_info->io_procs->fseek(bfile, save_pos, SEEK_SET, page_info->bfname);
            return(-1);  /* Did not find it before getting into other stuff in normal bands */
         }
-        crdev->page_info.io_procs->fseek(bfile, start_pos, SEEK_SET, crdev->page_info.bfname);
+        page_info->io_procs->fseek(bfile, start_pos, SEEK_SET, page_info->bfname);
     }
 }
 
@@ -420,6 +444,29 @@ clist_read_chunk(gx_device_clist_reader *crdev, int64_t position, int size, unsi
     /* Restore our position */
     crdev->page_info.io_procs->fseek(cfile, save_pos, SEEK_SET, crdev->page_info.cfname);
     return 0;
+}
+
+/* read the color_usage_array back from the pseudo band */
+int
+clist_read_color_usage_array(gx_device_clist_reader *crdev)
+{
+    int code, size_data = crdev->nbands * sizeof(gx_color_usage_t );
+    cmd_block cb;
+
+    if (crdev->color_usage_array != NULL)
+        gs_free_object(crdev->memory, crdev->color_usage_array,
+                       "clist reader color_usage_array");
+    crdev->color_usage_array = (gx_color_usage_t *)gs_alloc_bytes(crdev->memory, size_data,
+                       "clist reader color_usage_array");
+    if (crdev->color_usage_array == NULL)
+        return_error(gs_error_VMerror);
+
+    code = clist_find_pseudoband(crdev, crdev->nbands + COLOR_USAGE_OFFSET - 1, &cb);
+    if (code < 0)
+        return code;
+
+    code = clist_read_chunk(crdev, cb.pos, size_data, (unsigned char *)crdev->color_usage_array);
+    return code;
 }
 
 /* Unserialize the icc table information stored in the cfile and
@@ -450,7 +497,7 @@ clist_unserialize_icctable(gx_device_clist_reader *crdev, cmd_block *cb)
         return gs_rethrow(-1, "insufficient memory for icc table buffer reader");
     /* Get the data */
     clist_read_chunk(crdev, cb->pos + 4, size_data, buf);
-    icc_table = gs_alloc_struct(stable_mem, clist_icctable_t, 
+    icc_table = gs_alloc_struct(stable_mem, clist_icctable_t,
                                 &st_clist_icctable, "clist_read_icctable");
     if (icc_table == NULL) {
         gs_free_object(stable_mem, buf_start, "clist_read_icctable");
@@ -496,7 +543,7 @@ clist_read_icctable(gx_device_clist_reader *crdev)
 
     /* First get the command block which will tell us where the
        information is stored in the cfile */
-    code = clist_find_pseudoband(crdev, crdev->nbands + ICC_BAND_OFFSET - 1, &cb);
+    code = clist_find_pseudoband(crdev, crdev->nbands + ICC_TABLE_OFFSET - 1, &cb);
     if (code < 0)
         return(0);   /* No ICC information */
     /* Unserialize the icc_table from the cfile */
@@ -509,21 +556,18 @@ int
 clist_render_init(gx_device_clist *dev)
 {
     gx_device_clist_reader * const crdev = &dev->reader;
-    int code;
 
     crdev->ymin = crdev->ymax = 0;
     crdev->yplane.index = -1;
-    /* For normal rasterizing, pages and num_pages are zero. */
+    /* For normal rasterizing, pages and num_pages is 1. */
     crdev->pages = 0;
-    crdev->num_pages = 0;
-    crdev->band_complexity_array = NULL;
+    crdev->num_pages = 1;		/* always at least one page */
     crdev->offset_map = NULL;
     crdev->icc_table = NULL;
-    crdev->icc_cache_cl = NULL;
+    crdev->color_usage_array = NULL;
     crdev->render_threads = NULL;
 
-    code = gx_clist_reader_read_band_complexity(dev);
-    return code;
+    return 0;
 }
 
 /* Copy a rasterized rectangle to the client, rasterizing if needed. */
@@ -532,6 +576,7 @@ clist_get_bits_rectangle(gx_device *dev, const gs_int_rect * prect,
                          gs_get_bits_params_t *params, gs_int_rect **unread)
 {
     gx_device_clist *cldev = (gx_device_clist *)dev;
+    gx_device_clist_reader *crdev = &cldev->reader;
     gx_device_clist_common *cdev = (gx_device_clist_common *)dev;
     gs_get_bits_options_t options = params->options;
     int y = prect->p.y;
@@ -540,7 +585,7 @@ clist_get_bits_rectangle(gx_device *dev, const gs_int_rect * prect,
     gs_int_rect band_rect;
     int lines_rasterized;
     gx_device *bdev;
-    int num_planes =
+    uint num_planes =
         (options & GB_PACKING_CHUNKY ? 1 :
          options & GB_PACKING_PLANAR ? dev->color_info.num_components :
          options & GB_PACKING_BIT_PLANAR ? dev->color_info.depth :
@@ -581,19 +626,20 @@ clist_get_bits_rectangle(gx_device *dev, const gs_int_rect * prect,
     clist_select_render_plane(dev, y, line_count, &render_plane, plane_index);
     code = gdev_create_buf_device(cdev->buf_procs.create_buf_device,
                                   &bdev, cdev->target, y, &render_plane,
-                                  dev->memory, clist_get_band_complexity(dev,y));
+                                  dev->memory,
+                                  &(crdev->color_usage_array[y/crdev->page_band_height]));
     if (code < 0)
         return code;
     code = clist_rasterize_lines(dev, y, line_count, bdev, &render_plane, &my);
-    if (code < 0)
-        return code;
-    lines_rasterized = min(code, line_count);
-    /* Return as much of the rectangle as falls within the rasterized lines. */
-    band_rect = *prect;
-    band_rect.p.y = my;
-    band_rect.q.y = my + lines_rasterized;
-    code = dev_proc(bdev, get_bits_rectangle)
-        (bdev, &band_rect, params, unread);
+    if (code >= 0) {
+        lines_rasterized = min(code, line_count);
+        /* Return as much of the rectangle as falls within the rasterized lines. */
+        band_rect = *prect;
+        band_rect.p.y = my;
+        band_rect.q.y = my + lines_rasterized;
+        code = dev_proc(bdev, get_bits_rectangle)
+            (bdev, &band_rect, params, unread);
+    }
     cdev->buf_procs.destroy_buf_device(bdev);
     if (code < 0 || lines_rasterized == line_count)
         return code;
@@ -619,7 +665,8 @@ clist_get_bits_rectangle(gx_device *dev, const gs_int_rect * prect,
 
         code = gdev_create_buf_device(cdev->buf_procs.create_buf_device,
                                       &bdev, cdev->target, y, &render_plane,
-                                      dev->memory, clist_get_band_complexity(dev, y));
+                                      dev->memory,
+                                      &(crdev->color_usage_array[y/crdev->page_band_height]));
         if (code < 0)
             return code;
         band_params = *params;
@@ -663,6 +710,7 @@ clist_rasterize_lines(gx_device *dev, int y, int line_count,
     gx_device *target = crdev->target;
     uint raster = clist_plane_raster(target, render_plane);
     byte *mdata = crdev->data + crdev->page_tile_cache_size;
+    byte *mlines = (crdev->page_line_ptrs_offset == 0 ? NULL : mdata + crdev->page_line_ptrs_offset);
     int plane_index = (render_plane ? render_plane->index : -1);
     int code;
 
@@ -687,7 +735,7 @@ clist_rasterize_lines(gx_device *dev, int y, int line_count,
         if (y < 0 || y > dev->height)
             return_error(gs_error_rangecheck);
         code = crdev->buf_procs.setup_buf_device
-            (bdev, mdata, raster, NULL, 0, band_num_lines, band_num_lines);
+            (bdev, mdata, raster, (byte **)mlines, 0, band_num_lines, band_num_lines);
         band_rect.p.x = 0;
         band_rect.p.y = band_begin_line;
         band_rect.q.x = dev->width;
@@ -707,7 +755,7 @@ clist_rasterize_lines(gx_device *dev, int y, int line_count,
     if (line_count > crdev->ymax - y)
         line_count = crdev->ymax - y;
     code = crdev->buf_procs.setup_buf_device
-        (bdev, mdata, raster, NULL, y - crdev->ymin, line_count,
+        (bdev, mdata, raster, (byte **)mlines, y - crdev->ymin, line_count,
          crdev->ymax - crdev->ymin);
     if (code < 0)
         return code;
@@ -731,62 +779,87 @@ clist_render_rectangle(gx_device_clist *cldev, const gs_int_rect *prect,
     int band_height = crdev->page_band_height;
     int band_first = prect->p.y / band_height;
     int band_last = (prect->q.y - 1) / band_height;
-    gx_saved_page current_page;
-    gx_placed_page placed_page;
+    gx_band_page_info_t *pinfo;
+    gx_band_page_info_t page_info;
     int code = 0;
     int i;
+    bool save_pageneutralcolor;
 
     if (render_plane)
         crdev->yplane = *render_plane;
     else
         crdev->yplane.index = -1;
     if_debug2m('l', bdev->memory, "[l]rendering bands (%d,%d)\n", band_first, band_last);
-#if 0 /* Disabled because it is slow and appears to have no useful effect. */
-    if (clear)
-        dev_proc(bdev, fill_rectangle)
-            (bdev, 0, 0, bdev->width, bdev->height, gx_device_white(bdev));
-#endif
 
-    /*
-     * If we aren't rendering saved pages, do the current one.
-     * Note that this is the only case in which we may encounter
-     * a gx_saved_page with non-zero cfile or bfile.
-     */
     ppages = crdev->pages;
-    if (ppages == 0) {
-        current_page.info = crdev->page_info;
-        placed_page.page = &current_page;
-        placed_page.offset.x = placed_page.offset.y = 0;
-        ppages = &placed_page;
-        num_pages = 1;
-    }
-    for (i = 0; i < num_pages && code >= 0; ++i) {
-        const gx_placed_page *ppage = &ppages[i];
 
-        /*
-         * Set the band_offset_? values in case the buffer device
-         * needs this. Example, a device may need to adjust the
-         * phase of the dithering based on the page position, NOT
-         * the position within the band buffer to avoid band stitch
-         * lines in the dither pattern. The old wtsimdi device did this
-         *
-         * The band_offset_x is not important for placed pages that
-         * are nested on a 'master' page (imposition) since each
-         * page expects to be dithered independently, but setting
-         * this allows pages to be contiguous without a dithering
-         * shift.
-         *
-         * The following sets the band_offset_? relative to the
-         * master page.
-         */
-        bdev->band_offset_x = ppage->offset.x;
-        bdev->band_offset_y = ppage->offset.y + (band_first * band_height);
-        code = clist_playback_file_bands(playback_action_render,
-                                         crdev, &ppage->page->info,
+    /* Before playing back the clist, make sure that the gray detection is disabled */
+    /* so we don't slow down the rendering (primarily high level images).           */
+    save_pageneutralcolor = crdev->icc_struct->pageneutralcolor;
+    crdev->icc_struct->pageneutralcolor = false;
+
+    for (i = 0; i < num_pages && code >= 0; ++i) {
+        bool pdf14_needed = false;
+        int band;
+
+        if (ppages == NULL) {
+                /*
+                 * If we aren't rendering saved pages, do the current one.
+                 * Note that this is the only case in which we may encounter
+                 * a gx_saved_page with non-zero cfile or bfile.
+                 */
+                bdev->band_offset_x = 0;
+                bdev->band_offset_y = band_first * band_height;
+                pinfo = &(crdev->page_info);
+        } else {
+            const gx_placed_page *ppage = &ppages[i];
+
+            /* Store the page information. */
+            page_info.cfile = page_info.bfile = NULL;
+            strncpy(page_info.cfname, ppage->page->cfname, sizeof(page_info.cfname)-1);
+            strncpy(page_info.bfname, ppage->page->bfname, sizeof(page_info.bfname)-1);
+            page_info.io_procs = ppage->page->io_procs;
+            page_info.tile_cache_size = ppage->page->tile_cache_size;
+            page_info.bfile_end_pos = ppage->page->bfile_end_pos;
+            page_info.band_params = ppage->page->band_params;
+            pinfo = &page_info;
+
+            /*
+             * Set the band_offset_? values in case the buffer device
+             * needs this. Example, a device may need to adjust the
+             * phase of the dithering based on the page position, NOT
+             * the position within the band buffer to avoid band stitch
+             * lines in the dither pattern. The old wtsimdi device did this
+             *
+             * The band_offset_x is not important for placed pages that
+             * are nested on a 'master' page (imposition) since each
+             * page expects to be dithered independently, but setting
+             * this allows pages to be contiguous without a dithering
+             * shift.
+             *
+             * The following sets the band_offset_? relative to the
+             * master page.
+             */
+            bdev->band_offset_x = ppage->offset.x;
+            bdev->band_offset_y = ppage->offset.y + (band_first * band_height);
+        }
+        /* if any of the requested bands need transparency, use it for all of them   */
+        /* The pdf14_ok_to_optimize checks if the target device (bdev) is compatible */
+        /* with the pdf14 compositor info that was written to the clist: colorspace, */
+        /* colorspace, etc.                                                          */
+        pdf14_needed = !pdf14_ok_to_optimize(bdev);
+        for (band=band_first; !pdf14_needed && band <= band_last; band++)
+            pdf14_needed |= (crdev->color_usage_array[band].trans_bbox.p.y <=
+            crdev->color_usage_array[band].trans_bbox.q.y) ? true : false;
+
+        code = clist_playback_file_bands(pdf14_needed ?
+                                         playback_action_render : playback_action_render_no_pdf14,
+                                         crdev, pinfo,
                                          bdev, band_first, band_last,
-                                         prect->p.x - ppage->offset.x,
+                                         prect->p.x - bdev->band_offset_x,
                                          prect->p.y);
     }
+    crdev->icc_struct->pageneutralcolor = save_pageneutralcolor;	/* restore it */
     return code;
 }
 
@@ -845,16 +918,7 @@ clist_playback_file_bands(clist_playback_action action,
         s.foreign = 1;
         s.state = (stream_state *)&rs;
 
-        if (vd_allowed('s')) {
-            vd_get_dc('s');
-        } else if (vd_allowed('i')) {
-            vd_get_dc('i');
-        }
-        vd_set_shift(0, 0);
-        vd_set_scale(0.01);
-        vd_set_origin(0, 0);
         code = clist_playback_band(action, crdev, &s, target, x0, y0, mem);
-        vd_release_dc;
 #	ifdef DEBUG
         s_band_read_dnit_offset_map(crdev, (stream_state *)&rs);
 #	endif
@@ -866,92 +930,5 @@ clist_playback_file_bands(clist_playback_action action,
     if (opened_cfile && rs.page_cfile != 0)
         crdev->page_info.io_procs->fclose(rs.page_cfile, rs.page_cfname, false);
 
-    return code;
-}
-
-/*
- * return pointer to list indexed by (y /band_height)
- * Don't free the returned pointer.
- */
-gx_band_complexity_t *
-clist_get_band_complexity(gx_device *dev, int y)
-{
-    if (dev != NULL) {
-        gx_device_clist *cldev = (gx_device_clist *)dev;
-        gx_device_clist_reader * const crdev = &cldev->reader;
-        int band_number = y / crdev->page_info.band_params.BandHeight;
-
-        if (crdev->band_complexity_array == NULL)
-            return NULL;
-
-        {
-            /* NB this is a temporary workaround until the band
-               complexity machinery can be removed entirely. */
-            gx_color_usage_t color_usage;
-            int range_ignored;
-            gdev_prn_color_usage(dev, y, 1, &color_usage, &range_ignored);
-            crdev->band_complexity_array[band_number].nontrivial_rops = (int)color_usage.slow_rop;
-            crdev->band_complexity_array[band_number].uses_color = !!color_usage.or;
-        }
-        return &crdev->band_complexity_array[band_number];
-    }
-    return NULL;
-}
-
-/* Free any band_complexity_array memory used by the clist reader device */
-void gx_clist_reader_free_band_complexity_array( gx_device_clist *cldev )
-{
-        if (cldev != NULL) {
-            gx_device_clist_reader * const crdev = &cldev->reader;
-
-            if ( crdev->band_complexity_array ) {
-                gs_free_object( crdev->memory, crdev->band_complexity_array,
-                  "gx_clist_reader_free_band_complexity_array" );
-                crdev->band_complexity_array = NULL;
-            }
-        }
-}
-
-/* call once per read page to read the band complexity from clist file
- */
-static int
-gx_clist_reader_read_band_complexity(gx_device_clist *dev)
-{
-    int code = -1;  /* no dev bad call */
-
-    if (dev) {
-        gx_device_clist *cldev = (gx_device_clist *)dev;
-        gx_device_clist_reader * const crdev = &cldev->reader;
-        int i;
-        stream_band_read_state rs;
-        cmd_block cb;
-        int64_t save_pos;
-        int pos = 0;
-
-        /* setup stream */
-        s_init_state((stream_state *)&rs, &s_band_read_template, (gs_memory_t *)0);
-        rs.band_first = 0;
-        rs.band_last = crdev->nbands;
-        rs.page_info = crdev->page_info;
-
-        save_pos = crdev->page_info.io_procs->ftell(rs.page_bfile);
-        crdev->page_info.io_procs->fseek(rs.page_bfile, pos, SEEK_SET, rs.page_bfname);
-
-        if ( crdev->band_complexity_array == NULL )
-                crdev->band_complexity_array = (gx_band_complexity_t*)
-                  gs_alloc_byte_array( crdev->memory, crdev->nbands,
-                  sizeof( gx_band_complexity_t ), "gx_clist_reader_read_band_complexity" );
-
-        if ( crdev->band_complexity_array == NULL )
-                return_error(gs_error_VMerror);
-
-        for (i=0; i < crdev->nbands; i++) {
-            crdev->page_info.io_procs->fread_chars(&cb, sizeof(cb), rs.page_bfile);
-            crdev->band_complexity_array[i] = cb.band_complexity;
-        }
-
-        crdev->page_info.io_procs->fseek(rs.page_bfile, save_pos, SEEK_SET, rs.page_bfname);
-        code = 0;
-    }
     return code;
 }

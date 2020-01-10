@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -190,6 +190,8 @@ extern_st(st_stream);
     stream_enum_ptrs, stream_reloc_ptrs, stream_finalize)
 #define STREAM_NUM_PTRS 6
 
+#define S_FILE_LIMIT_MAX (sizeof(gs_offset_t) > 4 ? max_int64_t : max_long)
+
 /* Initialize the checking IDs of a stream. */
 #define s_init_ids(s) ((s)->read_id = (s)->write_id = 1)
 #define s_init_read_id(s) ((s)->read_id = 1, (s)->write_id = 0)
@@ -341,7 +343,7 @@ int file_prepare_stream(const char *, uint, const char *,
                  uint, stream **, char[4], gs_memory_t *);
 
 /* Set up a file stream on an OS file.  */
-void file_init_stream(stream *, FILE *, const char *, byte *, uint);
+int file_init_stream(stream *, FILE *, const char *, byte *, uint);
 
 /* Open a file stream, optionally on an OS file. */
 int file_open_stream(const char *, uint, const char *,
@@ -363,7 +365,7 @@ stream * file_alloc_stream(gs_memory_t *, client_name_t);
 #define check_file(svar,op)\
   BEGIN\
     check_type(*(op), t_file);\
-    if ( file_is_invalid(svar, op) ) return_error(e_invalidaccess);\
+    if ( file_is_invalid(svar, op) ) return_error(gs_error_ioerror);\
   END
 
 /* Close a file stream. */
@@ -379,8 +381,8 @@ void sread_string(stream *, const byte *, uint),
     sread_string_reusable(stream *, const byte *, uint),
     swrite_string(stream *, byte *, uint);
 void sread_file(stream *, FILE *, byte *, uint),
-    swrite_file(stream *, FILE *, byte *, uint),
-    sappend_file(stream *, FILE *, byte *, uint);
+    swrite_file(stream *, FILE *, byte *, uint);
+int  sappend_file(stream *, FILE *, byte *, uint);
 
 /* Confine reading to a subfile.  This is primarily for reusable streams. */
 int sread_subfile(stream *s, gs_offset_t start, gs_offset_t length);

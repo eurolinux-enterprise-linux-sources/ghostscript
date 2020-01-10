@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -62,9 +62,9 @@ typedef struct gx_ttfMemory_s gx_ttfMemory;
 #   define gx_device_spot_analyzer_DEFINED
 typedef struct gx_device_spot_analyzer_s gx_device_spot_analyzer;
 #endif
-#ifndef gs_state_DEFINED
-#  define gs_state_DEFINED
-typedef struct gs_state_s gs_state;
+#ifndef gs_gstate_DEFINED
+#  define gs_gstate_DEFINED
+typedef struct gs_gstate_s gs_gstate;
 #endif
 
 /*
@@ -174,21 +174,6 @@ struct cached_char_s {
     uint pair_index;		/* index of pair in mdata */
     gs_fixed_point subpix_origin; /* glyph origin offset modulo pixel */
 
-#ifdef GSLITE
-    /* GSLite API needs to be able to lock a cache entry from being
-       evicted. We do this by counting how many times the GSLite user
-       has "retained" the slot. The initial value of this is zero.
-       For normal ghostscript operation it will never be changed,
-       so it has no effect.
-
-       This is an ugly and ill conceived hack that was implemented
-       at the behest of a large customer. It is guarded by this ifdef
-       for a reason. We do not want our own code to depend on
-       this functionality.
-     */
-    int dont_evict;
-#endif
-
     /* The rest of the structure is the 'value'. */
     /* gx_cached_bits_common has width, height, raster, */
     /* shift (not used here), id. */
@@ -241,11 +226,6 @@ struct cached_char_s {
 /* Define the hash index for a (glyph, fm_pair) key. */
 #define chars_head_index(glyph, pair)\
   ((uint)(glyph) * 59 + (pair)->hash * 73)	/* scramble it a bit */
-
-#ifdef GSLITE
-void gx_retain_cached_char(cached_char *cc);
-void gx_release_cached_char(cached_char *cc);
-#endif
 
 /* ------ Character cache ------ */
 
@@ -335,7 +315,7 @@ struct gs_font_dir_s {
 int gx_char_cache_alloc(gs_memory_t * struct_mem, gs_memory_t * bits_mem,
                         gs_font_dir * pdir, uint bmax, uint mmax,
                         uint cmax, uint upper);
-void gx_char_cache_init(gs_font_dir *);
+int gx_char_cache_init(gs_font_dir *);
 void gx_purge_selected_cached_chars(gs_font_dir *,
                                     bool(*)(const gs_memory_t *, cached_char *, void *), void *);
 void gx_compute_char_matrix(const gs_matrix *char_tm, const gs_log2_scale_point *log2_scale,

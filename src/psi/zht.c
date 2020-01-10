@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -161,7 +161,7 @@ zscreen_enum_init(i_ctx_t *i_ctx_p, const gx_ht_order * porder,
     check_estack(snumpush + 1);
     penum = gs_screen_enum_alloc(mem, "setscreen");
     if (penum == 0)
-        return_error(e_VMerror);
+        return_error(gs_error_VMerror);
     make_struct(esp + snumpush, space_index << r_space_shift, penum);	/* do early for screen_cleanup in case of error */
     code = gs_screen_enum_init_memory(penum, porder, igs, psp, mem);
     if (code < 0) {

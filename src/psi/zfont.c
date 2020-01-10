@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -41,7 +41,7 @@ static int setup_unicode_decoder(i_ctx_t *i_ctx_p, ref *Decoding);
 bool
 zfont_mark_glyph_name(const gs_memory_t *mem, gs_glyph glyph, void *ignore_data)
 {
-    return (glyph >= gs_c_min_std_encoding_glyph || glyph == gs_no_glyph ? false :
+    return (glyph >= gs_c_min_std_encoding_glyph || glyph == GS_NO_GLYPH ? false :
             name_mark_index(mem, (uint) glyph));
 }
 
@@ -63,10 +63,12 @@ static int
 zfont_init(i_ctx_t *i_ctx_p)
 {
     ifont_dir = gs_font_dir_alloc2(imemory->stable_memory, imemory->non_gc_memory);
+    if (ifont_dir == NULL)
+        return gs_error_VMerror;
     ifont_dir->ccache.mark_glyph = zfont_mark_glyph_name;
     ifont_dir->global_glyph_code = zfont_global_glyph_code;
-    return gs_register_struct_root(imemory, NULL, (void **)&ifont_dir,
-                                   "ifont_dir");
+    return gs_register_struct_root(imemory, imemory->gs_lib_ctx->font_dir_root,
+        (void **)&ifont_dir, "ifont_dir");
 }
 
 /* <font> <scale> scalefont <new_font> */
@@ -258,13 +260,13 @@ font_param(const ref * pfdict, gs_font ** ppfont)
     if (dict_find_string(pfdict, "FID", &pid) <= 0 ||
         !r_has_type(pid, t_fontID)
         )
-        return_error(e_invalidfont);
+        return_error(gs_error_invalidfont);
     pfont = r_ptr(pid, gs_font);
     if (pfont == 0)
-        return_error(e_invalidfont);	/* unregistered font */
+        return_error(gs_error_invalidfont);	/* unregistered font */
     pdata = pfont->client_data;
     if (!obj_eq(pfont->memory, &pdata->dict, pfdict))
-        return_error(e_invalidfont);
+        return_error(gs_error_invalidfont);
     *ppfont = pfont;
     return 0;
 }
@@ -304,7 +306,7 @@ make_font(i_ctx_t *i_ctx_p, const gs_matrix * pmat)
         if (dict_find_string(fp, "Encoding", &pencoding) > 0 &&
             !r_is_array(pencoding)
             )
-            code = gs_note_error(e_invalidfont);
+            code = gs_note_error(gs_error_invalidfont);
         else {
                 /*
                  * Temporarily substitute the new dictionary
@@ -330,7 +332,7 @@ make_font(i_ctx_t *i_ctx_p, const gs_matrix * pmat)
         !obj_eq(imemory, pencoding, &pfont_data(newfont)->Encoding)
         ) {
         if (newfont->FontType == ft_composite)
-            return_error(e_rangecheck);
+            return_error(gs_error_rangecheck);
         /* We should really do validity checking here.... */
         ref_assign(&pfont_data(newfont)->Encoding, pencoding);
         lookup_gs_simple_font_encoding((gs_font_base *) newfont);
@@ -376,7 +378,7 @@ zdefault_make_font(gs_font_dir * pdir, const gs_font * oldfont,
     if ((pdata = gs_alloc_struct(mem, font_data, &st_font_data,
                                  "make_font(font_data)")) == 0
         )
-        return_error(e_VMerror);
+        return_error(gs_error_VMerror);
     /*
      * This dictionary is newly created: it's safe to pass NULL as the
      * dstack pointer to dict_copy and dict_put_string.
@@ -452,7 +454,6 @@ font_restore(const alloc_save_t * save)
 
     gs_memory_t *smem = gs_save_any_memory(save);
     gs_font_dir *pdir = smem->gs_lib_ctx->font_dir;
-    const gs_memory_t *mem = 0;
     int code;
 
     if (pdir == 0)		/* not initialized yet */
@@ -467,7 +468,6 @@ otop:
         for (pfont = pdir->orig_fonts; pfont != 0;
              pfont = pfont->next
             ) {
-            mem = pfont->memory;
             if (alloc_is_since_save((char *)pfont, save)) {
                 code = gs_purge_font(pfont);
                 if (code < 0)
@@ -644,7 +644,7 @@ setup_unicode_decoder(i_ctx_t *i_ctx_p, ref *Decoding)
     gs_unicode_decoder *pud = gs_alloc_struct(imemory, gs_unicode_decoder,
                              &st_unicode_decoder, "setup_unicode_decoder");
     if (pud == NULL)
-        return_error(e_VMerror);
+        return_error(gs_error_VMerror);
     ref_assign_new(&pud->data, Decoding);
     ifont_dir->glyph_to_unicode_table = pud;
     return 0;

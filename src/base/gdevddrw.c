@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 /* Default polygon and image drawing device procedures */
@@ -26,16 +26,13 @@
 #include "gxdcolor.h"
 #include "gxdevice.h"
 #include "gxiparam.h"
-#include "gxistate.h"
+#include "gxgstate.h"
 #include "gxhldevc.h"
 #include "gdevddrw.h"
-#include "vdtrace.h"
 /*
 #include "gxdtfill.h" - Do not remove this comment.
                         "gxdtfill.h" is included below.
 */
-
-#define VD_RECT_COLOR RGB(0, 0, 255)
 
 #define SWAP(a, b, t)\
   (t = a, a = b, b = t)
@@ -221,8 +218,7 @@ step_gradient(trap_gradient *g, int num_components)
 }
 
 static inline bool
-check_gradient_overflow(const gs_linear_color_edge *le, const gs_linear_color_edge *re,
-                int num_components)
+check_gradient_overflow(const gs_linear_color_edge *le, const gs_linear_color_edge *re)
 {
     if (le->c1 == NULL || re->c1 == NULL) {
         /* A wedge doesn't use a gradient by X. */
@@ -438,16 +434,6 @@ gx_default_fill_trapezoid(gx_device * dev, const gs_fixed_edge * left,
     }
 }
 
-static inline void
-middle_frac31_color(frac31 *c, const frac31 *c0, const frac31 *c2, int num_components)
-{
-    /* Assuming non-negative values. */
-    int i;
-
-    for (i = 0; i < num_components; i++)
-        c[i] = (int32_t)(((uint32_t)c0[i] + (uint32_t)c2[i]) >> 1);
-}
-
 static inline int
 fill_linear_color_trapezoid_nocheck(gx_device *dev, const gs_fill_attributes *fa,
         const gs_linear_color_edge *le, const gs_linear_color_edge *re)
@@ -486,7 +472,6 @@ gx_default_fill_linear_color_trapezoid(gx_device *dev, const gs_fill_attributes 
         const frac31 *c2, const frac31 *c3)
 {
     gs_linear_color_edge le, re;
-    int num_components = dev->color_info.num_components;
 
     le.start = *p0;
     le.end = *p1;
@@ -498,7 +483,7 @@ gx_default_fill_linear_color_trapezoid(gx_device *dev, const gs_fill_attributes 
     re.c0 = c2;
     re.c1 = c3;
     re.clip_x = fa->clip->q.x;
-    if (check_gradient_overflow(&le, &re, num_components))
+    if (check_gradient_overflow(&le, &re))
         return 0;
     return fill_linear_color_trapezoid_nocheck(dev, fa, &le, &re);
 }
@@ -511,7 +496,6 @@ fill_linear_color_triangle(gx_device *dev, const gs_fill_attributes *fa,
 {   /* p0 must be the lowest vertex. */
     int code;
     gs_linear_color_edge e0, e1, e2;
-    int num_components = dev->color_info.num_components;
 
     if (p0->y == p1->y)
         return gx_default_fill_linear_color_trapezoid(dev, fa, p0, p2, p1, p2, c0, c2, c1, c2);
@@ -533,9 +517,9 @@ fill_linear_color_triangle(gx_device *dev, const gs_fill_attributes *fa,
         e2.c0 = c1;
         e2.c1 = c2;
         e2.clip_x = fa->clip->q.x;
-        if (check_gradient_overflow(&e0, &e1, num_components))
+        if (check_gradient_overflow(&e0, &e1))
             return 0;
-        if (check_gradient_overflow(&e0, &e2, num_components))
+        if (check_gradient_overflow(&e0, &e2))
             return 0;
         code = fill_linear_color_trapezoid_nocheck(dev, fa, &e0, &e1);
         if (code <= 0) /* Sic! */
@@ -547,9 +531,9 @@ fill_linear_color_triangle(gx_device *dev, const gs_fill_attributes *fa,
         e2.c0 = c2;
         e2.c1 = c1;
         e2.clip_x = fa->clip->q.x;
-        if (check_gradient_overflow(&e0, &e1, num_components))
+        if (check_gradient_overflow(&e0, &e1))
             return 0;
-        if (check_gradient_overflow(&e2, &e1, num_components))
+        if (check_gradient_overflow(&e2, &e1))
             return 0;
         code = fill_linear_color_trapezoid_nocheck(dev, fa, &e0, &e1);
         if (code <= 0) /* Sic! */
@@ -604,8 +588,6 @@ gx_default_fill_parallelogram(gx_device * dev,
         gs_int_rect r;
 
         INT_RECT_FROM_PARALLELOGRAM(&r, px, py, ax, ay, bx, by);
-        vd_rect(int2fixed(r.p.x), int2fixed(r.p.y), int2fixed(r.q.x), int2fixed(r.q.y),
-                    1, (int)pdevc->colors.pure);
         return gx_fill_rectangle_device_rop(r.p.x, r.p.y, r.q.x - r.p.x,
                                             r.q.y - r.p.y, pdevc, dev, lop);
     }
@@ -806,11 +788,40 @@ gx_default_draw_thin_line(gx_device * dev,
                 SWAP(fx0, fx1, tf), SWAP(fy0, fy1, tf),
                     h = -h;
             /* So we are plotting a trapezoid with horizontal thin edges.
-             * Check for whether a triangular extension area on the end
-             * covers an additional pixel centre. */
-            {
-                int deltay = int2fixed(fixed2int_var(fy1)) + fixed_half -fy1;
-                int deltax = int2fixed(fixed2int_var(fx1)) + fixed_half -fx1;
+             * If we are drawing a non-axis aligned trap, then we check
+             * for whether a triangular extension area on the end covers an
+             * additional pixel centre; if so, we fill an extra pixel.
+             * If we are drawing an axis aligned trap and fill adjust is 0,
+             * then we shouldn't need to do this.
+             * If we are drawing an axis aligned trap, and fill adjust is non
+             * zero, then perform the check, but with a "butt cap" rather than
+             * a "triangle cap" region.
+             * See bug 687721 and bug 693212 for this history of this.
+             */
+            if (w == 0 && adjusty) {
+                int deltay;
+                deltay = int2fixed(fixed2int_var(fy1)) + fixed_half -fy1;
+
+                if ((deltay > 0) && (deltay <= fixed_half))
+                {
+                    int c = gx_fill_rectangle_device_rop(fixed2int_var(fx1),
+                                                         fixed2int_var(fy1),
+                                                         1,1,pdevc,dev,lop);
+                    if (c < 0) return c;
+                }
+                deltay = int2fixed(fixed2int_var(fy0)) + fixed_half -fy0;
+
+                if ((deltay < 0) && (deltay >= -fixed_half))
+                {
+                    int c = gx_fill_rectangle_device_rop(fixed2int_var(fx0),
+                                                         fixed2int_var(fy0),
+                                                         1,1,pdevc,dev,lop);
+                    if (c < 0) return c;
+                }
+            } else if (w != 0) {
+                int deltax, deltay;
+                deltay = int2fixed(fixed2int_var(fy1)) + fixed_half -fy1;
+                deltax = int2fixed(fixed2int_var(fx1)) + fixed_half -fx1;
 
                 if (deltax < 0) deltax=-deltax;
                 if ((deltay > 0) && (deltay <= fixed_half) &&
@@ -821,10 +832,8 @@ gx_default_draw_thin_line(gx_device * dev,
                                                          1,1,pdevc,dev,lop);
                     if (c < 0) return c;
                 }
-            }
-            {
-                int deltay = int2fixed(fixed2int_var(fy0)) + fixed_half -fy0;
-                int deltax = int2fixed(fixed2int_var(fx0)) + fixed_half -fx0;
+                deltay = int2fixed(fixed2int_var(fy0)) + fixed_half -fy0;
+                deltax = int2fixed(fixed2int_var(fx0)) + fixed_half -fx0;
 
                 if (deltax < 0) deltax=-deltax;
                 if ((deltay < 0) && (deltay >= -fixed_half) &&
@@ -868,9 +877,30 @@ gx_default_draw_thin_line(gx_device * dev,
             /* So we are plotting a trapezoid with vertical thin edges
              * Check for whether a triangular extension area on the end
              * covers an additional pixel centre. */
-            {
-                int deltax = int2fixed(fixed2int_var(fx1)) + fixed_half -fx1;
-                int deltay = int2fixed(fixed2int_var(fy1)) + fixed_half -fy1;
+            if (h == 0 && adjustx) {
+                int deltax;
+                deltax = int2fixed(fixed2int_var(fx1)) + fixed_half -fx1;
+
+                if ((deltax > 0) && (deltax <= fixed_half))
+                {
+                    int c = gx_fill_rectangle_device_rop(fixed2int_var(fx1),
+                                                         fixed2int_var(fy1),
+                                                         1,1,pdevc,dev,lop);
+                    if (c < 0) return c;
+                }
+                deltax = int2fixed(fixed2int_var(fx0)) + fixed_half -fx0;
+
+                if ((deltax < 0) && (deltax >= -fixed_half))
+                {
+                    int c = gx_fill_rectangle_device_rop(fixed2int_var(fx0),
+                                                         fixed2int_var(fy0),
+                                                         1,1,pdevc,dev,lop);
+                    if (c < 0) return c;
+                }
+            } else if (h != 0) {
+                int deltax, deltay;
+                deltax = int2fixed(fixed2int_var(fx1)) + fixed_half -fx1;
+                deltay = int2fixed(fixed2int_var(fy1)) + fixed_half -fy1;
 
                 if (deltay < 0) deltay=-deltay;
                 if ((deltax > 0) && (deltax <= fixed_half) &&
@@ -881,10 +911,8 @@ gx_default_draw_thin_line(gx_device * dev,
                                                          1,1,pdevc,dev,lop);
                     if (c < 0) return c;
                 }
-            }
-            {
-                int deltax = int2fixed(fixed2int_var(fx0)) + fixed_half -fx0;
-                int deltay = int2fixed(fixed2int_var(fy0)) + fixed_half -fy0;
+                deltax = int2fixed(fixed2int_var(fx0)) + fixed_half -fx0;
+                deltay = int2fixed(fixed2int_var(fy0)) + fixed_half -fy0;
 
                 if (deltay < 0) deltay=-deltay;
                 if ((deltax < 0) && (deltax >= -fixed_half) &&
@@ -959,7 +987,7 @@ RELOC_PTRS_END
  */
 static int
 gx_no_begin_image(gx_device * dev,
-                  const gs_imager_state * pis, const gs_image_t * pim,
+                  const gs_gstate * pgs, const gs_image_t * pim,
                   gs_image_format_t format, const gs_int_rect * prect,
               const gx_drawing_color * pdcolor, const gx_clip_path * pcpath,
                   gs_memory_t * memory, gx_image_enum_common_t ** pinfo)
@@ -968,7 +996,7 @@ gx_no_begin_image(gx_device * dev,
 }
 int
 gx_default_begin_image(gx_device * dev,
-                       const gs_imager_state * pis, const gs_image_t * pim,
+                       const gs_gstate * pgs, const gs_image_t * pim,
                        gs_image_format_t format, const gs_int_rect * prect,
               const gx_drawing_color * pdcolor, const gx_clip_path * pcpath,
                        gs_memory_t * memory, gx_image_enum_common_t ** pinfo)
@@ -982,9 +1010,6 @@ gx_default_begin_image(gx_device * dev,
     const gs_image_t *ptim;
     int code;
 
-    /* Processing an image object operation */
-    dev_proc(dev, set_graphics_type_tag)(dev, GS_IMAGE_TAG);
-
     set_dev_proc(dev, begin_image, gx_no_begin_image);
     if (pim->format == format)
         ptim = pim;
@@ -994,7 +1019,7 @@ gx_default_begin_image(gx_device * dev,
         ptim = &image;
     }
     code = (*dev_proc(dev, begin_typed_image))
-        (dev, pis, NULL, (const gs_image_common_t *)ptim, prect, pdcolor,
+        (dev, pgs, NULL, (const gs_image_common_t *)ptim, prect, pdcolor,
          pcpath, memory, pinfo);
     set_dev_proc(dev, begin_image, save_begin_image);
     return code;
@@ -1002,26 +1027,22 @@ gx_default_begin_image(gx_device * dev,
 
 int
 gx_default_begin_typed_image(gx_device * dev,
-                        const gs_imager_state * pis, const gs_matrix * pmat,
+                        const gs_gstate * pgs, const gs_matrix * pmat,
                    const gs_image_common_t * pic, const gs_int_rect * prect,
               const gx_drawing_color * pdcolor, const gx_clip_path * pcpath,
                       gs_memory_t * memory, gx_image_enum_common_t ** pinfo)
 {
-    /* Processing an image object operation */
-    if (pis != NULL)   /* Null can happen when generating image3 mask */
-        dev_proc(dev, set_graphics_type_tag)(dev, GS_IMAGE_TAG);
-
-    /* If this is an ImageType 1 image using the imager's CTM,
+    /* If this is an ImageType 1 image using the gs_gstate's CTM,
          * defer to begin_image.
          */
     if (pic->type->begin_typed_image == gx_begin_image1) {
         const gs_image_t *pim = (const gs_image_t *)pic;
 
         if (pmat == 0 ||
-            (pis != 0 && !gs_matrix_compare(pmat, &ctm_only(pis)))
+            (pgs != 0 && !gs_matrix_compare(pmat, &ctm_only(pgs)))
             ) {
             int code = (*dev_proc(dev, begin_image))
-            (dev, pis, pim, pim->format, prect, pdcolor,
+            (dev, pgs, pim, pim->format, prect, pdcolor,
              pcpath, memory, pinfo);
 
             if (code >= 0)
@@ -1029,7 +1050,7 @@ gx_default_begin_typed_image(gx_device * dev,
         }
     }
     return (*pic->type->begin_typed_image)
-        (dev, pis, pmat, pic, prect, pdcolor, pcpath, memory, pinfo);
+        (dev, pgs, pmat, pic, prect, pdcolor, pcpath, memory, pinfo);
 }
 
 /* Backward compatibility for obsolete driver procedures. */
@@ -1039,16 +1060,7 @@ gx_default_image_data(gx_device *dev, gx_image_enum_common_t * info,
                       const byte ** plane_data,
                       int data_x, uint raster, int height)
 {
-    int code;
-
-    vd_get_dc('i');
-    vd_set_shift(0, 0);
-    vd_set_scale(0.01);
-    vd_set_origin(0, 0);
-    /* vd_erase(RGB(192, 192, 192)); */
-    code = gx_image_data(info, plane_data, data_x, raster, height);
-    vd_release_dc;
-    return code;
+    return gx_image_data(info, plane_data, data_x, raster, height);
 }
 
 int
@@ -1059,9 +1071,9 @@ gx_default_end_image(gx_device *dev, gx_image_enum_common_t * info,
 }
 
 int
-gx_default_fillpage(gx_device *dev, gs_imager_state * pis, gx_device_color *pdevc)
+gx_default_fillpage(gx_device *dev, gs_gstate * pgs, gx_device_color *pdevc)
 {
-    bool hl_color_available = gx_hld_is_hl_color_available(pis, pdevc);
+    bool hl_color_available = gx_hld_is_hl_color_available(pgs, pdevc);
     int code = 0;
 
     /* Fill the page directly, ignoring clipping. */
@@ -1073,7 +1085,7 @@ gx_default_fillpage(gx_device *dev, gs_imager_state * pis, gx_device_color *pdev
         rect.q.x = int2fixed(dev->width);
         rect.q.y = int2fixed(dev->height);
         code = dev_proc(dev, fill_rectangle_hl_color)(dev,
-                &rect, (const gs_imager_state *)pis, pdevc, NULL);
+                &rect, (const gs_gstate *)pgs, pdevc, NULL);
     }
     if (!hl_color_available || code == gs_error_rangecheck)
         code = gx_fill_rectangle_device_rop(0, 0, dev->width, dev->height, pdevc, dev, lop_default);

@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -24,6 +24,12 @@
 #include "string_.h" /* memset */
 #include "gp.h"
 #include "gsicc_manage.h"
+#include "gserrors.h"
+#include "gscdefs.h"            /* for gs_lib_device_list */
+#include "gsstruct.h"           /* for gs_gc_root_t */
+
+/* Include the extern for the device list. */
+extern_gs_lib_device_list();
 
 static void
 gs_lib_ctx_get_real_stdio(FILE **in, FILE **out, FILE **err)
@@ -42,48 +48,107 @@ static gs_memory_t *mem_err_print = NULL;
 gs_memory_t *
 gs_lib_ctx_get_non_gc_memory_t()
 {
-    return mem_err_print ? mem_err_print->non_gc_memory : NULL;
+    return mem_err_print ? mem_err_print : NULL;
 }
 #endif
 
 /*  This sets the directory to prepend to the ICC profile names specified for
     defaultgray, defaultrgb, defaultcmyk, proofing, linking, named color and device */
-void
+int
 gs_lib_ctx_set_icc_directory(const gs_memory_t *mem_gc, const char* pname,
-                        int dir_namelen)
+                             int dir_namelen)
 {
     char *result;
     gs_lib_ctx_t *p_ctx = mem_gc->gs_lib_ctx;
+    gs_memory_t *p_ctx_mem = p_ctx->memory;
 
     /* If it is already set and the incoming is the default then don't set
        as we are coming from a VMreclaim which is trying to reset the user
        parameter */
     if (p_ctx->profiledir != NULL && strcmp(pname,DEFAULT_DIR_ICC) == 0) {
-        return;
+        return 0;
     }
-    if (p_ctx->profiledir_len > 0) {
+    if (p_ctx->profiledir != NULL && p_ctx->profiledir_len > 0) {
         if (strncmp(pname, p_ctx->profiledir, p_ctx->profiledir_len) == 0) {
-            return;
+            return 0;
         }
-        gs_free_object(mem_gc->non_gc_memory, p_ctx->profiledir,
-                       "gsicc_set_icc_directory");
+        gs_free_object(p_ctx_mem, p_ctx->profiledir,
+                       "gs_lib_ctx_set_icc_directory");
     }
     /* User param string.  Must allocate in non-gc memory */
-    result = (char*) gs_alloc_bytes(mem_gc->non_gc_memory, dir_namelen+1,
-                                     "gsicc_set_icc_directory");
-    if (result != NULL) {
-        strcpy(result, pname);
-        p_ctx->profiledir = result;
-        p_ctx->profiledir_len = dir_namelen;
+    result = (char*) gs_alloc_bytes(p_ctx_mem, dir_namelen+1,
+                                     "gs_lib_ctx_set_icc_directory");
+    if (result == NULL)
+        return -1;
+    strcpy(result, pname);
+    p_ctx->profiledir = result;
+    p_ctx->profiledir_len = dir_namelen;
+    return 0;
+}
+
+/* Sets/Gets the string containing the list of default devices we should try */
+int
+gs_lib_ctx_set_default_device_list(const gs_memory_t *mem, const char* dev_list_str,
+                        int list_str_len)
+{
+    char *result;
+    gs_lib_ctx_t *p_ctx = mem->gs_lib_ctx;
+    gs_memory_t *ctx_mem = p_ctx->memory;
+    int code = 0;
+    
+    result = (char *)gs_alloc_bytes(ctx_mem, list_str_len + 1,
+             "gs_lib_ctx_set_default_device_list");
+
+    if (result) {
+      gs_free_object(ctx_mem, p_ctx->default_device_list,
+                "gs_lib_ctx_set_default_device_list");
+
+      memcpy(result, dev_list_str, list_str_len);
+      result[list_str_len] = '\0';
+      p_ctx->default_device_list = result;
     }
+    else {
+        code = gs_note_error(gs_error_VMerror);
+    }
+    return code;
+}
+
+int
+gs_lib_ctx_get_default_device_list(const gs_memory_t *mem, char** dev_list_str,
+                        int *list_str_len)
+{
+    /* In the case the lib ctx hasn't been initialised */
+    if (mem && mem->gs_lib_ctx && mem->gs_lib_ctx->default_device_list) {
+        *dev_list_str = mem->gs_lib_ctx->default_device_list;
+    }
+    else {
+        *dev_list_str = (char *)gs_dev_defaults;
+    }
+
+    *list_str_len = strlen(*dev_list_str);
+
+    return 0;
+}
+
+static int
+gs_lib_ctx_alloc_root_structure(gs_memory_t *mem, gs_gc_root_ptr *rp)
+{
+	int code = 0;
+
+	*rp = gs_raw_alloc_struct_immovable(mem, &st_gc_root_t, "gs_lib_ctx_alloc_root_structure");
+	if (*rp == 0)
+		code = gs_note_error(gs_error_VMerror);
+
+	return code;
 }
 
 int gs_lib_ctx_init( gs_memory_t *mem )
 {
     gs_lib_ctx_t *pio = 0;
 
-    if ( mem == 0 )
-        return -1;  /* assert mem != 0 */
+    /* Check the non gc allocator is being passed in */
+    if (mem == 0 || mem != mem->non_gc_memory)
+        return_error(gs_error_Fatal);
 
 #ifndef GS_THREADSAFE
     mem_err_print = mem;
@@ -113,25 +178,83 @@ int gs_lib_ctx_init( gs_memory_t *mem )
     /* Initialize our default ICCProfilesDir */
     pio->profiledir = NULL;
     pio->profiledir_len = 0;
-    gs_lib_ctx_set_icc_directory(mem, DEFAULT_DIR_ICC, strlen(DEFAULT_DIR_ICC));
+    pio->icc_color_accuracy = MAX_COLOR_ACCURACY;
+    if (gs_lib_ctx_set_icc_directory(mem, DEFAULT_DIR_ICC, strlen(DEFAULT_DIR_ICC)) < 0)
+      goto Failure;
+
+    if (gs_lib_ctx_set_default_device_list(mem, gs_dev_defaults,
+                                           strlen(gs_dev_defaults)) < 0)
+        goto Failure;
 
     /* Initialise the underlying CMS. */
-    if (gscms_create(mem)) {
-        gs_free_object(mem, pio, "gsicc_set_icc_directory");
-        mem->gs_lib_ctx = NULL;
-        return -1;
-    }
- 
+    if (gscms_create(mem))
+        goto Failure;
+
+    /* Initialise any lock required for the jpx codec */
+    if (sjpxd_create(mem))
+        goto Failure;
+
+    pio->client_check_file_permission = NULL;
     gp_get_realtime(pio->real_time_0);
 
+    /* Set scanconverter to 1 (default) */
+    pio->scanconverter = GS_SCANCONVERTER_DEFAULT;
+
+    if (gs_lib_ctx_alloc_root_structure(mem, &pio->name_table_root))
+        goto Failure;
+
+    if (gs_lib_ctx_alloc_root_structure(mem, &pio->io_device_table_root))
+        goto Failure;
+
+    if (gs_lib_ctx_alloc_root_structure(mem, &pio->font_dir_root))
+        goto Failure;
+
     return 0;
+
+Failure:
+    gs_lib_ctx_fin(mem);
+    return -1;
 }
 
-void gs_lib_ctx_fin( gs_memory_t *mem )
+static void remove_ctx_pointers(gs_memory_t *mem)
 {
+    mem->gs_lib_ctx = NULL;
+    if (mem->stable_memory && mem->stable_memory != mem)
+        remove_ctx_pointers(mem->stable_memory);
+    if (mem->non_gc_memory && mem->non_gc_memory != mem)
+        remove_ctx_pointers(mem->non_gc_memory);
+    if (mem->thread_safe_memory && mem->thread_safe_memory != mem)
+        remove_ctx_pointers(mem->thread_safe_memory);
+}
+
+void gs_lib_ctx_fin(gs_memory_t *mem)
+{
+    gs_lib_ctx_t *ctx;
+    gs_memory_t *ctx_mem;
+
     if (!mem || !mem->gs_lib_ctx)
         return;
-    gscms_destroy(mem);
+    
+    ctx = mem->gs_lib_ctx;
+    ctx_mem = ctx->memory;
+
+    sjpxd_destroy(mem);
+    gscms_destroy(ctx_mem);
+    gs_free_object(ctx_mem, ctx->profiledir,
+        "gs_lib_ctx_fin");
+        
+    gs_free_object(ctx_mem, ctx->default_device_list,
+                "gs_lib_ctx_fin");
+
+    gs_free_object(ctx_mem, ctx->name_table_root, "gs_lib_ctx_fin");
+    gs_free_object(ctx_mem, ctx->io_device_table_root, "gs_lib_ctx_fin");
+    gs_free_object(ctx_mem, ctx->font_dir_root, "gs_lib_ctx_fin");
+
+#ifndef GS_THREADSAFE
+    mem_err_print = NULL;
+#endif
+    remove_ctx_pointers(ctx_mem);
+    gs_free_object(ctx_mem, ctx, "gs_lib_ctx_init");
 }
 
 gs_lib_ctx_t *gs_lib_ctx_get_interp_instance(const gs_memory_t *mem)
@@ -192,13 +315,26 @@ int errwrite_nomem(const char *str, int len)
 int errwrite(const gs_memory_t *mem, const char *str, int len)
 {
     int code;
+    gs_lib_ctx_t *ctx;
     if (len == 0)
         return 0;
-    if (mem->gs_lib_ctx->stderr_fn)
-        return (*mem->gs_lib_ctx->stderr_fn)(mem->gs_lib_ctx->caller_handle, str, len);
+    if (mem == NULL) {
+#ifdef GS_THREADSAFE
+        return 0;
+#else
+        mem = mem_err_print;
+        if (mem == NULL)
+            return 0;
+#endif
+    }
+    ctx = mem->gs_lib_ctx;
+    if (ctx == NULL)
+      return 0;
+    if (ctx->stderr_fn)
+        return (*ctx->stderr_fn)(ctx->caller_handle, str, len);
 
-    code = fwrite(str, 1, len, mem->gs_lib_ctx->fstderr);
-    fflush(mem->gs_lib_ctx->fstderr);
+    code = fwrite(str, 1, len, ctx->fstderr);
+    fflush(ctx->fstderr);
     return code;
 }
 
@@ -228,4 +364,14 @@ void errflush(const gs_memory_t *mem)
     if (!mem->gs_lib_ctx->stderr_fn)
         fflush(mem->gs_lib_ctx->fstderr);
     /* else nothing to flush */
+}
+
+int
+gs_check_file_permission (gs_memory_t *mem, const char *fname, const int len, const char *permission)
+{
+    int code = 0;
+    if (mem->gs_lib_ctx->client_check_file_permission != NULL) {
+        code = mem->gs_lib_ctx->client_check_file_permission(mem, fname, len, permission);
+    }
+    return code;
 }

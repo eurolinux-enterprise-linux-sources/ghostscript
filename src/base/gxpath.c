@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -20,7 +20,6 @@
 #include "gsstruct.h"
 #include "gxfixed.h"
 #include "gzpath.h"
-#include "vdtrace.h"
 
 /* These routines all assume that all points are */
 /* already in device coordinates, and in fixed representation. */
@@ -236,9 +235,8 @@ gx_path_init_bbox_accumulator(gx_path * ppath)
     ppath->local_segments.contents.subpath_current = 0;
     ppath->segments = 0;
     path_update_newpath(ppath);
-    ppath->bbox.p.x = ppath->bbox.q.x = 0;
-    ppath->bbox.p.y = ppath->bbox.q.y = 0;
     ppath->bbox_set = 0;
+    ppath->bbox.p.x = ppath->bbox.p.y = ppath->bbox.q.x = ppath->bbox.q.y = 0;
     ppath->bbox_accurate = 1;
     ppath->memory = NULL; /* Won't allocate anything. */
     ppath->allocation = path_allocated_on_stack;
@@ -444,9 +442,9 @@ gx_path_new(gx_path * ppath)
         int code = path_alloc_segments(&ppath->segments, ppath->memory,
                                        "gx_path_new");
 
+        rc_decrement(psegs, "gx_path_new");
         if (code < 0)
             return code;
-        rc_decrement(psegs, "gx_path_new");
     } else {
         rc_free_path_segments_local(psegs->rc.memory, psegs, "gx_path_new");
     }
@@ -795,15 +793,10 @@ gz_path_bbox_add_curve_notes(gx_path * ppath,
  */
 int
 gx_path_add_partial_arc_notes(gx_path * ppath,
-fixed x3, fixed y3, fixed xt, fixed yt, floatp fraction, segment_notes notes)
+fixed x3, fixed y3, fixed xt, fixed yt, double fraction, segment_notes notes)
 {
     fixed x0 = ppath->position.x, y0 = ppath->position.y;
 
-    vd_curveto(x0 + (fixed) ((xt - x0) * fraction),
-                                   y0 + (fixed) ((yt - y0) * fraction),
-                                   x3 + (fixed) ((xt - x3) * fraction),
-                                   y3 + (fixed) ((yt - y3) * fraction),
-                                   x3, y3);
     return gx_path_add_curve_notes(ppath,
                                    x0 + (fixed) ((xt - x0) * fraction),
                                    y0 + (fixed) ((yt - y0) * fraction),
@@ -1035,7 +1028,7 @@ gx_print_segment(const gs_memory_t *mem, const segment * pseg)
     double py = fixed2float(pseg->pt.y);
     char out[80];
 
-    sprintf(out, "0x%lx<0x%lx,0x%lx>:%u",
+    gs_sprintf(out, "0x%lx<0x%lx,0x%lx>:%u",
          (ulong) pseg, (ulong) pseg->prev, (ulong) pseg->next, pseg->notes);
     switch (pseg->type) {
         case s_start:{

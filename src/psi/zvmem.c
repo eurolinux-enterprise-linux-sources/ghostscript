@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -38,12 +38,6 @@ static const bool I_VALIDATE_AFTER_SAVE = true;
 static const bool I_VALIDATE_BEFORE_RESTORE = true;
 static const bool I_VALIDATE_AFTER_RESTORE = true;
 
-/* 'Save' structure */
-typedef struct vm_save_s vm_save_t;
-struct vm_save_s {
-    gs_state *gsave;		/* old graphics state */
-};
-
 gs_private_st_ptrs1(st_vm_save, vm_save_t, "savetype",
                     vm_save_enum_ptrs, vm_save_reloc_ptrs, gsave);
 
@@ -68,7 +62,7 @@ zsave(i_ctx_t *i_ctx_p)
     vm_save_t *vmsave;
     ulong sid;
     int code;
-    gs_state *prev;
+    gs_gstate *prev;
 
     if (I_VALIDATE_BEFORE_SAVE)
         ivalidate_clean_spaces(i_ctx_p);
@@ -76,13 +70,14 @@ zsave(i_ctx_t *i_ctx_p)
     vmsave = ialloc_struct(vm_save_t, &st_vm_save, "zsave");
     ialloc_set_space(idmemory, space);
     if (vmsave == 0)
-        return_error(e_VMerror);
+        return_error(gs_error_VMerror);
+    vmsave->gsave = NULL; /* Ensure constructed enough to destroy safely */
     code = alloc_save_state(idmemory, vmsave, &sid);
     if (code < 0)
         return code;
     if (sid == 0) {
         ifree_object(vmsave, "zsave");
-        return_error(e_VMerror);
+        return_error(gs_error_VMerror);
     }
     if_debug2m('u', imemory, "[u]vmsave 0x%lx, id = %lu\n",
                (ulong) vmsave, (ulong) sid);
@@ -104,19 +99,18 @@ zsave(i_ctx_t *i_ctx_p)
 static int restore_check_operand(os_ptr, alloc_save_t **, gs_dual_memory_t *);
 static int restore_check_stack(const i_ctx_t *i_ctx_p, const ref_stack_t *, const alloc_save_t *, bool);
 static void restore_fix_stack(i_ctx_t *i_ctx_p, ref_stack_t *, const alloc_save_t *, bool);
+
+/* Do as many up front checks of the save object as we reasonably can */
 int
-zrestore(i_ctx_t *i_ctx_p)
+restore_check_save(i_ctx_t *i_ctx_p, alloc_save_t **asave)
 {
     os_ptr op = osp;
-    alloc_save_t *asave;
-    bool last;
-    vm_save_t *vmsave;
-    int code = restore_check_operand(op, &asave, idmemory);
+    int code = restore_check_operand(op, asave, idmemory);
 
     if (code < 0)
         return code;
     if_debug2m('u', imemory, "[u]vmrestore 0x%lx, id = %lu\n",
-               (ulong) alloc_save_client_data(asave),
+               (ulong) alloc_save_client_data(*asave),
                (ulong) op->value.saveid);
     if (I_VALIDATE_BEFORE_RESTORE)
         ivalidate_clean_spaces(i_ctx_p);
@@ -125,14 +119,37 @@ zrestore(i_ctx_t *i_ctx_p)
     {
         int code;
 
-        if ((code = restore_check_stack(i_ctx_p, &o_stack, asave, false)) < 0 ||
-            (code = restore_check_stack(i_ctx_p, &e_stack, asave, true)) < 0 ||
-            (code = restore_check_stack(i_ctx_p, &d_stack, asave, false)) < 0
+        if ((code = restore_check_stack(i_ctx_p, &o_stack, *asave, false)) < 0 ||
+            (code = restore_check_stack(i_ctx_p, &e_stack, *asave, true)) < 0 ||
+            (code = restore_check_stack(i_ctx_p, &d_stack, *asave, false)) < 0
             ) {
             osp++;
             return code;
         }
     }
+    osp++;
+    return 0;
+}
+
+/* the semantics of restore differ slightly between Level 1 and
+   Level 2 and later - the latter includes restoring the device
+   state (whilst Level 1 didn't have "page devices" as such).
+   Hence we have two restore operators - one here (Level 1)
+   and one in zdevice2.c (Level 2+). For that reason, the
+   operand checking and guts of the restore operation are
+   separated so both implementations can use them to best
+   effect.
+ */
+int
+dorestore(i_ctx_t *i_ctx_p, alloc_save_t *asave)
+{
+    os_ptr op = osp;
+    bool last;
+    vm_save_t *vmsave;
+    int code;
+
+    osp--;
+
     /* Reset l_new in all stack entries if the new save level is zero. */
     /* Also do some special fixing on the e-stack. */
     restore_fix_stack(i_ctx_p, &o_stack, asave, false);
@@ -175,9 +192,24 @@ zrestore(i_ctx_t *i_ctx_p)
     /* cause an 'invalidaccess' in setuserparams. Temporarily set     */
     /* LockFilePermissions false until the gs_lev2.ps can do a        */
     /* setuserparams from the restored userparam dictionary.          */
+    /* NOTE: This is safe to do here, since the restore has           */
+    /* successfully completed - this should never come before any     */
+    /* operation that can trigger an error                            */
     i_ctx_p->LockFilePermissions = false;
     return 0;
 }
+
+int
+zrestore(i_ctx_t *i_ctx_p)
+{
+    alloc_save_t *asave;
+    int code = restore_check_save(i_ctx_p, &asave);
+    if (code < 0)
+        return code;
+
+    return dorestore(i_ctx_p, asave);
+}
+
 /* Check the operand of a restore. */
 static int
 restore_check_operand(os_ptr op, alloc_save_t ** pasave,
@@ -190,14 +222,15 @@ restore_check_operand(os_ptr op, alloc_save_t ** pasave,
     check_type(*op, t_save);
     vmsave = r_ptr(op, vm_save_t);
     if (vmsave == 0)		/* invalidated save */
-        return_error(e_invalidrestore);
+        return_error(gs_error_invalidrestore);
     sid = op->value.saveid;
     asave = alloc_find_save(idmem, sid);
     if (asave == 0)
-        return_error(e_invalidrestore);
+        return_error(gs_error_invalidrestore);
     *pasave = asave;
     return 0;
 }
+
 /* Check a stack to make sure all its elements are older than a save. */
 static int
 restore_check_stack(const i_ctx_t *i_ctx_p, const ref_stack_t * pstack,
@@ -246,7 +279,7 @@ restore_check_stack(const i_ctx_t *i_ctx_p, const ref_stack_t * pstack,
                     /* Names are special because of how they are allocated. */
                     if (alloc_name_is_since_save((const gs_memory_t *)pstack->memory,
                                                  stkp, asave))
-                        return_error(e_invalidrestore);
+                        return_error(gs_error_invalidrestore);
                     continue;
                 case t_string:
                     /* Don't check empty executable strings */
@@ -284,7 +317,7 @@ restore_check_stack(const i_ctx_t *i_ctx_p, const ref_stack_t * pstack,
                      * in LL3, but just in case....
                      */
                     if (ptr == 0)
-                        return_error(e_invalidrestore);
+                        return_error(gs_error_invalidrestore);
                     if (ptr == asave)
                         continue;
                     break;
@@ -292,7 +325,7 @@ restore_check_stack(const i_ctx_t *i_ctx_p, const ref_stack_t * pstack,
                     continue;
             }
             if (alloc_is_since_save(ptr, asave))
-                return_error(e_invalidrestore);
+                return_error(gs_error_invalidrestore);
         }
     } while (ref_stack_enum_next(&rsenum));
     return 0;		/* OK */
@@ -400,12 +433,12 @@ zforgetsave(i_ctx_t *i_ctx_p)
      * concatenating the stacks together.
      */
     {
-        gs_state *pgs = igs;
-        gs_state *last;
+        gs_gstate *pgs = igs;
+        gs_gstate *last;
 
-        while (gs_state_saved(last = gs_state_saved(pgs)) != 0)
+        while (gs_gstate_saved(last = gs_gstate_saved(pgs)) != 0)
             pgs = last;
-        gs_state_swap_saved(last, vmsave->gsave);
+        gs_gstate_swap_saved(last, vmsave->gsave);
         gs_grestore(last);
         gs_grestore(last);
     }

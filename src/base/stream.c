@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -432,8 +432,11 @@ sclose(register stream * s)
         stream_proc_release((*release)) = st->templat->release;
         if (release != 0)
             (*release) (st);
-        if (st != (stream_state *) s && st->memory != 0)
-            gs_free_object(st->memory, st, "s_std_close");
+        if (st != (stream_state *) s && st->memory != 0) {
+            gs_memory_t *mem = st->memory;
+            st->memory = NULL;
+            gs_free_object(mem, st, "s_std_close");
+        }
         s->state = (stream_state *) s;
     }
     s_disable(s);
@@ -458,10 +461,11 @@ spgetcc(register stream * s, bool close_at_eod)
         )
         s_process_read_buf(s);
     if (left <= min_left &&
-        (left == 0 || (status != EOFC && status != ERRC))
+        (left <= 0 || (status != EOFC && status != ERRC))
         ) {
         /* Compact the stream so stell will return the right result. */
-        stream_compact(s, true);
+        if (left == 0)
+            stream_compact(s, true);
         if (status == EOFC && close_at_eod && s->close_at_eod) {
             status = sclose(s);
             if (status == 0)
@@ -495,7 +499,11 @@ spputc(register stream * s, byte b)
 int
 sungetc(register stream * s, byte c)
 {
-    if (!s_is_reading(s) || s->srptr < s->cbuf || *(s->srptr) != c)
+    /* cbuf == NULL means this stream is stdin, and we shouldn't
+       unread from stdin, ever.
+     */
+    if (s->cbuf == NULL || !s_is_reading(s) ||
+        s->srptr < s->cbuf || *(s->srptr) != c)
         return ERRC;
     s->srptr--;
     return 0;

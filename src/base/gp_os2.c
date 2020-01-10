@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,13 +9,16 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
 /* Common platform-specific routines for OS/2 and MS-DOS */
 /* compiled with GCC/EMX */
+
+/* prevent gp.h from defining fopen */
+#define fopen fopen
 
 #define INCL_DOS
 #define INCL_SPL
@@ -47,6 +50,7 @@
 #include "gsexit.h"
 #include "gsmemory.h"
 #include "gsstruct.h"
+
 #include "gp.h"
 #include "gpmisc.h"
 #include "gsutil.h"
@@ -160,23 +164,6 @@ gp_file_is_console(FILE * f)
     if (fileno(f) <= 2)
         return true;
     return false;
-}
-
-/* ------ Persistent data cache ------*/
-
-/* insert a buffer under a (type, key) pair */
-int gp_cache_insert(int type, byte *key, int keylen, void *buffer, int buflen)
-{
-    /* not yet implemented */
-    return 0;
-}
-
-/* look up a (type, key) in the cache */
-int gp_cache_query(int type, byte* key, int keylen, void **buffer,
-    gp_cache_alloc alloc, void *userdata)
-{
-    /* not yet implemented */
-    return -1;
 }
 
 /*************************************************************/
@@ -318,7 +305,7 @@ gp_open_printer(const gs_memory_t *mem,
         pfile = popen(fname + 1, (binary_mode ? "wb" : "w"));
     else
         /* normal file or port */
-        pfile = fopen(fname, (binary_mode ? "wb" : "w"));
+        pfile = gp_fopen(fname, (binary_mode ? "wb" : "w"));
 
     if (pfile == (FILE *) NULL)
         return (FILE *) NULL;
@@ -496,7 +483,7 @@ pm_spool(const gs_memory_t *mem, char *filename, const char *queue)
         emprintf(mem, "Out of memory in pm_spool\n");
         return 1;
     }
-    if ((f = fopen(filename, "rb")) == (FILE *) NULL) {
+    if ((f = gp_fopen(filename, "rb")) == (FILE *) NULL) {
         free(buffer);
         emprintf1(mem, "Can't open temporary file %s\n", filename);
         return 1;
@@ -549,8 +536,11 @@ pm_spool(const gs_memory_t *mem, char *filename, const char *queue)
             if (!rc)
                 emprintf(mem, "SplQmClose failed.\n");
         }
-    } else
+    } else {
+        free(buffer);
+        fclose(f);
         rc = 0;			/* no memory */
+    }
     return !rc;
 }
 
@@ -612,4 +602,19 @@ int gp_fseek_64(FILE *strm, int64_t offset, int origin)
     if (offset != offset1)
         return -1;
     return fseek(strm, offset1, origin);
+}
+
+bool gp_fseekable (FILE *f)
+{
+    struct stat s;
+    int fno;
+    
+    fno = fileno(f);
+    if (fno < 0)
+        return(false);
+    
+    if (fstat(fno, &s) < 0)
+        return(false);
+
+    return((bool)S_ISREG(s.st_mode));
 }

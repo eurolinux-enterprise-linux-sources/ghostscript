@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -88,23 +88,34 @@ idownscale_x(void /* PixelIn */ * tmp, const void /* PixelIn */ *src, stream_ISp
             ss->dda_x = ss->dda_x_init;
             if_debug1m('W', ss->memory, "[W]idownscale_x color %d:", c);
 
-            for ( i = 0; i < WidthIn; tp += Colors) {
-                int endx;
-                dda_next_assign(ss->dda_x, endx);
-                if (firstline)
-                    *tp = *pp;
-                else {
-                    if ((polarity_additive && (*pp < *tp)) ||
-                        (!polarity_additive && (*pp > *tp)) )
+            if (polarity_additive) {
+                for ( i = 0; i < WidthIn; tp += Colors) {
+                    int endx;
+                    dda_next_assign(ss->dda_x, endx);
+                    if (firstline || *pp < *tp)
                         *tp = *pp;
+                    i++; pp += Colors;
+                    while (i < endx) {
+                       if (*pp < *tp)
+                            *tp = *pp;
+                       i++; pp += Colors;
+                    }
+                    if_debug1m('W', ss->memory, " %d", *tp);
                 }
-                i++; pp += Colors;
-                while (i < endx) {
-                   if (*pp < *tp)
+            } else {
+                for ( i = 0; i < WidthIn; tp += Colors) {
+                    int endx;
+                    dda_next_assign(ss->dda_x, endx);
+                    if (firstline || *pp > *tp)
                         *tp = *pp;
-                   i++; pp += Colors;
+                    i++; pp += Colors;
+                    while (i < endx) {
+                        if (*pp > *tp)
+                            *tp = *pp;
+                        i++; pp += Colors;
+                    }
+                    if_debug1m('W', ss->memory, " %d", *tp);
                 }
-                if_debug1m('W', ss->memory, " %d", *tp);
             }
             if_debug0m('W', ss->memory, "\n");
         }
@@ -116,23 +127,34 @@ idownscale_x(void /* PixelIn */ * tmp, const void /* PixelIn */ *src, stream_ISp
             ss->dda_x = ss->dda_x_init;
             if_debug1m('W', ss->memory, "[W]idownscale_x color %d:", c);
 
-            for ( i = 0; i < WidthIn; tp += Colors) {
-                int endx;
-                dda_next_assign(ss->dda_x,endx);
-                if (firstline)
-                    *tp = *pp;
-                else {
-                    if ((polarity_additive && (*pp < *tp)) ||
-                        (!polarity_additive && (*pp > *tp)) )
+            if (polarity_additive) {
+                for ( i = 0; i < WidthIn; tp += Colors) {
+                    int endx;
+                    dda_next_assign(ss->dda_x,endx);
+                    if (firstline || *pp < *tp)
                         *tp = *pp;
+                    i++; pp += Colors;
+                    while (i < endx) {
+                        if (*pp < *tp)
+                            *tp = *pp;
+                        i++; pp += Colors;
+                    }
+                    if_debug1m('W', ss->memory, " %d", *tp);
                 }
-                i++; pp += Colors;
-                while (i < endx) {
-                   if (*pp < *tp)
+            } else {
+                for ( i = 0; i < WidthIn; tp += Colors) {
+                    int endx;
+                    dda_next_assign(ss->dda_x,endx);
+                    if (firstline || *pp > *tp)
                         *tp = *pp;
-                   i++; pp += Colors;
+                    i++; pp += Colors;
+                    while (i < endx) {
+                        if (*pp > *tp)
+                            *tp = *pp;
+                        i++; pp += Colors;
+                    }
+                    if_debug1m('W', ss->memory, " %d", *tp);
                 }
-                if_debug1m('W', ss->memory, " %d", *tp);
             }
             if_debug0m('W', ss->memory, "\n");
         }
@@ -263,6 +285,9 @@ s_ISpecialDownScale_process(stream_state * st, stream_cursor_read * pr,
     /* Check whether we need to deliver any output. */
 
 top:
+    ss->params.Active = (ss->src_y >= ss->params.TopMarginIn &&
+                         ss->src_y <= ss->params.TopMarginIn + ss->params.PatchHeightIn);
+
     if (cur_y > ss->dst_y) {
         /* Deliver some or all of the current scaled row. */
         /* to generate a vertically scaled output row. */
@@ -282,7 +307,8 @@ top:
                 row = ss->dst;
             }
             /* Apply filter to zoom vertically from tmp to dst. */
-            idownscale_y(row, ss->tmp, ss);
+            if (ss->params.Active)
+                idownscale_y(row, ss->tmp, ss);
             /* Idiotic C coercion rules allow T* and void* to be */
             /* inter-assigned freely, but not compared! */
             if ((void *)row != ss->dst)		/* no buffering */
@@ -291,7 +317,8 @@ top:
             uint wcount = ss->dst_size - ss->dst_offset;
             uint ncopy = min(wleft, wcount);
 
-            memcpy(pw->ptr + 1, (byte *) ss->dst + ss->dst_offset, ncopy);
+            if (ss->params.Active)
+                memcpy(pw->ptr + 1, (byte *) ss->dst + ss->dst_offset, ncopy);
             pw->ptr += ncopy;
             ss->dst_offset += ncopy;
             if (ncopy != wcount)
@@ -320,20 +347,23 @@ adv:	++(ss->dst_y);
                 row = pr->ptr + 1;
             } else {		/* We're buffering a row in src. */
                 row = ss->src;
-                memcpy((byte *) ss->src + ss->src_offset, pr->ptr + 1,
-                       rcount);
+                if (ss->params.Active)
+                    memcpy((byte *) ss->src + ss->src_offset, pr->ptr + 1,
+                           rcount);
                 ss->src_offset = 0;
             }
             /* Apply filter to zoom horizontally from src to tmp. */
             if_debug2m('w', ss->memory, "[w]idownscale_x y = %d to tmp row %d\n",
                        ss->src_y, (ss->src_y % MAX_ISCALE_SUPPORT));
-            idownscale_x(ss->tmp, row, ss);
+            if (ss->params.Active)
+                idownscale_x(ss->tmp, row, ss);
             pr->ptr += rcount;
             ++(ss->src_y);
             dda_next_assign(ss->dda_y,cur_y);
             goto top;
         } else {		/* We don't have a complete row.  Copy data to src buffer. */
-            memcpy((byte *) ss->src + ss->src_offset, pr->ptr + 1, rleft);
+            if (ss->params.Active)
+                memcpy((byte *) ss->src + ss->src_offset, pr->ptr + 1, rleft);
             ss->src_offset += rleft;
             pr->ptr += rleft;
             return 0;

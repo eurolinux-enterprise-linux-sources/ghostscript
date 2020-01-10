@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -32,14 +32,14 @@
 /* ------ Miscellaneous ------ */
 
 int
-gs_newpath(gs_state * pgs)
+gs_newpath(gs_gstate * pgs)
 {
     pgs->current_point_valid = false;
     return gx_path_new(pgs->path);
 }
 
 int
-gs_closepath(gs_state * pgs)
+gs_closepath(gs_gstate * pgs)
 {
     gx_path *ppath = pgs->path;
     int code = gx_path_close_subpath(ppath);
@@ -51,15 +51,15 @@ gs_closepath(gs_state * pgs)
 }
 
 int
-gs_upmergepath(gs_state * pgs)
+gs_upmergepath(gs_gstate * pgs)
 {
     /*
      * We really should be able to implement this as simply
      *   return gx_path_add_path(pgs->saved->path, pgs->path);
-     * But because of the current_point members in the imager state,
+     * But because of the current_point members in the gs_gstate,
      * we can't.
      */
-    gs_state *saved = pgs->saved;
+    gs_gstate *saved = pgs->saved;
     int code;
 
     code = gx_path_add_path(saved->path, pgs->path);
@@ -75,7 +75,7 @@ gs_upmergepath(gs_state * pgs)
 
 /* Get the current path (for internal use only). */
 gx_path *
-gx_current_path(const gs_state * pgs)
+gx_current_path(const gs_gstate * pgs)
 {
     return pgs->path;
 }
@@ -83,14 +83,14 @@ gx_current_path(const gs_state * pgs)
 /* ------ Points and lines ------ */
 
 static inline void
-clamp_point(gs_fixed_point * ppt, floatp x, floatp y)
+clamp_point(gs_fixed_point * ppt, double x, double y)
 {
     ppt->x = clamp_coord(x);
     ppt->y = clamp_coord(y);
 }
 
 int
-gs_currentpoint(gs_state * pgs, gs_point * ppt)
+gs_currentpoint(gs_gstate * pgs, gs_point * ppt)
 {
     if (!pgs->current_point_valid)
         return_error(gs_error_nocurrentpoint);
@@ -99,7 +99,7 @@ gs_currentpoint(gs_state * pgs, gs_point * ppt)
 }
 
 static inline int
-gs_point_transform_compat(floatp x, floatp y, const gs_matrix_fixed *m, gs_point *pt)
+gs_point_transform_compat(double x, double y, const gs_matrix_fixed *m, gs_point *pt)
 {
 #if !PRECISE_CURRENTPOINT
     gs_fixed_point p;
@@ -116,7 +116,7 @@ gs_point_transform_compat(floatp x, floatp y, const gs_matrix_fixed *m, gs_point
 }
 
 static inline int
-gs_distance_transform_compat(floatp x, floatp y, const gs_matrix_fixed *m, gs_point *pt)
+gs_distance_transform_compat(double x, double y, const gs_matrix_fixed *m, gs_point *pt)
 {
 #if !PRECISE_CURRENTPOINT
     gs_fixed_point p;
@@ -133,7 +133,7 @@ gs_distance_transform_compat(floatp x, floatp y, const gs_matrix_fixed *m, gs_po
 }
 
 static inline int
-clamp_point_aux(bool clamp_coordinates, gs_fixed_point *ppt, floatp x, floatp y)
+clamp_point_aux(bool clamp_coordinates, gs_fixed_point *ppt, double x, double y)
 {
     if (!f_fits_in_bits(x, fixed_int_bits) || !f_fits_in_bits(y, fixed_int_bits)) {
         if (!clamp_coordinates)
@@ -149,20 +149,20 @@ clamp_point_aux(bool clamp_coordinates, gs_fixed_point *ppt, floatp x, floatp y)
 }
 
 int
-gs_moveto_aux(gs_imager_state *pis, gx_path *ppath, floatp x, floatp y)
+gs_moveto_aux(gs_gstate *pgs, gx_path *ppath, double x, double y)
 {
     gs_fixed_point pt;
     int code;
 
-    code = clamp_point_aux(pis->clamp_coordinates, &pt, x, y);
+    code = clamp_point_aux(pgs->clamp_coordinates, &pt, x, y);
     if (code < 0)
         return code;
-    if (pis->hpgl_path_mode && path_subpath_open(ppath))
+    if (pgs->hpgl_path_mode && path_subpath_open(ppath))
     {
         code = gx_path_add_gap_notes(ppath, pt.x, pt.y, 0);
         if (code < 0)
             return code;
-        gx_setcurrentpoint(pis, x, y);
+        gx_setcurrentpoint(pgs, x, y);
     }
     else
     {
@@ -170,26 +170,26 @@ gs_moveto_aux(gs_imager_state *pis, gx_path *ppath, floatp x, floatp y)
         if (code < 0)
             return code;
         ppath->start_flags = ppath->state_flags;
-        gx_setcurrentpoint(pis, x, y);
-        pis->subpath_start = pis->current_point;
+        gx_setcurrentpoint(pgs, x, y);
+        pgs->subpath_start = pgs->current_point;
     }
-    pis->current_point_valid = true;
+    pgs->current_point_valid = true;
     return 0;
 }
 
 int
-gs_moveto(gs_state * pgs, floatp x, floatp y)
+gs_moveto(gs_gstate * pgs, double x, double y)
 {
     gs_point pt;
     int code = gs_point_transform_compat(x, y, &pgs->ctm, &pt);
 
     if (code < 0)
         return code;
-    return gs_moveto_aux((gs_imager_state *)pgs, pgs->path, pt.x, pt.y);
+    return gs_moveto_aux(pgs, pgs->path, pt.x, pt.y);
 }
 
 int
-gs_rmoveto(gs_state * pgs, floatp x, floatp y)
+gs_rmoveto(gs_gstate * pgs, double x, double y)
 {
     gs_point dd;
     int code;
@@ -200,12 +200,12 @@ gs_rmoveto(gs_state * pgs, floatp x, floatp y)
     if (code < 0)
         return code;
     /* fixme : check in range. */
-    return gs_moveto_aux((gs_imager_state *)pgs, pgs->path,
+    return gs_moveto_aux(pgs, pgs->path,
                 dd.x + pgs->current_point.x, dd.y + pgs->current_point.y);
 }
 
 static inline int
-gs_lineto_aux(gs_state * pgs, floatp x, floatp y)
+gs_lineto_aux(gs_gstate * pgs, double x, double y)
 {
     gx_path *ppath = pgs->path;
     gs_fixed_point pt;
@@ -222,7 +222,7 @@ gs_lineto_aux(gs_state * pgs, floatp x, floatp y)
 }
 
 int
-gs_lineto(gs_state * pgs, floatp x, floatp y)
+gs_lineto(gs_gstate * pgs, double x, double y)
 {
     gs_point pt;
     int code = gs_point_transform_compat(x, y, &pgs->ctm, &pt);
@@ -233,7 +233,7 @@ gs_lineto(gs_state * pgs, floatp x, floatp y)
 }
 
 int
-gs_rlineto(gs_state * pgs, floatp x, floatp y)
+gs_rlineto(gs_gstate * pgs, double x, double y)
 {
     gs_point dd;
     int code;
@@ -251,8 +251,8 @@ gs_rlineto(gs_state * pgs, floatp x, floatp y)
 /* ------ Curves ------ */
 
 static inline int
-gs_curveto_aux(gs_state * pgs,
-           floatp x1, floatp y1, floatp x2, floatp y2, floatp x3, floatp y3)
+gs_curveto_aux(gs_gstate * pgs,
+           double x1, double y1, double x2, double y2, double x3, double y3)
 {
     gs_fixed_point p1, p2, p3;
     int code;
@@ -275,8 +275,8 @@ gs_curveto_aux(gs_state * pgs,
 }
 
 int
-gs_curveto(gs_state * pgs,
-           floatp x1, floatp y1, floatp x2, floatp y2, floatp x3, floatp y3)
+gs_curveto(gs_gstate * pgs,
+           double x1, double y1, double x2, double y2, double x3, double y3)
 {
     gs_point pt1, pt2, pt3;
     int code;
@@ -294,8 +294,8 @@ gs_curveto(gs_state * pgs,
 }
 
 int
-gs_rcurveto(gs_state * pgs,
-     floatp dx1, floatp dy1, floatp dx2, floatp dy2, floatp dx3, floatp dy3)
+gs_rcurveto(gs_gstate * pgs,
+     double dx1, double dy1, double dx2, double dy2, double dx3, double dy3)
 {
     gs_point dd1, dd2, dd3;
     int code;
@@ -320,7 +320,7 @@ gs_rcurveto(gs_state * pgs,
 /* ------ Clipping ------ */
 
 /* Forward references */
-static int common_clip(gs_state *, int);
+static int common_clip(gs_gstate *, int);
 
 /* Figure out the bbox for a path and a clip path with adjustment if we are
    also doing a stroke.  This is used by the xps interpeter to deteremine
@@ -329,7 +329,7 @@ static int common_clip(gs_state *, int);
    The transparency group will be the intersection of the path and clipping
    path */
 int
-gx_curr_bbox(gs_state * pgs, gs_rect *bbox, gs_bbox_comp_t comp_type)
+gx_curr_bbox(gs_gstate * pgs, gs_rect *bbox, gs_bbox_comp_t comp_type)
 {
     gx_clip_path *clip_path;
     int code;
@@ -351,8 +351,7 @@ gx_curr_bbox(gs_state * pgs, gs_rect *bbox, gs_bbox_comp_t comp_type)
         if (code < 0) return code;
     if (comp_type == PATH_STROKE) {
         /* Handle any stroke expansion of our bounding box */
-        expansion_code = gx_stroke_path_expansion((const gs_imager_state *) pgs, 
-                                                   pgs->path, &expansion);
+        expansion_code = gx_stroke_path_expansion(pgs, pgs->path, &expansion);
         if (expansion_code >= 0) {
             path_bbox.p.x -= expansion.x;
             path_bbox.p.y -= expansion.y;
@@ -390,7 +389,7 @@ gx_curr_bbox(gs_state * pgs, gs_rect *bbox, gs_bbox_comp_t comp_type)
  * device is a cache device.
  */
 int
-gx_effective_clip_path(gs_state * pgs, gx_clip_path ** ppcpath)
+gx_effective_clip_path(gs_gstate * pgs, gx_clip_path ** ppcpath)
 {
     gs_id view_clip_id =
         (pgs->view_clip == 0 || pgs->view_clip->rule == 0 ? gs_no_id :
@@ -464,7 +463,7 @@ gx_effective_clip_path(gs_state * pgs, gx_clip_path ** ppcpath)
 #ifdef DEBUG
 /* Note that we just set the clipping path (internal). */
 static void
-note_set_clip_path(const gs_state * pgs)
+note_set_clip_path(const gs_gstate * pgs)
 {
     if (gs_debug_c('P')) {
         dmlprintf(pgs->memory, "[P]Clipping path:\n");
@@ -476,7 +475,7 @@ note_set_clip_path(const gs_state * pgs)
 #endif
 
 int
-gs_clippath(gs_state * pgs)
+gs_clippath(gs_gstate * pgs)
 {
     gx_path cpath;
     int code;
@@ -495,7 +494,7 @@ gs_clippath(gs_state * pgs)
 }
 
 int
-gs_initclip(gs_state * pgs)
+gs_initclip(gs_gstate * pgs)
 {
     gs_fixed_rect box;
     int code = gx_default_clip_box(pgs, &box);
@@ -506,19 +505,19 @@ gs_initclip(gs_state * pgs)
 }
 
 int
-gs_clip(gs_state * pgs)
+gs_clip(gs_gstate * pgs)
 {
     return common_clip(pgs, gx_rule_winding_number);
 }
 
 int
-gs_eoclip(gs_state * pgs)
+gs_eoclip(gs_gstate * pgs)
 {
     return common_clip(pgs, gx_rule_even_odd);
 }
 
 static int
-common_clip(gs_state * pgs, int rule)
+common_clip(gs_gstate * pgs, int rule)
 {
     int code = gx_cpath_clip(pgs, pgs->clip_path, pgs->path, rule);
     if (code < 0)
@@ -531,13 +530,18 @@ common_clip(gs_state * pgs, int rule)
 /* Establish a rectangle as the clipping path. */
 /* Used by initclip and by the character and Pattern cache logic. */
 int
-gx_clip_to_rectangle(gs_state * pgs, gs_fixed_rect * pbox)
+gx_clip_to_rectangle(gs_gstate * pgs, gs_fixed_rect * pbox)
 {
     int code = gx_cpath_from_rectangle(pgs->clip_path, pbox);
 
     if (code < 0)
         return code;
     pgs->clip_path->rule = gx_rule_winding_number;
+    /* We are explicitly setting the clip to a specific rectangle, the path list
+     * must therefore be reset (it bears no relation to the actual clip now).
+     */
+    rc_decrement(pgs->clip_path->path_list, "gx_clip_to_rectangle");
+    pgs->clip_path->path_list = 0;
     note_set_clip_path(pgs);
     return 0;
 }
@@ -545,7 +549,7 @@ gx_clip_to_rectangle(gs_state * pgs, gs_fixed_rect * pbox)
 /* Set the clipping path to the current path, without intersecting. */
 /* This is very inefficient right now. */
 int
-gx_clip_to_path(gs_state * pgs)
+gx_clip_to_path(gs_gstate * pgs)
 {
     gs_fixed_rect bbox;
     int code;
@@ -561,7 +565,7 @@ gx_clip_to_path(gs_state * pgs)
 
 /* Get the default clipping box. */
 int
-gx_default_clip_box(const gs_state * pgs, gs_fixed_rect * pbox)
+gx_default_clip_box(const gs_gstate * pgs, gs_fixed_rect * pbox)
 {
     register gx_device *dev = gs_currentdevice(pgs);
     gs_rect bbox;
@@ -581,10 +585,8 @@ gx_default_clip_box(const gs_state * pgs, gs_fixed_rect * pbox)
         /* we don't think we can do any better.) */
         (*dev_proc(dev, get_initial_matrix)) (dev, &imat);
         /* Adjust for the Margins. */
-        imat.tx += dev->Margins[0] * dev->HWResolution[0] /
-            dev->MarginsHWResolution[0];
-        imat.ty += dev->Margins[1] * dev->HWResolution[1] /
-            dev->MarginsHWResolution[1];
+        imat.tx += dev->Margins[0];
+        imat.ty += dev->Margins[1];
         bbox.p.x = dev->HWMargins[0];
         bbox.p.y = dev->HWMargins[1];
         bbox.q.x = dev->MediaSize[0] - dev->HWMargins[2];

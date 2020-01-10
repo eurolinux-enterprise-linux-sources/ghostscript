@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -41,7 +41,7 @@ param_read_password(gs_param_list * plist, const char *kstr, password * ppass)
     switch (code) {
         case 0:		/* OK */
             if (ps.size > MAX_PASSWORD)
-                return_error(e_limitcheck);
+                return_error(gs_error_limitcheck);
             /* Copy the data back. */
             memcpy(ppass->data, ps.data, ps.size);
             ppass->size = ps.size;
@@ -51,12 +51,12 @@ param_read_password(gs_param_list * plist, const char *kstr, password * ppass)
     }
     /* We might have gotten a typecheck because */
     /* the supplied password was an integer. */
-    if (code != e_typecheck)
+    if (code != gs_error_typecheck)
         return code;
     code = param_read_long(plist, kstr, &ipass);
     if (code != 0)		/* error or missing */
         return code;
-    sprintf((char *)ppass->data, "%ld", ipass);
+    gs_sprintf((char *)ppass->data, "%ld", ipass);
     ppass->size = strlen((char *)ppass->data);
     return 0;
 }
@@ -70,7 +70,7 @@ param_write_password(gs_param_list * plist, const char *kstr,
     ps.data = (const byte *)ppass->data, ps.size = ppass->size,
         ps.persistent = false;
     if (ps.size > MAX_PASSWORD)
-        return_error(e_limitcheck);
+        return_error(gs_error_limitcheck);
     return param_write_string(plist, kstr, &ps);
 }
 
@@ -103,12 +103,12 @@ dict_find_password(ref ** ppvalue, const ref * pdref, const char *kstr)
     ref *pvalue;
 
     if (dict_find_string(pdref, kstr, &pvalue) <= 0)
-        return_error(e_undefined);
+        return_error(gs_error_undefined);
     if (!r_has_type(pvalue, t_string) ||
         r_has_attrs(pvalue, a_read) ||
         pvalue->value.const_bytes[0] >= r_size(pvalue)
         )
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     *ppvalue = pvalue;
     return 0;
 }
@@ -121,7 +121,7 @@ dict_read_password(password * ppass, const ref * pdref, const char *pkey)
     if (code < 0)
         return code;
     if (pvalue->value.const_bytes[0] > MAX_PASSWORD)
-        return_error(e_rangecheck);	/* limitcheck? */
+        return_error(gs_error_rangecheck);	/* limitcheck? */
     memcpy(ppass->data, pvalue->value.const_bytes + 1,
            (ppass->size = pvalue->value.const_bytes[0]));
     return 0;
@@ -136,11 +136,11 @@ dict_write_password(const password * ppass, ref * pdref, const char *pkey,
     if (code < 0)
         return code;
     if (ppass->size >= r_size(pvalue))
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     if (!change_allowed &&
         bytes_compare(pvalue->value.bytes + 1, pvalue->value.bytes[0],
             ppass->data, ppass->size) != 0)
-        return_error(e_invalidaccess);
+        return_error(gs_error_invalidaccess);
     memcpy(pvalue->value.bytes + 1, ppass->data,
            (pvalue->value.bytes[0] = ppass->size));
     return 0;

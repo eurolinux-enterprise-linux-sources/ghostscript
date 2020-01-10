@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -176,7 +176,7 @@ gx_lookup_cached_char(const gs_font * pfont, const cached_fm_pair * pair,
 int
 gx_image_cached_char(register gs_show_enum * penum, register cached_char * cc)
 {
-    register gs_state *pgs = penum->pgs;
+    register gs_gstate *pgs = penum->pgs;
     gx_device_color *pdevc = gs_currentdevicecolor_inline(pgs);
     int x, y, w, h, depth;
     int code;
@@ -306,11 +306,9 @@ gx_image_cached_char(register gs_show_enum * penum, register cached_char * cc)
 
         gx_clip_path *pcpath;
 
-        if (penum) {
-            penum->use_wxy_float = false;
-            penum->wxy_float.x = penum->wxy_float.y = 0.0;
-            penum->wxy = cc->wxy;
-        }
+        penum->use_wxy_float = false;
+        penum->wxy_float.x = penum->wxy_float.y = 0.0;
+        penum->wxy = cc->wxy;
 
         code = gx_effective_clip_path(pgs, &pcpath);
         if (code >= 0) {
@@ -364,12 +362,12 @@ gx_image_cached_char(register gs_show_enum * penum, register cached_char * cc)
         /* Make a matrix that will place the image */
         /* at (x,y) with no transformation. */
         gs_image_t_init_mask(&image, true);
-        gs_make_translation((floatp) - x, (floatp) - y, &image.ImageMatrix);
+        gs_make_translation((double) - x, (double) - y, &image.ImageMatrix);
         gs_matrix_multiply(&ctm_only(pgs), &image.ImageMatrix, &image.ImageMatrix);
         image.Width = w;
         image.Height = h;
         image.adjust = false;
-        code = gs_image_init(pie, &image, false, pgs);
+        code = gs_image_init(pie, &image, false, true, pgs);
         switch (code) {
             case 1:		/* empty image */
                 code = 0;

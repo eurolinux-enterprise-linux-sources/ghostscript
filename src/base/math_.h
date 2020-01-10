@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -58,6 +58,11 @@
      ((0x1000000 - 1.0) * 0x1000000 * 0x1000000 * 0x10000000 * 0x10000000)
 #endif
 
+/* IEEE, FLT_EPSILON */
+#ifndef FLT_EPSILON
+#define FLT_EPSILON     1.192092896e-07F        /* smallest such that 1.0+FLT_EPSILON != 1.0 */
+#endif
+
 /* we use our own hypot() since the system one is not consistent between Linux and Mac OS X, also ours is faster */
 #undef  hypot
 #define hypot(x,y) sqrt((double)(x)*(x)+(double)(y)*(y))
@@ -73,5 +78,15 @@ extern double gs_sqrt(double, const char *, int);
 #undef sqrt
 #define sqrt(x) gs_sqrt(x, __FILE__, __LINE__)
 #endif /* DEBUG */
+
+#if defined(_MSC_VER)
+#if _MSC_VER < 1800
+#define isnan(x) _isnan(x)
+#define isfinite(x) _finite(x)
+#define isinf(x) (!_finite(x))
+#endif
+#define HAVE_ISNAN
+#define HAVE_ISINF
+#endif
 
 #endif /* math__INCLUDED */

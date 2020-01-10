@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,17 +9,17 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
 /* MS Windows (Win32) thread / semaphore / monitor implementation */
 /* original multi-threading code by John Desrosiers */
+#include "windows_.h"
 #include "malloc_.h"
 #include "gserrors.h"
 #include "gpsync.h"
-#include "windows_.h"
 #include <process.h>
 
 /* It seems that both Borland and Watcom *should* be able to cope with the
@@ -64,7 +64,12 @@ gp_semaphore_open(
     win32_semaphore *const winSema = (win32_semaphore *)sema;
 
     if (winSema) {
-        winSema->handle = CreateSemaphore(NULL, 0, max_int, NULL);
+        winSema->handle =
+#ifdef METRO
+            CreateSemaphoreExW(NULL, 0, max_int, NULL, 0, 0);
+#else
+            CreateSemaphore(NULL, 0, max_int, NULL);
+#endif
         return
             (winSema->handle != NULL ? 0 :
              gs_note_error(gs_error_unknownerror));
@@ -93,8 +98,13 @@ gp_semaphore_wait(
     win32_semaphore *const winSema = (win32_semaphore *)sema;
 
     return
-        (WaitForSingleObject(winSema->handle, INFINITE) == WAIT_OBJECT_0
-         ? 0 : gs_error_unknownerror);
+        (
+#ifdef METRO
+        WaitForSingleObjectEx(winSema->handle, INFINITE, FALSE)
+#else
+        WaitForSingleObject(winSema->handle, INFINITE)
+#endif
+          == WAIT_OBJECT_0 ? 0 : gs_error_unknownerror);
 }
 
 int				/* rets 0 ok, -ve error */
@@ -129,7 +139,11 @@ gp_monitor_open(
     win32_monitor *const winMon = (win32_monitor *)mon;
 
     if (mon) {
+#ifdef METRO
+        InitializeCriticalSectionEx(&winMon->lock, 0, 0);	/* returns no status */
+#else
         InitializeCriticalSection(&winMon->lock);	/* returns no status */
+#endif
         return 0;
     } else
         return 1;		/* Win32 critical sections mutsn't be moved */
@@ -201,7 +215,7 @@ gp_create_thread(
         (gp_thread_creation_closure *)malloc(sizeof(*closure));
 
     if (!closure)
-        return gs_error_VMerror;
+        return_error(gs_error_VMerror);
     closure->function = function;
     closure->data = data;
 
@@ -251,7 +265,7 @@ int gp_thread_start(gp_thread_creation_callback_t function,
         (gp_thread_creation_closure *)malloc(sizeof(*closure));
 
     if (!closure)
-        return gs_error_VMerror;
+        return_error(gs_error_VMerror);
     closure->function = function;
     closure->data = data;
     hThread = (HANDLE)_beginthreadex(NULL, 0, &gp_thread_start_wrapper,
@@ -272,7 +286,11 @@ void gp_thread_finish(gp_thread_id thread)
 #ifndef FALLBACK_TO_OLD_THREADING_FUNCTIONS
     if (thread == NULL)
         return;
+#ifdef METRO
+    WaitForSingleObjectEx((HANDLE)thread, INFINITE, FALSE);
+#else
     WaitForSingleObject((HANDLE)thread, INFINITE);
+#endif
     CloseHandle((HANDLE)thread);
 #endif
 }

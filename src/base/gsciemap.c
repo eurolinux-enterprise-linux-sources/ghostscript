@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -23,7 +23,7 @@
 #include "gxcie.h"
 #include "gxdevice.h"		/* for gxcmap.h */
 #include "gxcmap.h"
-#include "gxistate.h"
+#include "gxgstate.h"
 #include "gscolor2.h"
 #include "gsicc_create.h"       /* Needed for delayed creation of ICC profiles from CIE color spaces */
 #include "gsicc_manage.h"
@@ -68,11 +68,11 @@ LOOKUP_ENTRY(cie_cached_value vin, const gx_cie_vector_cache *pcache)
  * the extra level of procedure.
  */
 #ifdef DEBUG
-#  define GX_CIE_REMAP_FINISH(vec3, pconc, pis, pcs)\
-    gx_cie_remap_finish(vec3, pconc, pis, pcs)
+#  define GX_CIE_REMAP_FINISH(vec3, pconc, cie_xyz, pgs, pcs)\
+    gx_cie_remap_finish(vec3, pconc, cie_xyz, pgs, pcs)
 #else
-#  define GX_CIE_REMAP_FINISH(vec3, pconc, pis, pcs)\
-    ((pis)->cie_joint_caches->remap_finish(vec3, pconc, pis, pcs))
+#  define GX_CIE_REMAP_FINISH(vec3, pconc, cie_xyz, pgs, pcs)\
+    ((pgs)->cie_joint_caches->remap_finish(vec3, pconc, cie_xyz, pgs, pcs))
 #endif
 
 /* Forward references */
@@ -109,55 +109,91 @@ check_range(gs_range *ranges, int num_colorants)
         if (ranges[k].rmin != 0) return false;
         if (ranges[k].rmax != 1) return false;
     }
-    return(true);
+    return true;
 }
 
 /* Returns false if range is not 0 1 */
 bool
-check_cie_range( const gs_color_space * pcs )
+check_cie_range(const gs_color_space * pcs)
 {
-    switch(gs_color_space_get_index(pcs)){
+    switch(gs_color_space_get_index(pcs)) {
         case gs_color_space_index_CIEDEFG:
-            return(check_range(&(pcs->params.defg->RangeDEFG.ranges[0]), 4));
+            return check_range(&(pcs->params.defg->RangeDEFG.ranges[0]), 4) ;
         case gs_color_space_index_CIEDEF:
-            return(check_range(&(pcs->params.def->RangeDEF.ranges[0]), 3));
+            return check_range(&(pcs->params.def->RangeDEF.ranges[0]), 3);
         case gs_color_space_index_CIEABC:
-            return(check_range(&(pcs->params.abc->RangeABC.ranges[0]), 3));
+            return check_range(&(pcs->params.abc->RangeABC.ranges[0]), 3);
         case gs_color_space_index_CIEA:
-            return(check_range(&(pcs->params.a->RangeA), 1));
+            return check_range(&(pcs->params.a->RangeA), 1);
         default:
             return true;
     }
 }
 
 gs_range*
-get_cie_range( const gs_color_space * pcs )
+get_cie_range(const gs_color_space * pcs)
 {
-    switch(gs_color_space_get_index(pcs)){
+    switch(gs_color_space_get_index(pcs)) {
         case gs_color_space_index_CIEDEFG:
-            return(&(pcs->params.defg->RangeDEFG.ranges[0]));
+            return &(pcs->params.defg->RangeDEFG.ranges[0]);
         case gs_color_space_index_CIEDEF:
-            return(&(pcs->params.def->RangeDEF.ranges[0]));
+            return &(pcs->params.def->RangeDEF.ranges[0]);
         case gs_color_space_index_CIEABC:
-            return(&(pcs->params.abc->RangeABC.ranges[0]));
+            return &(pcs->params.abc->RangeABC.ranges[0]);
         case gs_color_space_index_CIEA:
-            return(&(pcs->params.a->RangeA));
+            return &(pcs->params.a->RangeA);
         default:
             return NULL;
     }
 }
 
 static void
-rescale_input_color(gs_range *ranges, int num_colorants, 
+rescale_input_color(gs_range *ranges, int num_colorants,
                     const gs_client_color *src, gs_client_color *des)
 {
     int k;
 
     for (k = 0; k < num_colorants; k++) {
-        des->paint.values[k] =
-            (src->paint.values[k]-ranges[k].rmin)/
-            (ranges[k].rmax-ranges[k].rmin);
+        des->paint.values[k] = (src->paint.values[k] - ranges[k].rmin) /
+                               (ranges[k].rmax - ranges[k].rmin);
     }
+}
+
+/* Returns true if rescale was done */
+bool
+rescale_cie_colors(const gs_color_space * pcs, gs_client_color *cc)
+{
+    int num, k;
+    gs_range *ranges;
+
+    if (!check_cie_range(pcs)) {
+        switch(gs_color_space_get_index(pcs)) {
+            case gs_color_space_index_CIEDEFG:
+                num = 4;
+                ranges = &(pcs->params.defg->RangeDEFG.ranges[0]);
+                break;
+            case gs_color_space_index_CIEDEF:
+                num = 3;
+                ranges = &(pcs->params.def->RangeDEF.ranges[0]);
+                break;
+            case gs_color_space_index_CIEABC:
+                num = 3;
+                ranges = &(pcs->params.abc->RangeABC.ranges[0]);
+                break;
+            case gs_color_space_index_CIEA:
+                num = 1;
+                ranges = &(pcs->params.a->RangeA);
+                break;
+            default:
+                return false;
+        }
+        for (k = 0; k < num; k++) {
+            cc->paint.values[k] = (cc->paint.values[k] - ranges[k].rmin) /
+                                    (ranges[k].rmax - ranges[k].rmin);
+        }
+        return true;
+    }
+    return false;
 }
 
 /*
@@ -166,19 +202,19 @@ rescale_input_color(gs_range *ranges, int num_colorants,
  * has been defined. The 'cie_to_xyz' flag indicates that we don't need a CRD
  */
 static inline int
-gx_cie_check_rendering_inline(const gs_color_space * pcs, frac * pconc, const gs_imager_state * pis)
+gx_cie_check_rendering_inline(const gs_color_space * pcs, frac * pconc, const gs_gstate * pgs)
 {
-    if (pis->cie_render == 0 && !pis->cie_to_xyz) {
+    if (pgs->cie_render == 0 && !pgs->cie_to_xyz) {
         /* No rendering has been defined yet: return black. */
         pconc[0] = pconc[1] = pconc[2] = frac_0;
         return 1;
     }
-    if (pis->cie_joint_caches->status == CIE_JC_STATUS_COMPLETED) {
-        if (pis->cie_joint_caches->cspace_id != pcs->id)
-            pis->cie_joint_caches->status = CIE_JC_STATUS_BUILT;
+    if (pgs->cie_joint_caches->status == CIE_JC_STATUS_COMPLETED) {
+        if (pgs->cie_joint_caches->cspace_id != pcs->id)
+            pgs->cie_joint_caches->status = CIE_JC_STATUS_BUILT;
     }
-    if (pis->cie_joint_caches->status != CIE_JC_STATUS_COMPLETED) {
-        int     code = gs_cie_jc_complete(pis, pcs);
+    if (pgs->cie_render && pgs->cie_joint_caches->status != CIE_JC_STATUS_COMPLETED) {
+        int     code = gs_cie_jc_complete(pgs, pcs);
 
         if (code < 0)
             return code;
@@ -186,9 +222,9 @@ gx_cie_check_rendering_inline(const gs_color_space * pcs, frac * pconc, const gs
     return 0;
 }
 int
-gx_cie_check_rendering(const gs_color_space * pcs, frac * pconc, const gs_imager_state * pis)
+gx_cie_check_rendering(const gs_color_space * pcs, frac * pconc, const gs_gstate * pgs)
 {
-    return gx_cie_check_rendering_inline(pcs, pconc, pis);
+    return gx_cie_check_rendering_inline(pcs, pconc, pgs);
 }
 
 /* Common code shared between remap and concretize for defg */
@@ -202,26 +238,34 @@ gx_ciedefg_to_icc(gs_color_space **ppcs_icc, gs_color_space *pcs, gs_memory_t *m
     gx_cie_scalar_cache *defg_caches = &(pcs->params.defg->caches_defg.DecodeDEFG[0]);
 
     if_debug0m(gs_debug_flag_icc, memory,
-               "[icc] Creating ICC profile from defg object");  
+               "[icc] Creating ICC profile from defg object");
     /* build the ICC color space object */
     code = gs_cspace_build_ICC(ppcs_icc, NULL, memory->stable_memory);
+    if (code < 0)
+        return gs_rethrow(code, "Failed to build ICC color space");
     /* record the cie alt space as the icc alternative color space */
     (*ppcs_icc)->base_space = palt_cs;
     rc_increment_cs(palt_cs);
     (*ppcs_icc)->cmm_icc_profile_data = gsicc_profile_new(NULL, memory, NULL, 0);
+    if ((*ppcs_icc)->cmm_icc_profile_data == NULL)
+        gs_throw(gs_error_VMerror, "Failed to create ICC profile");
     code = gsicc_create_fromdefg(pcs, &((*ppcs_icc)->cmm_icc_profile_data->buffer),
                     &((*ppcs_icc)->cmm_icc_profile_data->buffer_size), memory,
                     abc_caches, lmn_caches, defg_caches);
-    gsicc_init_profile_info((*ppcs_icc)->cmm_icc_profile_data);
+    if (code < 0)
+        return gs_rethrow(code, "Failed to create ICC profile from CIEDEFG");
+    code = gsicc_init_profile_info((*ppcs_icc)->cmm_icc_profile_data);
+    if (code < 0)
+        return gs_rethrow(code, "Failed to create ICC profile from CIEDEFG");
     (*ppcs_icc)->cmm_icc_profile_data->default_match = CIE_DEFG;
     pcs->icc_equivalent = *ppcs_icc;
     pcs->icc_equivalent->cmm_icc_profile_data->data_cs = gsCMYK;
-    return(0);
+    return 0;
 }
 
 int
 gx_remap_CIEDEFG(const gs_client_color * pc, const gs_color_space * pcs_in,
-        gx_device_color * pdc, const gs_imager_state * pis, gx_device * dev,
+        gx_device_color * pdc, const gs_gstate * pgs, gx_device * dev,
                 gs_color_select_t select)
 {
     gs_color_space *pcs_icc;
@@ -229,104 +273,108 @@ gx_remap_CIEDEFG(const gs_client_color * pc, const gs_color_space * pcs_in,
     gs_client_color scale_pc;
     gs_color_space *pcs = (gs_color_space *) pcs_in;
 
-    if_debug4m('c', pis->memory, "[c]remap CIEDEFG [%g %g %g %g]\n",
+    if_debug4m('c', pgs->memory, "[c]remap CIEDEFG [%g %g %g %g]\n",
                pc->paint.values[0], pc->paint.values[1],
                pc->paint.values[2], pc->paint.values[3]);
     /* If we are comming in here then we have not completed
        the conversion of the DEFG space to an ICC type.  We
        will finish that process now. */
     if (pcs->icc_equivalent == NULL) {
-        code = gx_ciedefg_to_icc(&pcs_icc, pcs, pis->memory->stable_memory);
+        code = gx_ciedefg_to_icc(&pcs_icc, pcs, pgs->memory->stable_memory);
+        if (code < 0)
+            return gs_rethrow(code, "Failed to create ICC profile from CIEDEFG");
     } else {
         pcs_icc = pcs->icc_equivalent;
     }
     /* Rescale the input based upon the input range since profile is
        created to remap this range from 0 to 1 */
     if (check_range(&(pcs->params.defg->RangeDEFG.ranges[0]), 4)) {
-        return((pcs_icc->type->remap_color)(pc,pcs_icc,pdc,pis,dev,select));
+        return (pcs_icc->type->remap_color)(pc,pcs_icc,pdc,pgs,dev,select);
     }
     /* Do the rescale from 0 to 1 */
     rescale_input_color(&(pcs->params.defg->RangeDEFG.ranges[0]), 4, pc, &scale_pc);
     /* Now the icc remap */
-    code = (pcs_icc->type->remap_color)(&scale_pc,pcs_icc,pdc,pis,dev,select);
+    code = (pcs_icc->type->remap_color)(&scale_pc,pcs_icc,pdc,pgs,dev,select);
     /* Save unscaled data for high level device (e.g. pdfwrite) */
     for (i = 0; i < 4; i++)
         pdc->ccolor.paint.values[i] = pc->paint.values[i];
     pdc->ccolor_valid = true;
-    return(code);
+    return code;
 }
 
 /* Render a CIEBasedDEFG color. */
 int
 gx_concretize_CIEDEFG(const gs_client_color * pc, const gs_color_space * pcs_in,
-                      frac * pconc, const gs_imager_state * pis, gx_device *dev)
+                      frac * pconc, const gs_gstate * pgs, gx_device *dev)
 {
     int code;
     gs_color_space *pcs_icc;
     gs_client_color scale_pc;
     gs_color_space *pcs = (gs_color_space *) pcs_in;
 
-    if_debug4m('c', pis->memory, "[c]concretize DEFG [%g %g %g %g]\n",
+    if_debug4m('c', pgs->memory, "[c]concretize DEFG [%g %g %g %g]\n",
                pc->paint.values[0], pc->paint.values[1],
                pc->paint.values[2], pc->paint.values[3]);
     /* If we are comming in here then we have not completed
        the conversion of the DEFG space to an ICC type.  We
        will finish that process now. */
     if (pcs->icc_equivalent == NULL) {
-        code = gx_ciedefg_to_icc(&pcs_icc, pcs, pis->memory->stable_memory);
+        code = gx_ciedefg_to_icc(&pcs_icc, pcs, pgs->memory->stable_memory);
+        if (code < 0)
+            return gs_rethrow(code, "Failed to create ICC profile from CIEDEFG");
     } else {
         pcs_icc = pcs->icc_equivalent;
     }
     /* Rescale the input based upon the input range since profile is
        created to remap this range from 0 to 1 */
     if (check_range(&(pcs->params.defg->RangeDEFG.ranges[0]), 4)) {
-        return((pcs_icc->type->concretize_color)(pc, pcs_icc, pconc, pis, dev));
+        return (pcs_icc->type->concretize_color)(pc, pcs_icc, pconc, pgs, dev);
     }
     /* Do the rescale from 0 to 1 */
     rescale_input_color(&(pcs->params.defg->RangeDEFG.ranges[0]), 4, pc, &scale_pc);
     /* Now the icc remap */
-    return((pcs_icc->type->concretize_color)(pc, pcs_icc, pconc, pis, dev));
+    return (pcs_icc->type->concretize_color)(pc, pcs_icc, pconc, pgs, dev);
 }
 
 /* Used for when we have to mash entire transform to CIEXYZ */
 int
 gx_psconcretize_CIEA(const gs_client_color * pc, const gs_color_space * pcs,
-                      frac * pconc, const gs_imager_state * pis)
+                      frac * pconc, float * cie_xyz, const gs_gstate * pgs)
 {
     const gs_cie_a *pcie = pcs->params.a;
     cie_cached_value a = float2cie_cached(pc->paint.values[0]);
     cie_cached_vector3 vlmn;
     int code;
 
-    if_debug1m('c', pis->memory, "[c]concretize CIEA %g\n", pc->paint.values[0]);
-    code = gx_cie_check_rendering_inline(pcs, pconc, pis);
+    if_debug1m('c', pgs->memory, "[c]concretize CIEA %g\n", pc->paint.values[0]);
+    code = gx_cie_check_rendering_inline(pcs, pconc, pgs);
     if (code < 0)
         return code;
     if (code == 1)
         return 0;
 
     /* Apply DecodeA and MatrixA. */
-    if (!pis->cie_joint_caches->skipDecodeABC)
+    if (!pgs->cie_joint_caches->skipDecodeABC)
         vlmn = *LOOKUP_ENTRY(a, &pcie->caches.DecodeA);
     else
         vlmn.u = vlmn.v = vlmn.w = a;
-    GX_CIE_REMAP_FINISH(vlmn, pconc, pis, pcs);
+    GX_CIE_REMAP_FINISH(vlmn, pconc, cie_xyz, pgs, pcs);
     return 0;
 }
 
 /* Used for when we have to mash entire transform to CIEXYZ */
 int
 gx_psconcretize_CIEABC(const gs_client_color * pc, const gs_color_space * pcs,
-                      frac * pconc, const gs_imager_state * pis)
+                      frac * pconc, float * cie_xyz, const gs_gstate * pgs)
 {
     const gs_cie_abc *pcie = pcs->params.abc;
     cie_cached_vector3 vec3;
     int code;
 
-    if_debug3m('c', pis->memory, "[c]concretize CIEABC [%g %g %g]\n",
+    if_debug3m('c', pgs->memory, "[c]concretize CIEABC [%g %g %g]\n",
                pc->paint.values[0], pc->paint.values[1],
                pc->paint.values[2]);
-    code = gx_cie_check_rendering_inline(pcs, pconc, pis);
+    code = gx_cie_check_rendering_inline(pcs, pconc, pgs);
     if (code < 0)
         return code;
     if (code == 1)
@@ -335,17 +383,17 @@ gx_psconcretize_CIEABC(const gs_client_color * pc, const gs_color_space * pcs,
     vec3.u = float2cie_cached(pc->paint.values[0]);
     vec3.v = float2cie_cached(pc->paint.values[1]);
     vec3.w = float2cie_cached(pc->paint.values[2]);
-    if (!pis->cie_joint_caches->skipDecodeABC)
+    if (!pgs->cie_joint_caches->skipDecodeABC)
         cie_lookup_map3(&vec3 /* ABC => LMN */, &pcie->caches.DecodeABC,
                         "Decode/MatrixABC");
-    GX_CIE_REMAP_FINISH(vec3, pconc, pis, pcs);
+    GX_CIE_REMAP_FINISH(vec3, pconc, cie_xyz, pgs, pcs);
     return 0;
 }
 
 /* Used for when we have to mash entire transform to CIEXYZ */
 int
 gx_psconcretize_CIEDEFG(const gs_client_color * pc, const gs_color_space * pcs,
-                      frac * pconc, const gs_imager_state * pis)
+                      frac * pconc, float * cie_xyz, const gs_gstate * pgs)
 {
     const gs_cie_defg *pcie = pcs->params.defg;
     int i;
@@ -354,10 +402,10 @@ gx_psconcretize_CIEDEFG(const gs_client_color * pc, const gs_color_space * pcs,
     cie_cached_vector3 vec3;
     int code;
 
-    if_debug4m('c', pis->memory, "[c]concretize DEFG [%g %g %g %g]\n",
+    if_debug4m('c', pgs->memory, "[c]concretize DEFG [%g %g %g %g]\n",
                pc->paint.values[0], pc->paint.values[1],
                pc->paint.values[2], pc->paint.values[3]);
-    code = gx_cie_check_rendering_inline(pcs, pconc, pis);
+    code = gx_cie_check_rendering_inline(pcs, pconc, pgs);
     if (code < 0)
         return code;
     if (code == 1)
@@ -397,17 +445,17 @@ gx_psconcretize_CIEDEFG(const gs_client_color * pc, const gs_color_space * pcs,
     vec3.v = SCALE_TO_RANGE(pcie->RangeABC.ranges[1], abc[1]);
     vec3.w = SCALE_TO_RANGE(pcie->RangeABC.ranges[2], abc[2]);
     /* Apply DecodeABC and MatrixABC. */
-    if (!pis->cie_joint_caches->skipDecodeABC)
+    if (!pgs->cie_joint_caches->skipDecodeABC)
         cie_lookup_map3(&vec3 /* ABC => LMN */, &pcie->caches.DecodeABC,
                         "Decode/MatrixABC");
-    GX_CIE_REMAP_FINISH(vec3, pconc, pis, pcs);
+    GX_CIE_REMAP_FINISH(vec3, pconc, cie_xyz, pgs, pcs);
     return 0;
 }
 
 /* Render a CIEBasedDEF color. */
 int
 gx_psconcretize_CIEDEF(const gs_client_color * pc, const gs_color_space * pcs,
-                     frac * pconc, const gs_imager_state * pis)
+                     frac * pconc, float * cie_xyz, const gs_gstate * pgs)
 {
     const gs_cie_def *pcie = pcs->params.def;
     int i;
@@ -416,10 +464,10 @@ gx_psconcretize_CIEDEF(const gs_client_color * pc, const gs_color_space * pcs,
     cie_cached_vector3 vec3;
     int code;
 
-    if_debug3m('c', pis->memory, "[c]concretize DEF [%g %g %g]\n",
+    if_debug3m('c', pgs->memory, "[c]concretize DEF [%g %g %g]\n",
                pc->paint.values[0], pc->paint.values[1],
                pc->paint.values[2]);
-    code = gx_cie_check_rendering_inline(pcs, pconc, pis);
+    code = gx_cie_check_rendering_inline(pcs, pconc, pgs);
     if (code < 0)
         return code;
     if (code == 1)
@@ -455,10 +503,10 @@ gx_psconcretize_CIEDEF(const gs_client_color * pc, const gs_color_space * pcs,
     vec3.v = SCALE_TO_RANGE(pcie->RangeABC.ranges[1], abc[1]);
     vec3.w = SCALE_TO_RANGE(pcie->RangeABC.ranges[2], abc[2]);
     /* Apply DecodeABC and MatrixABC. */
-    if (!pis->cie_joint_caches->skipDecodeABC)
+    if (!pgs->cie_joint_caches->skipDecodeABC)
         cie_lookup_map3(&vec3 /* ABC => LMN */, &pcie->caches.DecodeABC,
                         "Decode/MatrixABC");
-    GX_CIE_REMAP_FINISH(vec3, pconc, pis, pcs);
+    GX_CIE_REMAP_FINISH(vec3, pconc, cie_xyz, pgs, pcs);
     return 0;
 }
 #undef SCALE_TO_RANGE
@@ -467,33 +515,43 @@ gx_psconcretize_CIEDEF(const gs_client_color * pc, const gs_color_space * pcs,
 static int
 gx_ciedef_to_icc(gs_color_space **ppcs_icc, gs_color_space *pcs, gs_memory_t *memory)
 {
-    int code = 0;
+    int code;
     gs_color_space *palt_cs = pcs->base_space;
     gx_cie_vector_cache *abc_caches = &(pcs->params.abc->caches.DecodeABC.caches[0]);
     gx_cie_scalar_cache    *lmn_caches = &(pcs->params.abc->common.caches.DecodeLMN[0]);
     gx_cie_scalar_cache *def_caches = &(pcs->params.def->caches_def.DecodeDEF[0]);
 
-    if_debug0(gs_debug_flag_icc,"[icc] Creating ICC profile from def object");  
+    if_debug0(gs_debug_flag_icc,"[icc] Creating ICC profile from def object");
     /* build the ICC color space object */
     code = gs_cspace_build_ICC(ppcs_icc, NULL, memory->stable_memory);
+    if (code < 0)
+        return gs_rethrow(code, "Failed to build ICC color space");
     /* record the cie alt space as the icc alternative color space */
     (*ppcs_icc)->base_space = palt_cs;
     rc_increment_cs(palt_cs);
     (*ppcs_icc)->cmm_icc_profile_data = gsicc_profile_new(NULL, memory, NULL, 0);
+    if ((*ppcs_icc)->cmm_icc_profile_data == NULL)
+        gs_throw(gs_error_VMerror, "Failed to create ICC profile");
     code = gsicc_create_fromdef(pcs, &((*ppcs_icc)->cmm_icc_profile_data->buffer),
                     &((*ppcs_icc)->cmm_icc_profile_data->buffer_size), memory,
                     abc_caches, lmn_caches, def_caches);
-    gsicc_init_profile_info((*ppcs_icc)->cmm_icc_profile_data);
+    if (code < 0)
+        return gs_rethrow(code, "Failed to build ICC profile from CIEDEF");
+    code = gsicc_init_profile_info((*ppcs_icc)->cmm_icc_profile_data);
+    if (code < 0)
+        return gs_rethrow(code, "Failed to build ICC profile from CIEDEF");
     (*ppcs_icc)->cmm_icc_profile_data->default_match = CIE_DEF;
     /* Assign to the icc_equivalent member variable */
     pcs->icc_equivalent = *ppcs_icc;
-    pcs->icc_equivalent->cmm_icc_profile_data->data_cs = gsUNDEFINED;
-    return(0);
+
+    /* Bug 699104.  The ICC profile is built to be RGB based. Reflect that here */
+    pcs->icc_equivalent->cmm_icc_profile_data->data_cs = gsRGB;
+    return 0;
     }
 
 int
 gx_remap_CIEDEF(const gs_client_color * pc, const gs_color_space * pcs_in,
-        gx_device_color * pdc, const gs_imager_state * pis, gx_device * dev,
+        gx_device_color * pdc, const gs_gstate * pgs, gx_device * dev,
                 gs_color_select_t select)
 {
     gs_color_space *pcs_icc;
@@ -501,63 +559,67 @@ gx_remap_CIEDEF(const gs_client_color * pc, const gs_color_space * pcs_in,
     int i,code;
     gs_color_space *pcs = (gs_color_space *) pcs_in;
 
-    if_debug3m('c', pis->memory, "[c]remap CIEDEF [%g %g %g]\n",
+    if_debug3m('c', pgs->memory, "[c]remap CIEDEF [%g %g %g]\n",
                pc->paint.values[0], pc->paint.values[1],
                pc->paint.values[2]);
     /* If we are comming in here then we have not completed
        the conversion of the DEF space to an ICC type.  We
        will finish that process now. */
     if (pcs->icc_equivalent == NULL) {
-        gx_ciedef_to_icc(&pcs_icc, pcs, pis->memory->stable_memory);
+        code = gx_ciedef_to_icc(&pcs_icc, pcs, pgs->memory->stable_memory);
+        if (code < 0)
+            return gs_rethrow(code, "Failed to build ICC profile from CIEDEF");
     } else {
         pcs_icc = pcs->icc_equivalent;
     }
     /* Rescale the input based upon the input range since profile is
        created to remap this range from 0 to 1 */
     if (check_range(&(pcs->params.def->RangeDEF.ranges[0]), 3)) {
-        return((pcs_icc->type->remap_color)(pc,pcs_icc,pdc,pis,dev,select));
+        return (pcs_icc->type->remap_color)(pc,pcs_icc,pdc,pgs,dev,select);
     }
     /* Do the rescale from 0 to 1 */
     rescale_input_color(&(pcs->params.def->RangeDEF.ranges[0]), 3, pc, &scale_pc);
     /* Now the icc remap */
-    code = (pcs_icc->type->remap_color)(&scale_pc,pcs_icc,pdc,pis,dev,select);
+    code = (pcs_icc->type->remap_color)(&scale_pc,pcs_icc,pdc,pgs,dev,select);
     /* Save unscaled data for high level device (e.g. pdfwrite) */
     for (i = 0; i < 3; i++)
         pdc->ccolor.paint.values[i] = pc->paint.values[i];
     pdc->ccolor_valid = true;
-    return(code);
+    return code;
 }
 
 /* Render a CIEBasedDEF color. */
 int
 gx_concretize_CIEDEF(const gs_client_color * pc, const gs_color_space * pcs_in,
-                     frac * pconc, const gs_imager_state * pis, gx_device *dev)
+                     frac * pconc, const gs_gstate * pgs, gx_device *dev)
 {
-    int code;
+    int code = 0;
     gs_color_space *pcs_icc;
     gs_client_color scale_pc;
     gs_color_space *pcs = (gs_color_space *) pcs_in;
 
-    if_debug3m('c', pis->memory, "[c]concretize DEF [%g %g %g]\n",
+    if_debug3m('c', pgs->memory, "[c]concretize DEF [%g %g %g]\n",
                pc->paint.values[0], pc->paint.values[1],
                pc->paint.values[2]);
     /* If we are comming in here then we have not completed
        the conversion of the DEF space to an ICC type.  We
        will finish that process now. */
     if (pcs->icc_equivalent == NULL) {
-        code = gx_ciedef_to_icc(&pcs_icc, pcs, pis->memory->stable_memory);
+        code = gx_ciedef_to_icc(&pcs_icc, pcs, pgs->memory->stable_memory);
+        if (code < 0)
+            return gs_rethrow(code, "Failed to build ICC profile from CIEDEF");
     } else {
         pcs_icc = pcs->icc_equivalent;
     }
     /* Rescale the input based upon the input range since profile is
        created to remap this range from 0 to 1 */
     if (check_range(&(pcs->params.def->RangeDEF.ranges[0]), 3)) {
-        return((pcs_icc->type->concretize_color)(pc, pcs_icc, pconc, pis, dev));
+        return (pcs_icc->type->concretize_color)(pc, pcs_icc, pconc, pgs, dev);
 }
     /* Do the rescale from 0 to 1 */
     rescale_input_color(&(pcs->params.def->RangeDEF.ranges[0]), 3, pc, &scale_pc);
     /* Now the icc remap */
-    return((pcs_icc->type->concretize_color)(&scale_pc, pcs_icc, pconc, pis, dev));
+    return (pcs_icc->type->concretize_color)(&scale_pc, pcs_icc, pconc, pgs, dev);
 }
 #undef SCALE_TO_RANGE
 
@@ -566,27 +628,35 @@ static int
 gx_cieabc_to_icc(gs_color_space **ppcs_icc, gs_color_space *pcs, bool *islab,
                  gs_memory_t *memory)
 {
-    int code = 0;
+    int code;
     gs_color_space *palt_cs = pcs->base_space;
     gx_cie_vector_cache *abc_caches = &(pcs->params.abc->caches.DecodeABC.caches[0]);
     gx_cie_scalar_cache *lmn_caches = &(pcs->params.abc->common.caches.DecodeLMN[0]);
 
-    if_debug0m(gs_debug_flag_icc, memory, "[icc] Creating ICC profile from abc object");  
+    if_debug0m(gs_debug_flag_icc, memory, "[icc] Creating ICC profile from abc object");
     /* build the ICC color space object */
     code = gs_cspace_build_ICC(ppcs_icc, NULL, memory);
+    if (code < 0)
+        return gs_rethrow(code, "Failed to create ICC profile");
     /* record the cie alt space as the icc alternative color space */
     (*ppcs_icc)->base_space = palt_cs;
     rc_increment_cs(palt_cs);
     (*ppcs_icc)->cmm_icc_profile_data = gsicc_profile_new(NULL, memory, NULL, 0);
+    if ((*ppcs_icc)->cmm_icc_profile_data == NULL)
+        gs_throw(gs_error_VMerror, "Failed to create ICC profile");
     code = gsicc_create_fromabc(pcs, &((*ppcs_icc)->cmm_icc_profile_data->buffer),
                     &((*ppcs_icc)->cmm_icc_profile_data->buffer_size), memory,
                     abc_caches, lmn_caches, islab);
-    gsicc_init_profile_info((*ppcs_icc)->cmm_icc_profile_data);
+    if (code < 0)
+        return gs_rethrow(code, "Failed to build ICC profile from CIEABC");
+    code = gsicc_init_profile_info((*ppcs_icc)->cmm_icc_profile_data);
+    if (code < 0)
+        return gs_rethrow(code, "Failed to build ICC profile from CIEDEF");
     (*ppcs_icc)->cmm_icc_profile_data->default_match = CIE_ABC;
     /* Assign to the icc_equivalent member variable */
     pcs->icc_equivalent = *ppcs_icc;
     pcs->icc_equivalent->cmm_icc_profile_data->data_cs = gsRGB;
-    return(0);
+    return 0;
     }
 
 /* Render a CIEBasedABC color. */
@@ -594,106 +664,118 @@ gx_cieabc_to_icc(gs_color_space **ppcs_icc, gs_color_space *pcs, bool *islab,
 /* needs to be efficient. */
 int
 gx_remap_CIEABC(const gs_client_color * pc, const gs_color_space * pcs_in,
-        gx_device_color * pdc, const gs_imager_state * pis, gx_device * dev,
+        gx_device_color * pdc, const gs_gstate * pgs, gx_device * dev,
                 gs_color_select_t select)
 {
     gs_color_space *pcs_icc;
     gs_client_color scale_pc;
     bool islab;
-    int i,code;
+    int i, code;
     gs_color_space *pcs = (gs_color_space *) pcs_in;
 
-
-    if_debug3m('c', pis->memory, "[c]remap CIEABC [%g %g %g]\n",
+    if_debug3m('c', pgs->memory, "[c]remap CIEABC [%g %g %g]\n",
                pc->paint.values[0], pc->paint.values[1],
                pc->paint.values[2]);
     /* If we are comming in here then we have not completed
        the conversion of the ABC space to an ICC type.  We
        will finish that process now. */
     if (pcs->icc_equivalent == NULL) {
-        gx_cieabc_to_icc(&pcs_icc, pcs, &islab, pis->memory->stable_memory);
+        code = gx_cieabc_to_icc(&pcs_icc, pcs, &islab, pgs->memory->stable_memory);
+        if (code < 0)
+            return gs_rethrow(code, "Failed to create ICC profile from CIEABC");
     } else {
         pcs_icc = pcs->icc_equivalent;
-        }
+    }
     /* Rescale the input based upon the input range since profile is
        created to remap this range from 0 to 1 */
     if (check_range(&(pcs->params.abc->RangeABC.ranges[0]), 3)) {
-        return((pcs_icc->type->remap_color)(pc,pcs_icc,pdc,pis,dev,select));
+        return (pcs_icc->type->remap_color)(pc,pcs_icc,pdc,pgs,dev,select);
     }
     /* Do the rescale from 0 to 1 */
     rescale_input_color(&(pcs->params.abc->RangeABC.ranges[0]), 3, pc, &scale_pc);
     /* Now the icc remap */
-    code = (pcs_icc->type->remap_color)(&scale_pc,pcs_icc,pdc,pis,dev,select);
+    code = (pcs_icc->type->remap_color)(&scale_pc,pcs_icc,pdc,pgs,dev,select);
     /* Save unscaled data for high level device (e.g. pdfwrite) */
     for (i = 0; i < 3; i++)
         pdc->ccolor.paint.values[i] = pc->paint.values[i];
     pdc->ccolor_valid = true;
     /* Now the icc remap */
-    return(code);
+    return code;
 }
 
 int
 gx_concretize_CIEABC(const gs_client_color * pc, const gs_color_space * pcs_in,
-                     frac * pconc, const gs_imager_state * pis, gx_device *dev)
+                     frac * pconc, const gs_gstate * pgs, gx_device *dev)
 {
     gs_color_space *pcs_icc;
     gs_client_color scale_pc;
     bool islab;
     gs_color_space *pcs = (gs_color_space *) pcs_in;
+    int code = 0;
 
-    if_debug3m('c', pis->memory, "[c]concretize CIEABC [%g %g %g]\n",
+    if_debug3m('c', pgs->memory, "[c]concretize CIEABC [%g %g %g]\n",
                pc->paint.values[0], pc->paint.values[1],
                pc->paint.values[2]);
     /* If we are comming in here then we have not completed
        the conversion of the ABC space to an ICC type.  We
        will finish that process now. */
     if (pcs->icc_equivalent == NULL) {
-        gx_cieabc_to_icc(&pcs_icc, pcs, &islab, pis->memory->stable_memory);
+        code = gx_cieabc_to_icc(&pcs_icc, pcs, &islab, pgs->memory->stable_memory);
+        if (code < 0)
+            return gs_rethrow(code, "Failed to create ICC profile from CIEABC");
     } else {
         pcs_icc = pcs->icc_equivalent;
     }
     /* Rescale the input based upon the input range since profile is
        created to remap this range from 0 to 1 */
     if (check_range(&(pcs->params.abc->RangeABC.ranges[0]), 3)) {
-        return((pcs_icc->type->concretize_color)(pc, pcs_icc, pconc, pis, dev));
+        return (pcs_icc->type->concretize_color)(pc, pcs_icc, pconc, pgs, dev);
     }
     /* Do the rescale from 0 to 1 */
     rescale_input_color(&(pcs->params.abc->RangeABC.ranges[0]), 3, pc, &scale_pc);
     /* Now the icc remap */
-    return((pcs_icc->type->concretize_color)(&scale_pc, pcs_icc, pconc, pis, dev));
+    return (pcs_icc->type->concretize_color)(&scale_pc, pcs_icc, pconc, pgs, dev);
 }
 
 /* Common code shared between remap and concretize */
 static int
 gx_ciea_to_icc(gs_color_space **ppcs_icc, gs_color_space *pcs, gs_memory_t *memory)
 {
-    int code = 0;
+    int code;
     gs_color_space *palt_cs = pcs->base_space;
     gx_cie_vector_cache *a_cache = &(pcs->params.a->caches.DecodeA);
     gx_cie_scalar_cache    *lmn_caches = &(pcs->params.a->common.caches.DecodeLMN[0]);
 
     if_debug0m(gs_debug_flag_icc, memory,
-               "[icc] Creating ICC profile from CIEA object");  
+               "[icc] Creating ICC profile from CIEA object");
     /* build the ICC color space object */
     code = gs_cspace_build_ICC(ppcs_icc, NULL, memory);
+    if (code < 0)
+        return gs_rethrow(code, "Failed to create ICC profile");
     /* record the cie alt space as the icc alternative color space */
     (*ppcs_icc)->base_space = palt_cs;
     rc_increment_cs(palt_cs);
     (*ppcs_icc)->cmm_icc_profile_data = gsicc_profile_new(NULL, memory, NULL, 0);
+    if ((*ppcs_icc)->cmm_icc_profile_data == NULL)
+        gs_throw(gs_error_VMerror, "Failed to create ICC profile");
     code = gsicc_create_froma(pcs, &((*ppcs_icc)->cmm_icc_profile_data->buffer),
                     &((*ppcs_icc)->cmm_icc_profile_data->buffer_size), memory,
                     a_cache, lmn_caches);
-    gsicc_init_profile_info((*ppcs_icc)->cmm_icc_profile_data);
+    if (code < 0)
+        return gs_rethrow(code, "Failed to create ICC profile from CIEA");
+    code = gsicc_init_profile_info((*ppcs_icc)->cmm_icc_profile_data);
+    if (code < 0)
+        return gs_rethrow(code, "Failed to build ICC profile from CIEDEF");
     (*ppcs_icc)->cmm_icc_profile_data->default_match = CIE_A;
     /* Assign to the icc_equivalent member variable */
     pcs->icc_equivalent = *ppcs_icc;
     pcs->icc_equivalent->cmm_icc_profile_data->data_cs = gsGRAY;
-    return(code);
+    return 0;
 }
 
 int
 gx_remap_CIEA(const gs_client_color * pc, const gs_color_space * pcs_in,
-        gx_device_color * pdc, const gs_imager_state * pis, gx_device * dev,
+        gx_device_color * pdc, const gs_gstate * pgs, gx_device * dev,
                 gs_color_select_t select)
 {
     int code;
@@ -706,7 +788,9 @@ gx_remap_CIEA(const gs_client_color * pc, const gs_color_space * pcs_in,
        the conversion of the CIE A space to an ICC type.  We
        will finish that process now. */
     if (pcs->icc_equivalent == NULL) {
-        code = gx_ciea_to_icc(&pcs_icc, pcs, pis->memory->stable_memory);
+        code = gx_ciea_to_icc(&pcs_icc, pcs, pgs->memory->stable_memory);
+        if (code < 0)
+            return gs_rethrow(code, "Failed to create ICC profile from CIEA");
     } else {
         /* Once the ICC color space is set, we should be doing all the remaps through the ICC equivalent */
         pcs_icc = pcs->icc_equivalent;
@@ -714,24 +798,24 @@ gx_remap_CIEA(const gs_client_color * pc, const gs_color_space * pcs_in,
     /* Rescale the input based upon the input range since profile is
        created to remap this range from 0 to 1 */
     if (check_range(&(pcs->params.a->RangeA), 1)) {
-        return((pcs_icc->type->remap_color)(pc,pcs_icc,pdc,pis,dev,select));
+        return (pcs_icc->type->remap_color)(pc,pcs_icc,pdc,pgs,dev,select);
     }
     /* Do the rescale from 0 to 1 */
     rescale_input_color(&(pcs->params.a->RangeA), 1, pc, &scale_pc);
     /* Now the icc remap */
-    code = (pcs_icc->type->remap_color)(&scale_pc,pcs_icc,pdc,pis,dev,select);
+    code = (pcs_icc->type->remap_color)(&scale_pc,pcs_icc,pdc,pgs,dev,select);
     /* Save unscaled data for high level device (e.g. pdfwrite) */
     pdc->ccolor.paint.values[0] = pc->paint.values[0];
     pdc->ccolor_valid = true;
-    return(code);
+    return code;
 }
 
 /* Render a CIEBasedA color. */
 int
 gx_concretize_CIEA(const gs_client_color * pc, const gs_color_space * pcs_in,
-                   frac * pconc, const gs_imager_state * pis, gx_device *dev)
+                   frac * pconc, const gs_gstate * pgs, gx_device *dev)
 {
-    int code;
+    int code = 0;
     gs_color_space *pcs_icc;
     gs_client_color scale_pc;
     gs_color_space *pcs = (gs_color_space *) pcs_in;
@@ -741,7 +825,9 @@ gx_concretize_CIEA(const gs_client_color * pc, const gs_color_space * pcs_in,
        the conversion of the CIE A space to an ICC type.  We
        will finish that process now. */
     if (pcs->icc_equivalent == NULL) {
-        code = gx_ciea_to_icc(&pcs_icc, pcs, pis->memory->stable_memory);
+        code = gx_ciea_to_icc(&pcs_icc, pcs, pgs->memory->stable_memory);
+        if (code < 0)
+            return gs_rethrow(code, "Failed to create ICC profile from CIEA");
     } else {
         /* Once the ICC color space is set, we should be doing all the remaps through the ICC equivalent */
         pcs_icc = pcs->icc_equivalent;
@@ -749,12 +835,12 @@ gx_concretize_CIEA(const gs_client_color * pc, const gs_color_space * pcs_in,
     /* Rescale the input based upon the input range since profile is
        created to remap this range from 0 to 1 */
     if (check_range(&(pcs->params.a->RangeA), 1)) {
-        return((pcs_icc->type->concretize_color)(pc, pcs_icc, pconc, pis, dev));
+        return (pcs_icc->type->concretize_color)(pc, pcs_icc, pconc, pgs, dev);
     }
     /* Do the rescale from 0 to 1 */
     rescale_input_color(&(pcs->params.a->RangeA), 1, pc, &scale_pc);
     /* Now the icc remap */
-    return((pcs_icc->type->concretize_color)(&scale_pc, pcs_icc, pconc, pis, dev));
+    return (pcs_icc->type->concretize_color)(&scale_pc, pcs_icc, pconc, pgs, dev);
 }
 
 /* Call for cases where the equivalent icc color space needs to be set */
@@ -762,54 +848,56 @@ int
 gs_colorspace_set_icc_equivalent(gs_color_space *pcs, bool *islab,
                                  gs_memory_t *memory)
 {
-     gs_color_space_index color_space_index = gs_color_space_get_index(pcs);
-     gs_color_space *picc_cs;
+    gs_color_space_index color_space_index = gs_color_space_get_index(pcs);
+    gs_color_space *picc_cs;
+    int code = 0;
 
-     *islab = false;  /* For non CIEABC cases */
-     if (pcs->icc_equivalent != NULL || !gs_color_space_is_PSCIE(pcs)) {
-         return(0);
-}
-     switch( color_space_index ) {
+    *islab = false;  /* For non CIEABC cases */
+    if (pcs->icc_equivalent != NULL || !gs_color_space_is_PSCIE(pcs))
+        return 0;
+
+    switch( color_space_index ) {
        case gs_color_space_index_CIEDEFG:
-            gx_ciedefg_to_icc(&picc_cs, pcs, memory->stable_memory);
+            code = gx_ciedefg_to_icc(&picc_cs, pcs, memory->stable_memory);
             break;
         case gs_color_space_index_CIEDEF:
-            gx_ciedef_to_icc(&picc_cs, pcs, memory->stable_memory);
+            code = gx_ciedef_to_icc(&picc_cs, pcs, memory->stable_memory);
             break;
         case gs_color_space_index_CIEABC:
-            gx_cieabc_to_icc(&picc_cs, pcs, islab, memory->stable_memory);
+            code = gx_cieabc_to_icc(&picc_cs, pcs, islab, memory->stable_memory);
             break;
         case gs_color_space_index_CIEA:
-            gx_ciea_to_icc(&picc_cs, pcs, memory->stable_memory);
+            code = gx_ciea_to_icc(&picc_cs, pcs, memory->stable_memory);
             break;
         default:
              /* do nothing.  Sould never happen */
              break;
-     }
-    return(0);
+    }
+    return code;
 }
 
 /* Call the remap_finish procedure in the joint_caches structure. */
 int
-gx_cie_remap_finish(cie_cached_vector3 vec3, frac * pconc,
-                    const gs_imager_state * pis,
+gx_cie_remap_finish(cie_cached_vector3 vec3, frac * pconc, float *cie_xyz,
+                    const gs_gstate * pgs,
                     const gs_color_space *pcs)
 {
-    return pis->cie_joint_caches->remap_finish(vec3, pconc, pis, pcs);
+    return pgs->cie_joint_caches->remap_finish(vec3, pconc, cie_xyz, pgs, pcs);
 }
 
 /* Finish remapping a CIEBased color. */
 /* Return 3 if RGB, 4 if CMYK. */
 /* this procedure is exported for the benefit of gsicc.c */
 int
-gx_cie_real_remap_finish(cie_cached_vector3 vec3, frac * pconc,
-                         const gs_imager_state * pis,
+gx_cie_real_remap_finish(cie_cached_vector3 vec3, frac * pconc, float * xyz,
+                         const gs_gstate * pgs,
                          const gs_color_space *pcs)
 {
-    const gs_cie_render *pcrd = pis->cie_render;
-    const gx_cie_joint_caches *pjc = pis->cie_joint_caches;
+    const gs_cie_render *pcrd = pgs->cie_render;
+    const gx_cie_joint_caches *pjc = pgs->cie_joint_caches;
     const gs_const_string *table = pcrd->RenderTable.lookup.table;
     int tabc[3];		/* indices for final EncodeABC lookup */
+
 
     /* Apply DecodeLMN, MatrixLMN(decode), and MatrixPQR. */
     if (!pjc->skipDecodeLMN)
@@ -878,13 +966,13 @@ gx_cie_real_remap_finish(cie_cached_vector3 vec3, frac * pconc,
         rfix[2] = FABC(2, s);
 #undef FABC
 #undef EABC
-        if_debug6m('c', pis->memory, "[c]ABC=%g,%g,%g => iabc=%g,%g,%g\n",
+        if_debug6m('c', pgs->memory, "[c]ABC=%g,%g,%g => iabc=%g,%g,%g\n",
                    cie_cached2float(vec3.u), cie_cached2float(vec3.v),
                    cie_cached2float(vec3.w), fixed2float(rfix[0]),
                    fixed2float(rfix[1]), fixed2float(rfix[2]));
         gx_color_interpolate_linear(rfix, &pcrd->RenderTable.lookup,
                                     pconc);
-        if_debug3m('c', pis->memory, "[c]  interpolated => %g,%g,%g\n",
+        if_debug3m('c', pgs->memory, "[c]  interpolated => %g,%g,%g\n",
                    frac2float(pconc[0]), frac2float(pconc[1]),
                    frac2float(pconc[2]));
         if (!pcrd->caches.RenderTableT_is_identity) {
@@ -913,7 +1001,7 @@ gx_cie_real_remap_finish(cie_cached_vector3 vec3, frac * pconc,
 
         /* (*pcrd->RenderTable.T)(prtc, m, pcrd, pconc); */
 
-        if_debug6m('c', pis->memory, "[c]ABC=%g,%g,%g => iabc=%d,%d,%d\n",
+        if_debug6m('c', pgs->memory, "[c]ABC=%g,%g,%g => iabc=%d,%d,%d\n",
                    cie_cached2float(vec3.u), cie_cached2float(vec3.v),
                    cie_cached2float(vec3.w), ia, ib, ic);
         if (pcrd->caches.RenderTableT_is_identity) {
@@ -955,16 +1043,16 @@ gx_cie_real_remap_finish(cie_cached_vector3 vec3, frac * pconc,
  * this is a bug that we will have to address someday.
  */
 static frac
-float2frac_clamp(floatp x)
+float2frac_clamp(double x)
 {
     return float2frac((x <= 0 ? 0 : x >= 1 ? 1 : x));
 }
 int
-gx_cie_xyz_remap_finish(cie_cached_vector3 vec3, frac * pconc,
-                        const gs_imager_state * pis,
+gx_cie_xyz_remap_finish(cie_cached_vector3 vec3, frac * pconc, float *xyz,
+                        const gs_gstate * pgs,
                         const gs_color_space *pcs)
 {
-    const gx_cie_joint_caches *pjc = pis->cie_joint_caches;
+    const gx_cie_joint_caches *pjc = pgs->cie_joint_caches;
 
     /*
      * All the steps through DecodeABC/MatrixABC have been applied, i.e.,
@@ -974,9 +1062,13 @@ gx_cie_xyz_remap_finish(cie_cached_vector3 vec3, frac * pconc,
         cie_lookup_map3(&vec3 /* LMN => XYZ */, &pjc->DecodeLMN,
                         "Decode/MatrixLMN");
 
-    pconc[0] = float2frac_clamp(cie_cached2float(vec3.u));
-    pconc[1] = float2frac_clamp(cie_cached2float(vec3.v));
-    pconc[2] = float2frac_clamp(cie_cached2float(vec3.w));
+    xyz[0] = cie_cached2float(vec3.u);
+    xyz[1] = cie_cached2float(vec3.v);
+    xyz[2] = cie_cached2float(vec3.w);
+
+    pconc[0] = float2frac_clamp(xyz[0]);
+    pconc[1] = float2frac_clamp(xyz[1]);
+    pconc[2] = float2frac_clamp(xyz[2]);
     return 3;
 }
 

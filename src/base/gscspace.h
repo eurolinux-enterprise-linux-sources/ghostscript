@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -133,9 +133,9 @@
 */
 
 /* Opaque types for a graphics state stuff */
-#ifndef gs_state_DEFINED
-#  define gs_state_DEFINED
-typedef struct gs_state_s gs_state;
+#ifndef gs_gstate_DEFINED
+#  define gs_gstate_DEFINED
+typedef struct gs_gstate_s gs_gstate;
 #endif
 
 #ifndef gsicc_link_DEFINED
@@ -157,6 +157,8 @@ typedef struct cmm_profile_s cmm_profile_t;
 #  define gs_color_space_DEFINED
 typedef struct gs_color_space_s gs_color_space;
 #endif
+
+typedef struct cmm_dev_profile_s cmm_dev_profile_t;
 
 /*
  * Define color space type indices.  NOTE: PostScript code (gs_res.ps,
@@ -346,7 +348,7 @@ struct gs_color_space_s {
 gs_color_space *gs_cspace_new_DeviceGray(gs_memory_t *mem);
 gs_color_space *gs_cspace_new_DeviceRGB(gs_memory_t *mem);
 gs_color_space *gs_cspace_new_DeviceCMYK(gs_memory_t *mem);
-gs_color_space *gs_cspace_new_ICC(gs_memory_t *pmem, gs_state * pgs, 
+gs_color_space *gs_cspace_new_ICC(gs_memory_t *pmem, gs_gstate * pgs, 
                                   int components);
 
 /* ------ Accessors ------ */
@@ -395,7 +397,7 @@ void rc_decrement_cs(gs_color_space *pcs, const char *cname);
 
 void rc_decrement_only_cs(gs_color_space *pcs, const char *cname);
 
-void cs_adjust_counts_icc(gs_state *pgs, int delta);
+void cs_adjust_counts_icc(gs_gstate *pgs, int delta);
 
 /* backwards compatibility */
 #define gs_color_space_indexed_base_space(pcspace)\

@@ -23,12 +23,6 @@
 
 ******************************************************************************/
 
-/* Configuration management identification */
-#ifndef lint
-static const char
-  cm_id[] = "@(#)$Id: gdevpcl3.c,v 1.32 2001/08/14 15:22:35 Martin Rel $";
-#endif
-
 /*****************************************************************************/
 
 #ifndef _XOPEN_SOURCE
@@ -127,7 +121,7 @@ static const ms_MediaCode
 /*****************************************************************************/
 
 /* Forward declaration */
-static void pcl3_flag_mismatch_reporter(FILE *err,
+static void pcl3_flag_mismatch_reporter(
   const struct s_eprn_Device *eprn, bool no_match);
 
 /* Macro for creating device structure instances */
@@ -302,7 +296,7 @@ static void get_string_for_int(int in_value, const eprn_StringAndInt *table,
   else {
     static char buffer[22];     /* Must be sufficient for an 'int' */
 
-    sprintf(buffer, "%d", in_value);
+    gs_sprintf(buffer, "%d", in_value);
     assert(strlen(buffer) < sizeof(buffer));
     out_value->data = (const byte *)buffer;
     out_value->size = strlen(buffer);
@@ -428,7 +422,7 @@ static void init(pcl3_Device *dev)
 
 ******************************************************************************/
 
-static void pcl3_flag_mismatch_reporter(FILE *err,
+static void pcl3_flag_mismatch_reporter(
   const struct s_eprn_Device *eprn, bool no_match)
 {
   const char *epref = eprn->CUPS_messages? CUPS_ERRPREF: "";
@@ -908,7 +902,8 @@ static int pcl3_put_params(gx_device *device, gs_param_list *plist)
       else {
         eprintf1("%s" ERRPREF "Unknown subdevice name: `", epref);
         errwrite(dev->memory,
-                 string_value.data, sizeof(char)*string_value.size);
+                 (const char *)string_value.data,
+                 sizeof(char)*string_value.size);
         eprintf("'.\n");
         last_error = gs_error_rangecheck;
         param_signal_error(plist, pname, last_error);
@@ -1018,7 +1013,8 @@ static int pcl3_put_params(gx_device *device, gs_param_list *plist)
       else {
         eprintf1("%s" ERRPREF "Invalid duplex capability: `", epref);
         errwrite(dev->memory,
-                 string_value.data, sizeof(char)*string_value.size);
+                 (const char *)string_value.data,
+                 sizeof(char)*string_value.size);
         eprintf("'.\n");
         last_error = gs_error_rangecheck;
         param_signal_error(plist, pname, last_error);
@@ -1074,7 +1070,8 @@ static int pcl3_put_params(gx_device *device, gs_param_list *plist)
       if (rc != gs_error_VMerror) {
         eprintf1("%s" ERRPREF "Unknown medium: `", epref);
         errwrite(dev->memory,
-                 string_value.data, sizeof(char)*string_value.size);
+                 (const char *)string_value.data,
+                 sizeof(char)*string_value.size);
         eprintf("'.\n");
       }
       last_error = rc;
@@ -1144,7 +1141,8 @@ static int pcl3_put_params(gx_device *device, gs_param_list *plist)
       if (rc != gs_error_VMerror) {
         eprintf1("%s" ERRPREF "Unknown print quality: `", epref);
         errwrite(dev->memory,
-                 string_value.data, sizeof(char)*string_value.size);
+                 (const char *)string_value.data,
+                 sizeof(char)*string_value.size);
         eprintf("'.\n");
       }
       last_error = rc;
@@ -1232,8 +1230,9 @@ static int pcl3_put_params(gx_device *device, gs_param_list *plist)
 
   /* Process parameters defined by base classes (should occur after treating
      parameters defined for the derived class, see gsparam.h) */
-  if ((rc = eprn_put_params(device, plist)) < 0 ||
-    rc > 0 && last_error >= 0) last_error = rc;
+  rc = eprn_put_params(device, plist);
+  if (rc < 0 || (rc > 0 && last_error >= 0))
+    last_error = rc;
 
   /* Act if the colour model was changed */
   if (previous_colour_model != dev->eprn.colour_model) set_palette(dev);
@@ -1298,6 +1297,14 @@ static int pcl3_open_device(gx_device *device)
   /* Open the "eprn" device part */
   if ((rc = eprn_open_device(device)) != 0) return rc;
 
+  /* if device has been subclassed (FirstPage/LastPage device) then make sure we use
+   * the subclassed device.
+   */
+  while (device->child)
+      device = device->child;
+
+  dev = (pcl3_Device *)device;
+
   /* Fill the still unassigned parts of 'file_data' from the other data */
   {
     pcl_FileData *data = &dev->file_data;
@@ -1347,10 +1354,10 @@ static int pcl3_open_device(gx_device *device)
              just as fast, provided the compiler is sufficiently intelligent. */
 
         dev->eprn.soft_tumble = dev->duplex_capability != Duplex_both &&
-            (same_leading_edge &&
-                dev->duplex_capability != Duplex_sameLeadingEdge ||
-              !same_leading_edge &&
-                dev->duplex_capability != Duplex_oppositeLeadingEdge);
+            ((same_leading_edge &&
+                dev->duplex_capability != Duplex_sameLeadingEdge) ||
+              (!same_leading_edge &&
+                dev->duplex_capability != Duplex_oppositeLeadingEdge));
         if (dev->eprn.soft_tumble) same_leading_edge = !same_leading_edge;
 
         /*  I am assuming here that the values 1 and 2, specified by HP in
@@ -1473,8 +1480,8 @@ static int pcl3_print_page(gx_device_printer *device, FILE *out)
   if (pcl_cm_is_differential(dev->file_data.compression))
     rd.previous = (pcl_OctetString *)malloc(planes*sizeof(pcl_OctetString));
   if (lengths == NULL || rd.next == NULL ||
-      pcl_cm_is_differential(dev->file_data.compression) &&
-        rd.previous == NULL) {
+      (pcl_cm_is_differential(dev->file_data.compression) &&
+        rd.previous == NULL)) {
     free(lengths); free(rd.next); free(rd.previous);
     eprintf1("%s" ERRPREF "Memory allocation failure from malloc().\n",
       epref);

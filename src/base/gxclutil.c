@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -128,10 +128,40 @@ cmd_print_stats(const gs_memory_t *mem)
 
 /* ---------------- Writing utilities ---------------- */
 
+/* Update the 'trans_bbox' in the states for bands affected by the given rectangle */
+/* The caller has determined the the PDF 1.4 transparency will actuall be needed   */
+/* for the given rectangle (conservatively). This will allow some bands that only  */
+/* paint to the page level with full opacity to skip the pdf14 compositor during   */
+/* rendering/reading and thus run faster and with less memory for those bands.     */
+void
+clist_update_trans_bbox(gx_device_clist_writer *cldev, gs_int_rect *bbox)
+{
+    int p_y, q_y;
+    int band, first_band, last_band;
+
+    first_band = max(0, bbox->p.y / cldev->page_band_height);
+    p_y = bbox->p.y - (first_band * cldev->page_band_height);
+    last_band = min((cldev->nbands - 1), bbox->q.y / cldev->page_band_height);
+
+    for (band=first_band; band <= last_band; band++) {
+        if (cldev->states[band].color_usage.trans_bbox.p.y > p_y)
+            cldev->states[band].color_usage.trans_bbox.p.y = p_y;
+        if (cldev->states[band].color_usage.trans_bbox.p.x > bbox->p.x)
+            cldev->states[band].color_usage.trans_bbox.p.x = bbox->p.x;
+        p_y = 0;	/* will be top of next band */
+        q_y = (band == last_band) ? bbox->q.y - (last_band * cldev->page_band_height) :
+                                      cldev->page_band_height - 1;
+        if (cldev->states[band].color_usage.trans_bbox.q.y < q_y)
+            cldev->states[band].color_usage.trans_bbox.q.y = q_y;
+        if (cldev->states[band].color_usage.trans_bbox.q.x < bbox->q.x)
+            cldev->states[band].color_usage.trans_bbox.q.x = bbox->q.x;
+    }
+}
+
 /* Write the commands for one band or band range. */
 static int	/* ret 0 all ok, -ve error code, or +1 ok w/low-mem warning */
 cmd_write_band(gx_device_clist_writer * cldev, int band_min, int band_max,
-               cmd_list * pcl, gx_band_complexity_t *band_complexity, byte cmd_end)
+               cmd_list * pcl, byte cmd_end)
 {
     const cmd_prefix *cp = pcl->head;
     int code_b = 0;
@@ -148,9 +178,8 @@ cmd_write_band(gx_device_clist_writer * cldev, int band_min, int band_max,
         cb.band_min = band_min;
         cb.band_max = band_max;
         cb.pos = cldev->page_info.io_procs->ftell(cfile);
-        clist_copy_band_complexity(&cb.band_complexity, band_complexity);
-        if_debug4m('l', cldev->memory, "[l]writing for bands (%d,%d) at %ld K %d \n",
-                   band_min, band_max, (long)cb.pos, cb.band_complexity.uses_color);
+        if_debug3m('l', cldev->memory, "[l]writing for bands (%d,%d) at %ld\n",
+                  band_min, band_max, (long)cb.pos);
         cldev->page_info.io_procs->fwrite_chars(&cb, sizeof(cb), bfile);
         if (cp != 0) {
             pcl->tail->next = 0;	/* terminate the list */
@@ -182,15 +211,14 @@ cmd_write_band(gx_device_clist_writer * cldev, int band_min, int band_max,
     return code_b | code_c;
 }
 
-/* Write out the ICC profile table */
-
+/* Write out a pseudo-band block of data, using the specific pseudo_band_offset */
 int
-cmd_write_icctable(gx_device_clist_writer * cldev, unsigned char *pbuf, int data_size)
+cmd_write_pseudo_band(gx_device_clist_writer * cldev, unsigned char *pbuf, int data_size, int pseudo_band_offset)
 {
 
-    /* Data is written out maxband + ICC_BAND_OFFSET */
+    /* Data is written out maxband + pseudo_band_offset */
 
-    int band = cldev->band_range_max + ICC_BAND_OFFSET;
+    int band = cldev->band_range_max + pseudo_band_offset;
     clist_file_ptr cfile = cldev->page_cfile;
     clist_file_ptr bfile = cldev->page_bfile;
     cmd_block cb;
@@ -200,25 +228,20 @@ cmd_write_icctable(gx_device_clist_writer * cldev, unsigned char *pbuf, int data
         return_error(gs_error_ioerror);
 
     /* Set up the command block information that
-       is stored in the bfile.  Note complexity information
-       is filled in but not used. */
+       is stored in the bfile. */
 
-    cb.band_complexity.nontrivial_rops = false;
-    cb.band_complexity.uses_color = false;
     cb.band_min = band;
     cb.band_max = band;
     cb.pos = cldev->page_info.io_procs->ftell(cfile);
 
-    if_debug2m('l', cldev->memory, "[l]writing icc table band %d cb pos %ld\n",
-               band, (long)cb.pos);
+    if_debug2m('l', cldev->memory, "[l]writing pseudo band %d cb pos %ld\n",
+                  band, (long)cb.pos);
 
     cldev->page_info.io_procs->fwrite_chars(&cb, sizeof(cb), bfile);
 
-    /* Now store the ICC table information in the cfile */
-    /* Do I need to worry about having enough room here? */
-
-    if_debug1m('l', cldev->memory, "[l]writing icc table in cfile at %ld\n",
-               (long)cldev->page_info.io_procs->ftell(cfile));
+    /* Now store the information in the cfile */
+    if_debug2m('l', cldev->memory, "[l]writing %d bytes into cfile at %ld\n",
+            data_size, (long)cldev->page_info.io_procs->ftell(cfile));
 
     cldev->page_info.io_procs->fwrite_chars(pbuf, data_size, cfile);
 
@@ -232,7 +255,6 @@ cmd_write_icctable(gx_device_clist_writer * cldev, unsigned char *pbuf, int data
         return_error(code_c);
 
     return code_b | code_c;
-
 }
 
 /* Write out the buffered commands, and reset the buffer. */
@@ -245,7 +267,6 @@ cmd_write_buffer(gx_device_clist_writer * cldev, byte cmd_end)
     int code = cmd_write_band(cldev, cldev->band_range_min,
                               cldev->band_range_max,
                               &cldev->band_range_list,
-                              NULL,
                               cmd_opv_end_run);
 
     int warning = code;
@@ -253,7 +274,7 @@ cmd_write_buffer(gx_device_clist_writer * cldev, byte cmd_end)
     for (band = 0, pcls = cldev->states;
          code >= 0 && band < nbands; band++, pcls++
          ) {
-        code = cmd_write_band(cldev, band, band, &pcls->list, &pcls->band_complexity, cmd_end);
+        code = cmd_write_band(cldev, band, band, &pcls->list, cmd_end);
         warning |= code;
     }
     /* If an error occurred, finish cleaning up the pointers. */
@@ -283,14 +304,6 @@ cmd_put_list_op(gx_device_clist_writer * cldev, cmd_list * pcl, uint size)
         if ((cldev->error_code =
              cmd_write_buffer(cldev, cmd_opv_end_run)) != 0 ||
             (size + cmd_headroom > cldev->cend - cldev->cnext)) {
-            if (cldev->error_code < 0)
-                cldev->error_is_retryable = 0;	/* hard error */
-            else {
-                /* upgrade lo-mem warning into an error */
-                if (!cldev->ignore_lo_mem_warnings)
-                    cldev->error_code = gs_note_error(gs_error_VMerror);
-                cldev->error_is_retryable = 1;
-            }
             return 0;
         }
         else
@@ -347,7 +360,6 @@ cmd_get_buffer_space(gx_device_clist_writer * cldev, gx_clist_state * pcls, uint
     if (size + cmd_headroom > cldev->cend - cldev->cnext) {
         cldev->error_code = cmd_write_buffer(cldev, cmd_opv_end_run);
         if (cldev->error_code < 0) {
-            cldev->error_is_retryable = 0;	/* hard error */
             return cldev->error_code;
         }
     }
@@ -378,13 +390,6 @@ cmd_put_range_op(gx_device_clist_writer * cldev, int band_min, int band_max,
          band_max != cldev->band_range_max)
         ) {
         if ((cldev->error_code = cmd_write_buffer(cldev, cmd_opv_end_run)) != 0) {
-            if (cldev->error_code < 0)
-                cldev->error_is_retryable = 0;	/* hard error */
-            else {
-                /* upgrade lo-mem warning into an error */
-                cldev->error_code = gs_error_VMerror;
-                cldev->error_is_retryable = 1;
-            }
             return 0;
         }
         cldev->band_range_min = band_min;
@@ -546,7 +551,7 @@ cmd_put_color(gx_device_clist_writer * cldev, gx_clist_state * pcls,
 
     /* If this is a tile color then send tile color type */
     if (select->tile_color) {
-        code = set_cmd_put_op(dp, cldev, pcls, cmd_opv_set_tile_color, 1);
+        code = set_cmd_put_op(&dp, cldev, pcls, cmd_opv_set_tile_color, 1);
         if (code < 0)
             return code;
     }
@@ -557,7 +562,7 @@ cmd_put_color(gx_device_clist_writer * cldev, gx_clist_state * pcls,
          * We must handle this specially, because it may take more
          * bytes than the color depth.
          */
-        code = set_cmd_put_op(dp, cldev, pcls, op + cmd_no_color_index, 1);
+        code = set_cmd_put_op(&dp, cldev, pcls, op + cmd_no_color_index, 1);
         if (code < 0)
             return code;
     } else {
@@ -590,7 +595,7 @@ cmd_put_color(gx_device_clist_writer * cldev, gx_clist_state * pcls,
         }
         /* Now send one of the two command forms */
         if (use_delta && delta_bytes < (num_bytes - bytes_dropped)) {
-            code = set_cmd_put_op(dp, cldev, pcls,
+            code = set_cmd_put_op(&dp, cldev, pcls,
                                         op_delta, delta_bytes + 1);
             if (code < 0)
                 return code;
@@ -610,7 +615,7 @@ cmd_put_color(gx_device_clist_writer * cldev, gx_clist_state * pcls,
         }
         else {
             num_bytes -= bytes_dropped;
-            code = set_cmd_put_op(dp, cldev, pcls,
+            code = set_cmd_put_op(&dp, cldev, pcls,
                                 (byte)(op + bytes_dropped), num_bytes + 1);
             if (code < 0)
                 return code;
@@ -656,15 +661,15 @@ cmd_set_tile_phase_generic(gx_device_clist_writer * cldev, gx_clist_state * pcls
 
     pcsize = 1 + cmd_size2w(px, py);
     if (all_bands)
-        code = set_cmd_put_all_op(dp, cldev, (byte)cmd_opv_set_tile_phase, pcsize);
+        code = set_cmd_put_all_op(&dp, cldev, (byte)cmd_opv_set_tile_phase, pcsize);
     else
-        code = set_cmd_put_op(dp, cldev, pcls, (byte)cmd_opv_set_tile_phase, pcsize);
+        code = set_cmd_put_op(&dp, cldev, pcls, (byte)cmd_opv_set_tile_phase, pcsize);
     if (code < 0)
         return code;
     ++dp;
     pcls->tile_phase.x = px;
     pcls->tile_phase.y = py;
-    cmd_putxy(pcls->tile_phase, dp);
+    cmd_putxy(pcls->tile_phase, &dp);
     return 0;
 }
 
@@ -681,7 +686,7 @@ cmd_put_enable_lop(gx_device_clist_writer * cldev, gx_clist_state * pcls,
                    int enable)
 {
     byte *dp;
-    int code = set_cmd_put_op(dp, cldev, pcls,
+    int code = set_cmd_put_op(&dp, cldev, pcls,
                               (byte)(enable ? cmd_opv_enable_lop :
                                      cmd_opv_disable_lop),
                               1);
@@ -699,7 +704,7 @@ cmd_put_enable_clip(gx_device_clist_writer * cldev, gx_clist_state * pcls,
                     int enable)
 {
     byte *dp;
-    int code = set_cmd_put_op(dp, cldev, pcls,
+    int code = set_cmd_put_op(&dp, cldev, pcls,
                               (byte)(enable ? cmd_opv_enable_clip :
                                      cmd_opv_disable_clip),
                               1);
@@ -717,7 +722,7 @@ cmd_set_lop(gx_device_clist_writer * cldev, gx_clist_state * pcls,
 {
     byte *dp;
     uint lop_msb = lop >> 6;
-    int code = set_cmd_put_op(dp, cldev, pcls,
+    int code = set_cmd_put_op(&dp, cldev, pcls,
                               cmd_opv_set_misc, 2 + cmd_size_w(lop_msb));
 
     if (code < 0)
@@ -759,7 +764,7 @@ cmd_put_params(gx_device_clist_writer *cldev,
         gs_param_list_serialize(param_list, local_buf, sizeof(local_buf));
     if (param_length > 0) {
         /* Get cmd buffer space for serialized */
-        code = set_cmd_put_all_op(dp, cldev, cmd_opv_extend,
+        code = set_cmd_put_all_op(&dp, cldev, cmd_opv_extend,
                                   2 + sizeof(unsigned) + param_length);
         if (code < 0)
             return code;

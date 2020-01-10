@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -52,6 +52,8 @@ static gs_memory_proc_free_string(gs_heap_free_string);
 static gs_memory_proc_register_root(gs_heap_register_root);
 static gs_memory_proc_unregister_root(gs_heap_unregister_root);
 static gs_memory_proc_enable_free(gs_heap_enable_free);
+static gs_memory_proc_set_object_type(gs_heap_set_object_type);
+static gs_memory_proc_defer_frees(gs_heap_defer_frees);
 static const gs_memory_procs_t gs_malloc_memory_procs =
 {
     /* Raw memory procedures */
@@ -78,7 +80,9 @@ static const gs_memory_procs_t gs_malloc_memory_procs =
     gs_heap_free_string,
     gs_heap_register_root,
     gs_heap_unregister_root,
-    gs_heap_enable_free
+    gs_heap_enable_free,
+    gs_heap_set_object_type,
+    gs_heap_defer_frees
 };
 
 /* We must make sure that malloc_blocks leave the block aligned. */
@@ -123,7 +127,13 @@ gs_malloc_memory_init(void)
     mem->thread_safe_memory = (gs_memory_t *)mem;	/* this allocator is thread safe */
     /* Allocate a monitor to serialize access to structures within */
     mem->monitor = NULL;	/* prevent use during initial allocation */
-    mem->monitor = gx_monitor_alloc((gs_memory_t *)mem);
+#ifndef MEMENTO_SQUEEZE_BUILD
+    mem->monitor = gx_monitor_label(gx_monitor_alloc((gs_memory_t *)mem), "heap");
+    if (mem->monitor == NULL) {
+        free(mem);
+        return NULL;
+    }
+#endif
 
     return mem;
 }
@@ -178,7 +188,7 @@ gs_heap_alloc_bytes(gs_memory_t * mem, uint size, client_name_t cname)
     } else {
         uint added = size + sizeof(gs_malloc_block_t);
 
-        if (mmem->limit - added < mmem->used)
+        if (added <= size || mmem->limit - added < mmem->used)
             set_msg("exceeded limit");
         else if ((ptr = (byte *) Memento_label(malloc(added), cname)) == 0)
             set_msg("failed");
@@ -337,7 +347,8 @@ gs_heap_free_object(gs_memory_t * mem, void *ptr, client_name_t cname)
         bp->next->prev = bp->prev;
     if (bp == mmem->allocated) {
         mmem->allocated = bp->next;
-        mmem->allocated->prev = NULL;
+        if (mmem->allocated)
+            mmem->allocated->prev = NULL;
     }
     mmem->used -= bp->size + sizeof(gs_malloc_block_t);
     if (mmem->monitor)
@@ -441,6 +452,7 @@ gs_heap_status(gs_memory_t * mem, gs_memory_status_t * pstat)
 
     pstat->allocated = mmem->used + heap_available();
     pstat->used = mmem->used;
+    pstat->max_used = mmem->max_used;
     pstat->is_thread_safe = true;	/* this allocator has a mutex (monitor) and IS thread safe */
 }
 static void
@@ -452,6 +464,19 @@ gs_heap_enable_free(gs_memory_t * mem, bool enable)
     else
         mem->procs.free_object = gs_ignore_free_object,
             mem->procs.free_string = gs_ignore_free_string;
+}
+
+static void gs_heap_set_object_type(gs_memory_t *mem, void *ptr, gs_memory_type_ptr_t type)
+{
+    gs_malloc_block_t *bp = (gs_malloc_block_t *) ptr;
+
+    if (ptr == 0)
+        return;
+    bp[-1].type = type;
+}
+
+static void gs_heap_defer_frees(gs_memory_t *mem, int defer)
+{
 }
 
 /* Release all memory acquired by this allocator. */
@@ -509,14 +534,12 @@ gs_malloc_wrap(gs_memory_t **wrapped, gs_malloc_memory_t *contents)
                                      sizeof(gs_memory_retrying_t),
                                      "gs_malloc_wrap(retrying)");
         if (rmem == 0) {
-            gs_memory_locked_release(lmem);
             gs_free_object(cmem, lmem, "gs_malloc_wrap(locked)");
             return_error(gs_error_VMerror);
         }
         code = gs_memory_retrying_init(rmem, (gs_memory_t *)lmem);
         if (code < 0) {
             gs_free_object((gs_memory_t *)lmem, rmem, "gs_malloc_wrap(retrying)");
-            gs_memory_locked_release(lmem);
             gs_free_object(cmem, lmem, "gs_malloc_wrap(locked)");
             return code;
         }
@@ -565,8 +588,10 @@ gs_malloc_init(void)
     if (malloc_memory_default == NULL)
         return NULL;
 
-    if (gs_lib_ctx_init((gs_memory_t *)malloc_memory_default) != 0)
+    if (gs_lib_ctx_init((gs_memory_t *)malloc_memory_default) != 0) {
+        gs_malloc_release((gs_memory_t *)malloc_memory_default);
         return NULL;
+    }
 
 #if defined(USE_RETRY_MEMORY_WRAPPER)
     gs_malloc_wrap(&memory_t_default, malloc_memory_default);
@@ -581,10 +606,15 @@ gs_malloc_init(void)
 void
 gs_malloc_release(gs_memory_t *mem)
 {
+    gs_malloc_memory_t * malloc_memory_default;
+
+    if (mem == NULL)
+        return;
+
 #ifdef USE_RETRY_MEMORY_WRAPPER
-    gs_malloc_memory_t * malloc_memory_default = gs_malloc_unwrap(mem);
+    malloc_memory_default = gs_malloc_unwrap(mem);
 #else
-    gs_malloc_memory_t * malloc_memory_default = (gs_malloc_memory_t *)mem;
+    malloc_memory_default = (gs_malloc_memory_t *)mem;
 #endif
     gs_lib_ctx_fin((gs_memory_t *)malloc_memory_default);
 

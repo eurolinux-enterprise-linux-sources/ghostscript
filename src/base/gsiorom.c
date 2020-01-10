@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -41,6 +41,7 @@
 
 /* device method prototypes */
 static iodev_proc_init(romfs_init);
+static iodev_proc_finit(romfs_finit);
 static iodev_proc_open_file(romfs_open_file);
 static iodev_proc_file_status(romfs_file_status);
 static iodev_proc_enumerate_files(romfs_enumerate_files_init);
@@ -52,7 +53,7 @@ static iodev_proc_enumerate_close(romfs_enumerate_close);
 const gx_io_device gs_iodev_rom =
 {
     "%rom%", "FileSystem",
-    {romfs_init, iodev_no_open_device,
+    {romfs_init, romfs_finit, iodev_no_open_device,
      romfs_open_file,
      iodev_no_fopen, iodev_no_fclose,
      iodev_no_delete_file, iodev_no_rename_file,
@@ -114,7 +115,7 @@ sread_block(register stream *s,  const byte *ptr, uint len, const uint32_t *node
     s->file = (FILE *)node;	/* convenient place to put it for %rom% files */
     s->file_modes = s->modes;
     s->file_offset = 0;
-    s->file_limit = max_long;
+    s->file_limit = S_FILE_LIMIT_MAX;
 }
 
 /* Return the number of available bytes */
@@ -193,7 +194,7 @@ s_block_read_process(stream_state * st, stream_cursor_read * ignore_pr,
 
     if (s->position + (s->cursor.r.limit - s->cbuf + 1) >= filelen || block_data == NULL)
         return EOFC;			/* at EOF */
-    if (s->file_limit < max_long) {
+    if (s->file_limit < S_FILE_LIMIT_MAX) {
         /* Adjust count for subfile limit */
         uint32_t limit_count = s->file_offset + s->file_limit - s->position;
 
@@ -224,7 +225,7 @@ s_block_read_process(stream_state * st, stream_cursor_read * ignore_pr,
         }
         /* Decompress the data into this block */
         code = uncompress (dest, &buflen, block_data, block_length);
-        if (count != buflen)
+        if (code != Z_OK || count != buflen)
             return ERRC;
         if (need_copy) {
             memcpy(pw->ptr+1, dest, max_count);
@@ -250,9 +251,17 @@ romfs_init(gx_io_device *iodev, gs_memory_t *mem)
     romfs_state *state = gs_alloc_struct(mem, romfs_state, &st_romfs_state,
                                          "romfs_init(state)");
     if (!state)
-        return gs_error_VMerror;
+        return_error(gs_error_VMerror);
     iodev->state = state;
     return 0;
+}
+
+static void
+romfs_finit(gx_io_device *iodev, gs_memory_t *mem)
+{
+    gs_free_object(mem, iodev->state, "romfs_finit");
+    iodev->state = NULL;
+    return;
 }
 
 static int
@@ -307,6 +316,14 @@ romfs_file_status(gx_io_device * iodev, const char *fname, struct stat *pstat)
     int i;
     char *filename;
     uint namelen = strlen(fname);
+
+    /* a build time of zero indicates we have the "dummy" romfs
+     * used when COMPILE_INITS==0 - returning a specific error here
+     * gives us a quick way to check for that.
+     */
+    if (gs_romfs_buildtime == (time_t)0) {
+        return_error(gs_error_unregistered);
+    }
 
     memset(pstat, 0, sizeof(struct stat));
     /* scan the inodes to find the requested file */

@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,12 +9,16 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
 /* (Internal) interface to iinit.c */
+
+/* The following will allow for -Z! to trace PS operators. */
+/* This is slightly less noisy but less informative than -ZI */
+/* #define DEBUG_TRACE_PS_OPERATORS */
 
 #ifndef iinit_INCLUDED
 #  define iinit_INCLUDED
@@ -29,6 +33,12 @@ int op_init(i_ctx_t *);
 #if defined(DEBUG_TRACE_PS_OPERATORS) || defined(DEBUG)
 const char *op_get_name_string(op_proc_t opproc);
 #endif
+
+int
+i_iodev_init(gs_dual_memory_t *);
+
+void
+i_iodev_finit(gs_dual_memory_t *);
 
 /*
  * Test whether there are any Level 2 operators in the executable.

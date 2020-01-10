@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -106,7 +106,7 @@ zbuildsampledfunction(i_ctx_t *i_ctx_p)
      * Check procedure to be sampled.
      */
     if (dict_find_string(pdict, "Function", &pfunc) <= 0)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     check_proc(*pfunc);
     /*
      * Set up the hyper cube function data structure.
@@ -163,7 +163,7 @@ valid_cube_size(int num_inputs, int num_outputs, int sample_size, const int Size
  *
  * We do check to see if the data will fit using our initial guess.  If not
  * then we decrement the size of each edge until it fits.  We will return a
- * e_rangecheck error if the cube can not fit into the maximum  size.
+ * gs_error_rangecheck error if the cube can not fit into the maximum  size.
  * On exit the Size array contains the cube size (if a valid size was found).
  */
 static int
@@ -187,12 +187,16 @@ determine_sampled_data_size(int num_inputs, int num_outputs,
         for (i = 0; i < num_inputs; i++)
             Size[i] = size;
 
-        if (valid_cube_size(num_inputs, num_outputs, sample_size, Size))
-            return 0;		/* We have a valid size */
-
-        if (size == 2)		/* Cannot have less than 2 points per side */
-            return_error(e_rangecheck);
-        size--;
+        /* If we have reached the minimum size (2), don't bother checking if its 'valid'
+         * as there is nothing we cna do now if it isn't.
+         */
+        if (size > 2) {
+            if (valid_cube_size(num_inputs, num_outputs, sample_size, Size))
+                return 0;		/* We have a valid size */
+            size--;
+        } else {
+            return 0;
+        }
     }
 }
 
@@ -297,7 +301,7 @@ cube_build_func0(const ref * pdict, gs_function_Sd_params_t * params,
     params->n >>= 1;
     if (params->m == 0 || params->n == 0 ||
         params->m > MAX_NUM_INPUTS || params->n > MAX_NUM_OUTPUTS) {
-        code = gs_note_error(e_rangecheck);
+        code = gs_note_error(gs_error_rangecheck);
         goto fail;
     }
     /*
@@ -309,7 +313,7 @@ cube_build_func0(const ref * pdict, gs_function_Sd_params_t * params,
             gs_alloc_byte_array(mem, params->m, sizeof(int), "Size");
 
         if (ptr == NULL) {
-            code = gs_note_error(e_VMerror);
+            code = gs_note_error(gs_error_VMerror);
             goto fail;
         }
         params->Size = ptr;
@@ -328,9 +332,10 @@ cube_build_func0(const ref * pdict, gs_function_Sd_params_t * params,
         }
         else {			/* Size array specified - verify valid */
             if (code != params->m || !valid_cube_size(params->m, params->n,
-                                        params->BitsPerSample, params->Size))
-                code = gs_note_error(e_rangecheck);
-                goto fail;
+                params->BitsPerSample, params->Size)) {
+                    code = gs_note_error(gs_error_rangecheck);
+                    goto fail;
+            }
         }
     }
     /*
@@ -344,7 +349,7 @@ cube_build_func0(const ref * pdict, gs_function_Sd_params_t * params,
      */
     bytes = gs_alloc_byte_array(mem, total_size, 1, "cube_build_func0(bytes)");
     if (!bytes) {
-        code = gs_note_error(e_VMerror);
+        code = gs_note_error(gs_error_VMerror);
         goto fail;
     }
     data_source_init_bytes(&params->DataSource,
@@ -354,7 +359,7 @@ cube_build_func0(const ref * pdict, gs_function_Sd_params_t * params,
 
 fail:
     gs_function_Sd_free_params(params, mem);
-    return (code < 0 ? code : gs_note_error(e_rangecheck));
+    return (code < 0 ? code : gs_note_error(gs_error_rangecheck));
 }
 
 /*
@@ -403,7 +408,7 @@ sampled_data_setup(i_ctx_t *i_ctx_p, gs_function_t *pfn,
      */
     penum = gs_sampled_data_enum_alloc(imemory, "zbuildsampledfuntion(params)");
     if (penum == NULL)
-        return_error(e_VMerror);
+        return_error(gs_error_VMerror);
 
     /* Initialize data in the enumeration structure */
 
@@ -502,7 +507,7 @@ sampled_data_continue(i_ctx_t *i_ctx_p)
             push(-stack_depth_adjust);
             ifree_object(penum->pfn, "sampled_data_continue(pfn)");
             ifree_object(penum, "sampled_data_continue((enum)");
-            return_error(e_undefinedresult);
+            return_error(gs_error_undefinedresult);
         }
     }
 
@@ -515,8 +520,10 @@ sampled_data_continue(i_ctx_t *i_ctx_p)
         double rmax = params->Range[2 * i + 1];
 
         code = real_param(op + i - num_out + 1, &value);
-        if (code < 0)
+        if (code < 0) {
+            esp -= estack_storage;
             return code;
+        }
         if (value < rmin)
             value = rmin;
         else if (value > rmax)
@@ -570,13 +577,17 @@ sampled_data_finish(i_ctx_t *i_ctx_p)
     ref cref;			/* closure */
     int code = gs_function_Sd_init(&pfn, params, imemory);
 
-    if (code < 0)
+    if (code < 0) {
+        esp -= estack_storage;
         return code;
+    }
 
     code = ialloc_ref_array(&cref, a_executable | a_execute, 2,
                             "sampled_data_finish(cref)");
-    if (code < 0)
+    if (code < 0) {
+        esp -= estack_storage;
         return code;
+    }
 
     make_istruct_new(cref.value.refs, a_executable | a_execute, pfn);
     make_oper_new(cref.value.refs + 1, 0, zexecfunction);
@@ -602,7 +613,7 @@ int make_sampled_function(i_ctx_t * i_ctx_p, ref *arr, ref *pproc, gs_function_t
     if (code < 0)
         return code;
     if (!space->alternateproc)
-        return e_typecheck;
+        return gs_error_typecheck;
     code = space->alternateproc(i_ctx_p, arr, &palternatespace, &CIESubst);
     if (code < 0)
         return code;
@@ -620,7 +631,7 @@ int make_sampled_function(i_ctx_t * i_ctx_p, ref *arr, ref *pproc, gs_function_t
         return code;
     fptr = (float *)gs_alloc_byte_array(imemory, num_components * 2, sizeof(float), "make_sampled_function(Domain)");
     if (!fptr)
-        return e_VMerror;
+        return gs_error_VMerror;
     code = space->domain(i_ctx_p, arr, fptr);
     if (code < 0) {
         gs_free_const_object(imemory, fptr, "make_sampled_function(Domain)");
@@ -637,7 +648,7 @@ int make_sampled_function(i_ctx_t * i_ctx_p, ref *arr, ref *pproc, gs_function_t
     fptr = (float *)gs_alloc_byte_array(imemory, num_components * 2, sizeof(float), "make_sampled_function(Range)");
     if (!fptr) {
         gs_free_const_object(imemory, params.Domain, "make_sampled_function(Domain)");
-        return e_VMerror;
+        return gs_error_VMerror;
     }
     code = altspace->range(i_ctx_p, palternatespace, fptr);
     if (code < 0) {
@@ -654,7 +665,7 @@ int make_sampled_function(i_ctx_t * i_ctx_p, ref *arr, ref *pproc, gs_function_t
      */
     ptr = (int *)gs_alloc_byte_array(imemory, params.m, sizeof(int), "Size");
     if (ptr == NULL) {
-        code = gs_note_error(e_VMerror);
+        code = gs_note_error(gs_error_VMerror);
         goto fail;
     }
     params.Size = ptr;
@@ -677,7 +688,7 @@ int make_sampled_function(i_ctx_t * i_ctx_p, ref *arr, ref *pproc, gs_function_t
      */
     bytes = gs_alloc_byte_array(imemory, total_size, 1, "cube_build_func0(bytes)");
     if (!bytes) {
-        code = gs_note_error(e_VMerror);
+        code = gs_note_error(gs_error_VMerror);
         goto fail;
     }
     data_source_init_bytes(&params.DataSource,
@@ -701,7 +712,7 @@ int make_sampled_function(i_ctx_t * i_ctx_p, ref *arr, ref *pproc, gs_function_t
 
 fail:
     gs_function_Sd_free_params(&params, imemory);
-    return (code < 0 ? code : gs_note_error(e_rangecheck));
+    return (code < 0 ? code : gs_note_error(gs_error_rangecheck));
 }
 
 /* ------ Initialization procedure ------ */

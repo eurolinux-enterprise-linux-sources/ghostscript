@@ -18,8 +18,13 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ * along with this program; if not, write to:
+ *
+ * Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor
+ * Boston, MA 02110-1301
+ * USA
+ *
  *
  * --------------------------------------------------------------------
  *
@@ -1081,7 +1086,8 @@ fillheader(pagedata *gendata, int head, int numcol, int firstcol, int bytes)
 {
         int len, offs1, startabs;
         int endabs, select, fwd;
-        int back, nabspos, sep;
+        int back, nabspos;
+        /* int sep;*/
         byte *header;
 
         header = gendata->header;
@@ -1104,11 +1110,11 @@ fillheader(pagedata *gendata, int head, int numcol, int firstcol, int bytes)
          */
         if(head == LEFT)
         {
-                sep = (gendata->bwsep * 2) / gendata->xrmul;
+                /* sep = (gendata->bwsep * 2) / gendata->xrmul;*/
         }
         else
         {
-                sep = (gendata->colsep * 2) / gendata->xrmul;
+                /* sep = (gendata->colsep * 2) / gendata->xrmul; */
                 select |= 0x80;
         }
 

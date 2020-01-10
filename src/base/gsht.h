@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -23,7 +23,7 @@
 typedef struct gs_screen_halftone_s {
     float frequency;
     float angle;
-    float (*spot_function) (floatp, floatp);
+    float (*spot_function) (double, double);
     /* setscreen or sethalftone sets these: */
     /* (a Level 2 feature, but we include them in Level 1) */
     float actual_frequency;
@@ -45,9 +45,9 @@ typedef struct gs_colorscreen_halftone_s {
 #define st_colorscreen_halftone_max_ptrs 0
 
 /* Procedural interface */
-int gs_setscreen(gs_state *, gs_screen_halftone *);
-int gs_currentscreen(const gs_state *, gs_screen_halftone *);
-int gs_currentscreenlevels(const gs_state *);
+int gs_setscreen(gs_gstate *, gs_screen_halftone *);
+int gs_currentscreen(const gs_gstate *, gs_screen_halftone *);
+int gs_currentscreenlevels(const gs_gstate *);
 
 /*
  * Enumeration-style definition of a single screen.  The client must:
@@ -60,9 +60,9 @@ int gs_currentscreenlevels(const gs_state *);
  */
 typedef struct gs_screen_enum_s gs_screen_enum;
 gs_screen_enum *gs_screen_enum_alloc(gs_memory_t *, client_name_t);
-int gs_screen_init(gs_screen_enum *, gs_state *, gs_screen_halftone *);
+int gs_screen_init(gs_screen_enum *, gs_gstate *, gs_screen_halftone *);
 int gs_screen_currentpoint(gs_screen_enum *, gs_point *);
-int gs_screen_next(gs_screen_enum *, floatp);
+int gs_screen_next(gs_screen_enum *, double);
 int gs_screen_install(gs_screen_enum *);
 
 #endif /* gsht_INCLUDED */

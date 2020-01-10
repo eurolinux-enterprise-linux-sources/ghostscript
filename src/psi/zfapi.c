@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -53,7 +53,7 @@
 #include "iplugin.h"
 #include "store.h"
 #include "gzstate.h"
-#include "gdevpsf.h"
+/* #include "gdevpsf.h" */
 #include "stream.h"             /* for files.h */
 #include "gscrypt1.h"
 #include "gxfcid.h"
@@ -96,18 +96,20 @@ sfnts_next_elem(sfnts_reader *r)
 
     if (r->error)
         return;
-    r->index++;
-    code = array_get(r->memory, r->sfnts, r->index, &s);
-    if (code == e_rangecheck) {
-        r->error |= 2;
-    }
-    else if (code < 0) {
-        r->error |= 1;
-    }
-    if (r->error)
-        return;
-    r->p = s.value.const_bytes;
-    r->length = r_size(&s) & ~(uint) 1; /* See Adobe Technical Note # 5012, section 4.2. */
+    do {
+    	r->index++;
+    	code = array_get(r->memory, r->sfnts, r->index, &s);
+    	if (code == gs_error_rangecheck) {
+    		r->error |= 2;
+    	}
+    	else if (code < 0) {
+    		r->error |= 1;
+    	}
+    	if (r->error)
+    		return;
+    	r->p = s.value.const_bytes;
+    	r->length = r_size(&s) & ~(uint) 1; /* See Adobe Technical Note # 5012, section 4.2. */
+    } while (r->length == 0);
     r->offset = 0;
 }
 
@@ -125,21 +127,35 @@ sfnts_reader_rbyte(sfnts_reader *r)
     return (sfnts_reader_rbyte_inline(r));
 }
 
+#define SFNTS_READER_RBYTE_TO_USHORT(r) ((ulong)sfnts_reader_rbyte_inline(r))
+
 static ushort
 sfnts_reader_rword(sfnts_reader *r)
 {
-    return ((sfnts_reader_rbyte_inline(r) << 8) +
-            sfnts_reader_rbyte_inline(r));
+    ushort retval;
+
+    retval = SFNTS_READER_RBYTE_TO_USHORT(r) << 8;
+    retval += SFNTS_READER_RBYTE_TO_USHORT(r);
+
+    return retval;
 }
+
+#undef SFNTS_READER_RBYTE_TO_USHORT
+
+#define SFNTS_READER_RBYTE_TO_ULONG(r) ((ulong)sfnts_reader_rbyte_inline(r))
 
 static ulong
 sfnts_reader_rlong(sfnts_reader *r)
 {
-    return ((sfnts_reader_rbyte_inline(r) << 24) +
-            (sfnts_reader_rbyte_inline(r) << 16) +
-            (sfnts_reader_rbyte_inline(r) << 8) +
-            sfnts_reader_rbyte_inline(r));
+    ulong retval;
+    retval = SFNTS_READER_RBYTE_TO_ULONG(r) << 24;
+    retval += SFNTS_READER_RBYTE_TO_ULONG(r) << 16;
+    retval += SFNTS_READER_RBYTE_TO_ULONG(r) << 8;
+    retval += SFNTS_READER_RBYTE_TO_ULONG(r);
+    return retval;
 }
+
+#undef SFNTS_READER_RWORD_TO_LONG
 
 static int
 sfnts_reader_rstring(sfnts_reader *r, byte *v, int length)
@@ -484,7 +500,7 @@ FAPI_FF_get_word(gs_fapi_font *ff, gs_fapi_font_feature var_id, int index)
 
                 if (dict_find_string(pdr, "CharStrings", &CharStrings) <= 0)
                     return 0;
-                return (dict_length(CharStrings));
+                return (dict_maxlength(CharStrings));
             }
             /* Multiple Master specific */
         case gs_fapi_font_feature_DollarBlend:
@@ -527,11 +543,7 @@ FAPI_FF_get_word(gs_fapi_font *ff, gs_fapi_font_feature var_id, int index)
             }
         case gs_fapi_font_feature_WeightVector_count:
             {
-                ref *Array;
-
-                if (dict_find_string(pdr, "WeightVector", &Array) <= 0)
-                    return 0;
-                return (r_size(Array));
+                return pfont->data.WeightVector.count;
             }
         case gs_fapi_font_feature_BlendDesignPositionsArrays_count:
             {
@@ -583,11 +595,11 @@ FAPI_FF_get_word(gs_fapi_font *ff, gs_fapi_font_feature var_id, int index)
                             length += r_size(&string) + 1;
                             break;
                         case t_real:
-                            sprintf(Buffer, "%f", Element.value.realval);
+                            gs_sprintf(Buffer, "%f", Element.value.realval);
                             length += strlen(Buffer) + 1;
                             break;
                         case t_integer:
-                            sprintf(Buffer, "%"PRIpsint, Element.value.intval);
+                            gs_sprintf(Buffer, "%"PRIpsint, Element.value.intval);
                             length += strlen(Buffer) + 1;
                             break;
                         case t_operator:
@@ -604,6 +616,414 @@ FAPI_FF_get_word(gs_fapi_font *ff, gs_fapi_font_feature var_id, int index)
                 }
                 return length;
             }
+        case gs_fapi_font_feature_BlendFontBBox_length:
+            {
+                ref *Blend, *bfbbox;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+
+                if (dict_find_string(Blend, "FontBBox", &bfbbox) <= 0)
+                    return 0;
+                return ((ushort)r_size(bfbbox));
+            }
+        case gs_fapi_font_feature_BlendFontBBox:
+            {
+                ref *Blend, *bfbbox, subbfbbox, val;
+                int aind, ind;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "FontBBox", &bfbbox) <= 0)
+                    return 0;
+                ind = index % 4;
+                aind = (index - ind) /4;
+                if (array_get(ff->memory, bfbbox, aind, &subbfbbox) < 0)
+                    return 0;
+                if (array_get(ff->memory, &subbfbbox, ind, &val) < 0)
+                    return 0;
+
+                return (ushort)val.value.intval;
+            }
+        case gs_fapi_font_feature_BlendBlueValues_length:
+            {
+                ref *Priv, *Blend, *bbv;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "BlueValues", &bbv) <= 0)
+                    return 0;
+                return ((ushort)r_size(bbv));
+            }
+        case gs_fapi_font_feature_BlendBlueValues_count:
+            {
+                ref *Priv, *Blend, *bbv, sub;
+
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "BlueValues", &bbv) <= 0)
+                    return 0;
+                if (array_get(ff->memory, bbv, index, &sub) < 0)
+                    return 0;
+                return ((ushort)r_size(&sub));
+            }
+        case gs_fapi_font_feature_BlendBlueValues:
+            {
+                ref *Priv, *Blend, *bbv, sub, r;
+                int aind = 0;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "BlueValues", &bbv) <= 0)
+                    return 0;
+
+                while (1) {
+                    if (array_get(ff->memory, bbv, aind++, &sub) < 0)
+                        return 0;
+                    if (index - (int)r_size(&sub) < 0) {
+                        break;
+                    }
+                    index -= r_size(&sub);
+                }
+                if (array_get(ff->memory, &sub, index, &r) < 0)
+                    return 0;
+
+                return ((ushort)r.value.intval);
+            }
+        case gs_fapi_font_feature_BlendOtherBlues_length:
+            {
+                ref *Priv, *Blend, *bob;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "OtherBlues", &bob) <= 0)
+                    return 0;
+                return ((ushort)r_size(bob));
+            }
+        case gs_fapi_font_feature_BlendOtherBlues_count:
+            {
+                ref *Priv, *Blend, *bob, sub;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "OtherBlues", &bob) <= 0)
+                    return 0;
+
+                 if (array_get(ff->memory, bob, index, &sub) < 0)
+                    return 0;
+               return ((ushort)r_size(&sub));
+            }
+        case gs_fapi_font_feature_BlendOtherBlues:
+            {
+                ref *Priv, *Blend, *bob, sub, r;
+                int aind = 0;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "OtherBlues", &bob) <= 0)
+                    return 0;
+
+                while (1) {
+                    if (array_get(ff->memory, bob, aind++, &sub) < 0)
+                        return 0;
+                    if (index - (int)r_size(&sub) < 0) {
+                        break;
+                    }
+                    index -= r_size(&sub);
+                }
+                if (array_get(ff->memory, &sub, index, &r) < 0)
+                    return 0;
+
+                return ((ushort)r.value.intval);
+            }
+        case gs_fapi_font_feature_BlendBlueScale_count:
+            {
+                ref *Priv, *Blend, *bbs;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "BlueScale", &bbs) <= 0)
+                    return 0;
+               return ((ushort)r_size(bbs));
+            }
+        case gs_fapi_font_feature_BlendBlueShift_count:
+            {
+                ref *Priv, *Blend, *bbs;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "BlueShift", &bbs) <= 0)
+                    return 0;
+               return ((ushort)r_size(bbs));
+            }
+        case gs_fapi_font_feature_BlendBlueShift:
+            {
+                ref *Priv, *Blend, *bbs, r;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "BlueShift", &bbs) <= 0)
+                    return 0;
+                if (array_get(ff->memory, bbs, index, &r) < 0)
+                    return 0;
+
+               return ((ushort)r.value.intval);
+            }
+        case gs_fapi_font_feature_BlendBlueFuzz_count:
+            {
+                ref *Priv, *Blend, *bbf;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "BlueFuzz", &bbf) <= 0)
+                    return 0;
+               return ((ushort)r_size(bbf));
+            }
+        case gs_fapi_font_feature_BlendBlueFuzz:
+            {
+                ref *Priv, *Blend, *bbf, r;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "BlueFuzz", &bbf) <= 0)
+                    return 0;
+                if (array_get(ff->memory, bbf, index, &r) < 0)
+                    return 0;
+
+               return ((ushort)r.value.intval);
+            }
+        case gs_fapi_font_feature_BlendForceBold_count:
+            {
+                ref *Priv, *Blend, *bfb;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "ForceBold", &bfb) <= 0)
+                    return 0;
+               return ((ushort)r_size(bfb));
+            }
+        case gs_fapi_font_feature_BlendForceBold:
+            {
+                ref *Priv, *Blend, *bfb, r;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "BlueFuzz", &bfb) <= 0)
+                    return 0;
+                if (array_get(ff->memory, bfb, index, &r) < 0)
+                    return 0;
+
+               return ((ushort)r.value.boolval);
+            }
+        case gs_fapi_font_feature_BlendStdHW_length:
+            {
+                ref *Priv, *Blend, *stdhw;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "StdHW", &stdhw) <= 0)
+                    return 0;
+                return ((ushort)r_size(stdhw));
+            }
+        case gs_fapi_font_feature_BlendStdHW_count:
+            {
+                ref *Priv, *Blend, *stdhw, sub;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "StdHW", &stdhw) <= 0)
+                    return 0;
+
+                if (array_get(ff->memory, stdhw, index, &sub) < 0)
+                    return 0;
+                return ((ushort)r_size(&sub));
+            }
+        case gs_fapi_font_feature_BlendStdHW:
+            {
+                ref *Priv, *Blend, *stdhw, sub, r;
+                int aind = 0;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "StdHW", &stdhw) <= 0)
+                    return 0;
+
+                while (1) {
+                    if (array_get(ff->memory, stdhw, aind++, &sub) < 0)
+                        return 0;
+                    if (index - (int)r_size(&sub) < 0) {
+                        break;
+                    }
+                    index -= r_size(&sub);
+                }
+                if (array_get(ff->memory, &sub, index, &r) < 0)
+                    return 0;
+
+                return ((ushort)r.value.intval);
+            }
+        case gs_fapi_font_feature_BlendStdVW_length:
+            {
+                ref *Priv, *Blend, *stdvw;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "StdVW", &stdvw) <= 0)
+                    return 0;
+                return ((ushort)r_size(stdvw));
+            }
+        case gs_fapi_font_feature_BlendStdVW_count:
+            {
+                ref *Priv, *Blend, *stdvw, sub;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "StdVW", &stdvw) <= 0)
+                    return 0;
+
+                if (array_get(ff->memory, stdvw, index, &sub) < 0)
+                    return 0;
+                return ((ushort)r_size(&sub));
+            }
+        case gs_fapi_font_feature_BlendStdVW:
+            {
+                ref *Priv, *Blend, *stdvw, sub, r;
+                int aind = 0;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "StdVW", &stdvw) <= 0)
+                    return 0;
+
+                while (1) {
+                    if (array_get(ff->memory, stdvw, aind++, &sub) < 0)
+                        return 0;
+                    if (index - (int)r_size(&sub) < 0) {
+                        break;
+                    }
+                    index -= r_size(&sub);
+                }
+                if (array_get(ff->memory, &sub, index, &r) < 0)
+                    return 0;
+
+                return ((ushort)r.value.intval);
+            }
+        case gs_fapi_font_feature_BlendStemSnapH_length:
+            {
+                ref *Priv, *Blend, *ssh;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "StemSnapH", &ssh) <= 0)
+                    return 0;
+                return ((ushort)r_size(ssh));
+            }
+        case gs_fapi_font_feature_BlendStemSnapH_count:
+            {
+                ref *Priv, *Blend, *bssh, sub;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "StemSnapH", &bssh) <= 0)
+                    return 0;
+
+                if (array_get(ff->memory, bssh, index, &sub) < 0)
+                    return 0;
+                return ((ushort)r_size(&sub));
+            }
+        case gs_fapi_font_feature_BlendStemSnapH:
+            {
+                ref *Priv, *Blend, *bssh, sub, r;
+                int aind = 0;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "StemSnapH", &bssh) <= 0)
+                    return 0;
+
+                while (1) {
+                    if (array_get(ff->memory, bssh, aind++, &sub) < 0)
+                        return 0;
+                    if (index - (int)r_size(&sub) < 0) {
+                        break;
+                    }
+                    index -= r_size(&sub);
+                }
+                if (array_get(ff->memory, &sub, index, &r) < 0)
+                    return 0;
+
+                return ((ushort)r.value.intval);
+            }
+        case gs_fapi_font_feature_BlendStemSnapV_length:
+            {
+                ref *Priv, *Blend, *ssv;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "StdHW", &ssv) <= 0)
+                    return 0;
+                return ((ushort)r_size(ssv));
+            }
+        case gs_fapi_font_feature_BlendStemSnapV_count:
+            {
+                ref *Priv, *Blend, *bssv, sub;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "StemSnapV", &bssv) <= 0)
+                    return 0;
+
+                if (array_get(ff->memory, bssv, index, &sub) < 0)
+                    return 0;
+                return ((ushort)r_size(&sub));
+            }
+        case gs_fapi_font_feature_BlendStemSnapV:
+            {
+                ref *Priv, *Blend, *bssv, sub, r;
+                int aind = 0;
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "StemSnapV", &bssv) <= 0)
+                    return 0;
+
+                while (1) {
+                    if (array_get(ff->memory, bssv, aind++, &sub) < 0)
+                        return 0;
+                    if (index - (int)r_size(&sub) < 0) {
+                        break;
+                    }
+                    index -= r_size(&sub);
+                }
+                if (array_get(ff->memory, &sub, index, &r) < 0)
+                    return 0;
+
+                return ((ushort)r.value.intval);
+            }
+
             /* End MM specifics */
     }
     return 0;
@@ -650,6 +1070,7 @@ FAPI_FF_get_long(gs_fapi_font *ff, gs_fapi_font_feature var_id, int index)
 static float
 FAPI_FF_get_float(gs_fapi_font *ff, gs_fapi_font_feature var_id, int index)
 {
+    gs_font_type1 *pfont1 = (gs_font_type1 *) ff->client_font_data;
     gs_font_base *pbfont = (gs_font_base *) ff->client_font_data2;
     ref *pdr = pfont_dict(pbfont);
 
@@ -674,6 +1095,7 @@ FAPI_FF_get_float(gs_fapi_font *ff, gs_fapi_font_feature var_id, int index)
                 }
                 switch (index) {
                     case 0:
+                    default:
                         return (mptr->xx / FontMatrix_div);
                     case 1:
                         return (mptr->xy / FontMatrix_div);
@@ -690,21 +1112,12 @@ FAPI_FF_get_float(gs_fapi_font *ff, gs_fapi_font_feature var_id, int index)
 
         case gs_fapi_font_feature_WeightVector:
             {
-                ref *Array, value;
-
-                if (dict_find_string(pdr, "WeightVector", &Array) <= 0)
-                    return 0;
-                if (array_get(ff->memory, Array, index, &value) < 0)
-                    return 0;
-                if (!r_has_type(&value, t_integer)) {
-                    if (r_has_type(&value, t_real)) {
-                        return (value.value.realval);
-                    }
-                    else
-                        return 0;
+                if (index < pfont1->data.WeightVector.count) {
+                    return pfont1->data.WeightVector.values[index];
                 }
-                else
-                    return ((float)value.value.intval);
+                else {
+                    return 0;
+                }
             }
         case gs_fapi_font_feature_BlendDesignPositionsArrayValue:
             {
@@ -756,6 +1169,25 @@ FAPI_FF_get_float(gs_fapi_font *ff, gs_fapi_font_feature var_id, int index)
                 }
                 else
                     return ((float)value.value.intval);
+            }
+        case gs_fapi_font_feature_BlendBlueScale:
+            {
+                ref *Priv, *Blend, *bbs, r;
+                float val = 0;
+
+                if (dict_find_string(pdr, "Blend", &Blend) <= 0)
+                    return 0;
+                if (dict_find_string(Blend, "Private", &Priv) <= 0)
+                    return 0;
+                if (dict_find_string(Priv, "BlueScale", &bbs) <= 0)
+                    return 0;
+                if (array_get(ff->memory, bbs, index, &r) < 0)
+                    return 0;
+               if (r_has_type(&r, t_real))
+                   val = r.value.realval;
+               else if (r_has_type(&r, t_integer))
+                   val = (float)r.value.intval;
+               return (val);
             }
     }
     return 0;
@@ -823,12 +1255,12 @@ FAPI_FF_get_proc(gs_fapi_font *ff, gs_fapi_font_feature var_id, int index,
                             ptr += r_size(&string);
                             break;
                         case t_real:
-                            sprintf(Buf, "%f", Element.value.realval);
+                            gs_sprintf(Buf, "%f", Element.value.realval);
                             strcpy(ptr, Buf);
                             ptr += strlen(Buf);
                             break;
                         case t_integer:
-                            sprintf(Buf, "%"PRIpsint, Element.value.intval);
+                            gs_sprintf(Buf, "%"PRIpsint, Element.value.intval);
                             strcpy(ptr, Buf);
                             ptr += strlen(Buf);
                             break;
@@ -940,6 +1372,20 @@ FAPI_FF_get_raw_subr(gs_fapi_font *ff, int index, byte *buf,
     return (r_size(&subr));
 }
 
+/* FAPI_FF_get_charstring_name() and FAPI_FF_get_charstring()
+ *
+ * Generally we'd want to use the dictionary content
+ * enumeration API rather than dict_index_entry(), but
+ * the FAPI interface doesn't enforce sequential accessing
+ * of the indices.
+ * Setting up enumeration and enumerating through the entries
+ * until we reach the requested valid index is a performance
+ * hit we don't want to pay.
+ *
+ * Luckily, the checks we need for invalid CharString contents
+ * also handle empty "slots" in the dictionary.
+ */
+
 static ushort
 FAPI_FF_get_charstring_name(gs_fapi_font *ff, int index, byte *buf,
                             ushort buf_length)
@@ -950,6 +1396,8 @@ FAPI_FF_get_charstring_name(gs_fapi_font *ff, int index, byte *buf,
     if (dict_find_string(pdr, "CharStrings", &CharStrings) <= 0)
         return 0;
     if (dict_index_entry(CharStrings, index, eltp) < 0)
+        return 0;
+    if (r_type(&eltp[0]) != t_name)
         return 0;
     name_string_ref(ff->memory, &eltp[0], &string);
     if (r_size(&string) > buf_length)
@@ -970,10 +1418,45 @@ FAPI_FF_get_charstring(gs_fapi_font *ff, int index, byte *buf,
         return 0;
     if (dict_index_entry(CharStrings, index, eltp) < 0)
         return 0;
+    if (r_type(&eltp[1]) != t_string)
+        return 0;
     if (buf && buf_length && buf_length >= r_size(&eltp[1])) {
         memcpy(buf, eltp[1].value.const_bytes, r_size(&eltp[1]));
     }
     return (r_size(&eltp[1]));
+}
+
+static int
+sfnt_get_sfnt_length(ref *pdr, ulong *len)
+{
+    int code = 0;
+    ref *sfnts, sfnt_elem;
+    const gs_memory_t *mem = dict_mem(pdr->value.pdict);
+
+    *len = 0;
+    if (r_type(pdr) != t_dictionary ||
+        dict_find_string(pdr, "sfnts", &sfnts) <= 0) {
+        code = gs_error_invalidfont;
+    }
+    else {
+        if (r_type(sfnts) != t_array && r_type(sfnts) != t_string) {
+            code = gs_error_invalidfont;
+        }
+        else {
+            if (r_type(sfnts) == t_string) {
+                *len = r_size(sfnts);
+            }
+            else {
+                int i;
+                for (i = 0; i < r_size(sfnts); i++) {
+                    code = array_get(mem, sfnts, i, &sfnt_elem);
+                    if (code < 0) break;
+                    *len += r_size(&sfnt_elem);
+                }
+            }
+        }
+    }
+    return code;
 }
 
 static bool
@@ -983,11 +1466,16 @@ sfnt_get_glyph_offset(ref *pdr, gs_font_type42 *pfont42, int index,
     sfnts_reader r;
     int glyf_elem_size = (pfont42->data.indexToLocFormat) ? 4 : 2;
 
-    sfnts_reader_init(&r, pdr);
-    r.seek(&r, pfont42->data.loca + index * glyf_elem_size);
-    *offset0 =
-        pfont42->data.glyf + (glyf_elem_size ==
+    if (index < pfont42->data.trueNumGlyphs) {
+        sfnts_reader_init(&r, pdr);
+        r.seek(&r, pfont42->data.loca + index * glyf_elem_size);
+        *offset0 =
+            pfont42->data.glyf + (glyf_elem_size ==
                               2 ? r.rword(&r) * 2 : r.rlong(&r));
+    }
+    else {
+        r.error = true;
+    }
     return (r.error);
 }
 
@@ -1083,7 +1571,7 @@ FAPI_FF_get_glyph(gs_fapi_font *ff, int char_code, byte *buf,
      */
     ref *pdr = pfont_dict(((gs_font_base *) ff->client_font_data2));
 
-    ushort glyph_length;
+    int glyph_length;
     i_ctx_t *i_ctx_p = (i_ctx_t *) ff->client_ctx_p;
 
     if (ff->is_type1) {
@@ -1107,7 +1595,7 @@ FAPI_FF_get_glyph(gs_fapi_font *ff, int char_code, byte *buf,
                  */
                 if (name_ref(ff->memory, ff->char_data,
                              ff->char_data_len, &char_name, -1) < 0)
-                    return -1;
+                    return gs_fapi_glyph_invalid_format;
                 if (buf != NULL) {
                     /*
                      * Trigger the next call to the 'seac' case below.
@@ -1127,32 +1615,44 @@ FAPI_FF_get_glyph(gs_fapi_font *ff, int char_code, byte *buf,
                     if (name_ref
                         (ff->memory, (const byte *)".notdef", 7, &char_name,
                          -1) < 0)
-                        return -1;
+                        return gs_fapi_glyph_invalid_format;
             }
             if (dict_find_string(pdr, "CharStrings", &CharStrings) <= 0)
-                return -1;
+                return gs_fapi_glyph_invalid_format;
 
             if (dict_find(CharStrings, &char_name, &glyph) <= 0) {
                 if (name_ref
                     (ff->memory, (const byte *)".notdef", 7, &char_name,
                      -1) < 0) {
-                    return -1;
+                    return gs_fapi_glyph_invalid_format;
                 }
                 if (dict_find(CharStrings, &char_name, &glyph) <= 0) {
-                    return -1;
+                    return gs_fapi_glyph_invalid_format;
                 }
             }
             if (r_has_type(glyph, t_array) || r_has_type(glyph, t_mixedarray))
-                return -1;
+                return gs_fapi_glyph_invalid_format;
+            if (!r_has_type(glyph, t_string))
+                return 0;
             glyph_length = get_type1_data(ff, glyph, buf, buf_length);
         }
     }
     else {                      /* type 42 */
         const byte *data_ptr;
         int l = ff->get_glyphdirectory_data(ff, char_code, &data_ptr);
+        ref *render_notdef_ref;
+        bool render_notdef = true;
+
+        if (dict_find_string(pdr, ".render_notdef", &render_notdef_ref) > 0
+            && r_has_type(render_notdef_ref, t_boolean)) {
+            render_notdef = render_notdef_ref->value.boolval;
+        }
+        else {
+            render_notdef = i_ctx_p->RenderTTNotdef;
+        }
 
         /* We should only render the TT notdef if we've been told to - logic lifted from zchar42.c */
-        if (!i_ctx_p->RenderTTNotdef
+        if (!render_notdef
             &&
             ((ff->char_data_len == 7
               && strncmp((const char *)ff->char_data, ".notdef", 7) == 0)
@@ -1172,14 +1672,41 @@ FAPI_FF_get_glyph(gs_fapi_font *ff, int char_code, byte *buf,
                            min(glyph_length, buf_length) /* safety */ );
             }
             else {
-                gs_font_type42 *pfont42 =
-                    (gs_font_type42 *) ff->client_font_data;
+                gs_font_type42 *pfont42 = (gs_font_type42 *) ff->client_font_data;
                 ulong offset0, length_read;
-                bool error =
-                    sfnt_get_glyph_offset(pdr, pfont42, char_code, &offset0);
+                bool error = sfnt_get_glyph_offset(pdr, pfont42, char_code, &offset0);
 
-                glyph_length =
-                    (error ? -1 : pfont42->data.len_glyphs[char_code]);
+                if (error != 0) {
+                    glyph_length = gs_fapi_glyph_invalid_index;
+                }
+                else if (pfont42->data.len_glyphs) {
+                    if (char_code <= pfont42->data.numGlyphs)
+                        glyph_length = pfont42->data.len_glyphs[char_code];
+                    else
+                        glyph_length = gs_fapi_glyph_invalid_index;
+                }
+                else {
+                    ulong noffs;
+                    /* If we haven't got a len_glyphs array, try using the offset of the next glyph offset
+                     * to work out the length
+                     */
+                    error = sfnt_get_glyph_offset(pdr, pfont42, char_code + 1, &noffs);
+                    if (error == 0) {
+                        glyph_length = noffs - offset0;
+                    }
+                    else {
+                        /* And if we can't get the next glyph offset, use the end of the sfnt data
+                         * to work out the length.
+                         */
+                        int code = sfnt_get_sfnt_length(pdr, &noffs);
+                        if (code < 0) {
+                            glyph_length = gs_fapi_glyph_invalid_index;
+                        }
+                        else {
+                            glyph_length = noffs - offset0;
+                        }
+                    }
+                }
 
                 if (buf != 0 && !error) {
                     sfnts_reader r;
@@ -1192,7 +1719,7 @@ FAPI_FF_get_glyph(gs_fapi_font *ff, int char_code, byte *buf,
                                   min(glyph_length,
                                       buf_length) /* safety */ );
                     if (r.error == 1) {
-                        glyph_length = -1;
+                        glyph_length = gs_fapi_glyph_invalid_index;
                     }
                     /* r.error == 2 means a rangecheck, and probably means that the
                      * font is broken, and the final glyph length is longer than the data available for it.
@@ -1238,7 +1765,8 @@ ps_fapi_get_metrics(gs_fapi_font *ff, gs_string *char_name, int cid,
 
 
 /* forward declaration for the ps_ff_stub assignment */
-static int ps_get_glyphname_or_cid(gs_font_base *pbfont,
+static int ps_get_glyphname_or_cid(gs_text_enum_t *penum,
+                                   gs_font_base *pbfont,
                                    gs_string *charstring, gs_string *name,
                                    int ccode, gs_string *enc_char_name,
                                    char *font_file_path,
@@ -1264,6 +1792,7 @@ static const gs_fapi_font ps_ff_stub = {
     false,                      /* is_outline_font */
     false,                      /* is_mtx_skipped */
     false,                      /* is_vertical */
+    false,                      /* metrics_only */
     {{-1, -1}},                 /* ttf_cmap_req */
     0,                          /* client_ctx_p */
     0,                          /* client_font_data */
@@ -1298,7 +1827,7 @@ FAPI_get_xlatmap(i_ctx_t *i_ctx_p, char **xlatmap)
     if ((code = dict_find_string(systemdict, ".xlatmap", &pref)) < 0)
         return code;
     if (r_type(pref) != t_string)
-        return_error(e_typecheck);
+        return_error(gs_error_typecheck);
     *xlatmap = (char *)pref->value.bytes;
     /*  Note : this supposes that xlatmap doesn't move in virtual memory.
        Garbager must not be called while plugin executes get_scaled_font, get_decodingID.
@@ -1315,7 +1844,7 @@ renderer_retcode(gs_memory_t *mem, gs_fapi_server *I, gs_fapi_retcode rc)
     emprintf2(mem,
               "Error: Font Renderer Plugin ( %s ) return code = %d\n",
               I->ig.d->subtype, rc);
-    return rc < 0 ? rc : e_invalidfont;
+    return rc < 0 ? rc : gs_error_invalidfont;
 }
 
 /* <server name>/<null> object .FAPIavailable bool */
@@ -1332,7 +1861,7 @@ zFAPIavailable(i_ctx_t *i_ctx_p)
         serv_name =
             (char *) ref_to_string(&name_ref, imemory, "zFAPIavailable");
         if (!serv_name) {
-            return_error(e_VMerror);
+            return_error(gs_error_VMerror);
         }
     }
 
@@ -1397,7 +1926,7 @@ FAPI_refine_font(i_ctx_t *i_ctx_p, os_ptr op, gs_font *pfont,
         if (dict_find_string(op, "FontBBox", &v) > 0) {
             if (!r_has_type(v, t_array) && !r_has_type(v, t_shortarray)
                 && !r_has_type(v, t_mixedarray))
-                return_error(e_invalidfont);
+                return_error(gs_error_invalidfont);
             make_real(&mat[0], pbfont->FontBBox.p.x);
             make_real(&mat[1], pbfont->FontBBox.p.y);
             make_real(&mat[2], pbfont->FontBBox.q.x);
@@ -1446,11 +1975,11 @@ FAPI_refine_font(i_ctx_t *i_ctx_p, os_ptr op, gs_font *pfont,
 
             if (dict_find_string(pdr, "CIDSystemInfo", &CIDSystemInfo) <= 0
                 || !r_has_type(CIDSystemInfo, t_dictionary))
-                return_error(e_invalidfont);
+                return_error(gs_error_invalidfont);
 
             if (dict_find_string(CIDSystemInfo, "Ordering", &Ordering) <= 0
                 || !r_has_type(Ordering, t_string)) {
-                return_error(e_invalidfont);
+                return_error(gs_error_invalidfont);
             }
 
             ordering_length =
@@ -1520,13 +2049,13 @@ zFAPIrebuildfont(i_ctx_t *i_ctx_p)
     if (pbfont->FAPI == NULL) {
         if (dict_find_string(op - 1, "FAPI", &v) <= 0
             || !r_has_type(v, t_name))
-            return_error(e_invalidfont);
+            return_error(gs_error_invalidfont);
         obj_string_data(imemory, v, &pchars, &len);
         len = min(len, sizeof(FAPI_ID) - 1);
         strncpy((char *)FAPI_ID, (const char *)pchars, len);
         FAPI_ID[len] = 0;
 
-        gs_fapi_set_servers_client_data(imemory, NULL, i_ctx_p);
+        gs_fapi_set_servers_client_data(imemory, &ps_ff_stub, i_ctx_p);
 
         code =
             gs_fapi_find_server(imemory, FAPI_ID,
@@ -1534,7 +2063,7 @@ zFAPIrebuildfont(i_ctx_t *i_ctx_p)
                                 (gs_fapi_get_server_param_callback)
                                 ps_get_server_param);
         if (!pbfont->FAPI || code < 0) {
-            return_error(e_invalidfont);
+            return_error(gs_error_invalidfont);
         }
     }
 
@@ -1724,7 +2253,8 @@ find_substring(const byte *where, int length, const char *what)
 }
 
 static int
-ps_get_glyphname_or_cid(gs_font_base *pbfont, gs_string *charstring,
+ps_get_glyphname_or_cid(gs_text_enum_t *penum,
+                        gs_font_base *pbfont, gs_string *charstring,
                         gs_string *name, int ccode,
                         gs_string *enc_char_name, char *font_file_path,
                         gs_fapi_char_ref *cr, bool bCID)
@@ -1740,9 +2270,41 @@ ps_get_glyphname_or_cid(gs_font_base *pbfont, gs_string *charstring,
         ((pbfont->FontType == ft_encrypted
           || pbfont->FontType == ft_encrypted2) && font_file_path == NULL);
     i_ctx_t *i_ctx_p = (i_ctx_t *) I->client_ctx_p;
+    bool unicode_cp = false;
 
     /* Obtain the character name : */
     if (bCID) {
+        if (pbfont->FontType == ft_CID_TrueType && font_file_path) {
+            ref *pdr2, *fidr, *dummy;
+            pdr2 = pfont_dict(gs_rootfont(igs));
+            if (dict_find_string(pdr2, "FontInfo", &fidr) &&
+                dict_find_string(fidr, "GlyphNames2Unicode", &dummy))
+            {
+                unsigned char uc[4] = {0};
+                unsigned int cc = 0;
+                int i, l;
+                if (penum->text.operation & TEXT_FROM_SINGLE_CHAR) {
+                    cc = penum->text.data.d_char;
+                } else if (penum->text.operation & TEXT_FROM_SINGLE_GLYPH) {
+                    cc = penum->text.data.d_glyph - GS_MIN_CID_GLYPH;
+                }
+                else {
+                    byte *c = (byte *)&penum->text.data.bytes[penum->index - penum->bytes_decoded];
+                    for (i = 0; i < penum->bytes_decoded ; i++) {
+                      cc |= c[i] << ((penum->bytes_decoded - 1) - i) * 8;
+                    }
+                }
+                l = ((gs_font_base *)gs_rootfont(igs))->procs.decode_glyph(gs_rootfont(igs), cc + GS_MIN_CID_GLYPH, ccode, (unsigned short *)uc, sizeof(uc));
+                if (l > 0 && l < sizeof(uc)) {
+                    cc = 0;
+                    for (i = 0; i < l; i++) {
+                        cc |= uc[l - 1 - i] << (i * 8);
+                    }
+                    ccode = cc;
+                    unicode_cp = true;
+                }
+            }
+        }
         client_char_code = ccode;
         make_null(&char_name);
         enc_char_name->data = NULL;
@@ -1766,7 +2328,7 @@ ps_get_glyphname_or_cid(gs_font_base *pbfont, gs_string *charstring,
                         return code;
             }
             else {
-                return_error(e_invalidfont);
+                return_error(gs_error_invalidfont);
             }
         }
         else {
@@ -1781,6 +2343,8 @@ ps_get_glyphname_or_cid(gs_font_base *pbfont, gs_string *charstring,
          * it to the renderer for a disk based font. But the metrics dictionary may have
          * been constructed using the extended name....
          */
+        if (!r_has_type(&char_name, t_name))
+            return_error(gs_error_invalidfont);
         name_string_ref(imemory, &char_name, &cname_str);
         enc_char_name->data = cname_str.value.bytes;
         enc_char_name->size = r_size(&cname_str);
@@ -1790,18 +2354,18 @@ ps_get_glyphname_or_cid(gs_font_base *pbfont, gs_string *charstring,
     cr->char_codes_count = 1;
     if (bCID) {
         if (font_file_path != NULL) {
-            ref *Decoding, *TT_cmap, *SubstNWP;
+            ref *Decoding, *TT_cmap = NULL, *SubstNWP;
             ref src_type, dst_type;
-            uint c;
+            uint c = 0;
 
             is_glyph_index = true;
 
             if (dict_find_string(pdr, "Decoding", &Decoding) <= 0
                 || !r_has_type(Decoding, t_dictionary))
-                return_error(e_invalidfont);
+                return_error(gs_error_invalidfont);
             if (dict_find_string(pdr, "SubstNWP", &SubstNWP) <= 0
                 || !r_has_type(SubstNWP, t_array))
-                return_error(e_invalidfont);
+                return_error(gs_error_invalidfont);
             if (dict_find_string(pdr, "TT_cmap", &TT_cmap) <= 0
                 || !r_has_type(TT_cmap, t_dictionary)) {
                 ref *DecodingArray, char_code, char_code1, ih;
@@ -1812,7 +2376,7 @@ ps_get_glyphname_or_cid(gs_font_base *pbfont, gs_string *charstring,
                 if (dict_find(Decoding, &ih, &DecodingArray) <= 0
                     || !r_has_type(DecodingArray, t_array)
                     || array_get(imemory, DecodingArray, i, &char_code) < 0) {
-                    return_error(e_invalidfont);
+                    return_error(gs_error_invalidfont);
                 }
 
                 /* Check the Decoding entry */
@@ -1825,13 +2389,13 @@ ps_get_glyphname_or_cid(gs_font_base *pbfont, gs_string *charstring,
                     n = r_size(DecodingArray);
                 }
                 else {
-                    return_error(e_invalidfont);
+                    return_error(gs_error_invalidfont);
                 }
 
                 for (; n--; i++) {
                     if (array_get(imemory, DecodingArray, i, &char_code1) < 0
                         || !r_has_type(&char_code1, t_integer)) {
-                        return_error(e_invalidfont);
+                        return_error(gs_error_invalidfont);
                     }
 
                     c = char_code1.value.intval;
@@ -1843,15 +2407,38 @@ ps_get_glyphname_or_cid(gs_font_base *pbfont, gs_string *charstring,
             else {
                 ref *CIDSystemInfo;
                 ref *Ordering;
+                ref *fdict, *CMapDict, *CMapName, *WMode, CMapNameStr;
+                char *cmapnm = NULL;
+                int cmapnmlen = 0;
+                int wmode = 0;
+                /* leave off the -H or -V */
+                const char * const utfcmap = "Identity-UTF16";
+                int utfcmaplen = strlen(utfcmap);
 
-                /* We only have to lookup the char code if we're *not* using an identity ordering */
-                if (dict_find_string(pdr, "CIDSystemInfo", &CIDSystemInfo) >= 0
+                fdict = pfont_dict(gs_rootfont(igs));
+                code = dict_find_string(fdict, "CMap", &CMapDict);
+                if (code >= 0 && r_has_type(CMapDict, t_dictionary)) {
+                    code = dict_find_string(CMapDict, "WMode", &WMode);
+                    if (code >= 0 && r_has_type(WMode, t_integer)) {
+                        wmode = WMode->value.intval;
+                    }
+                    code = dict_find_string(CMapDict, "CMapName", &CMapName);
+                    if (code >= 0 && r_has_type(CMapName, t_name)) {
+                        name_string_ref(imemory, CMapName, &CMapNameStr);
+                        cmapnm = (char *)CMapNameStr.value.bytes;
+                        cmapnmlen = r_size(&CMapNameStr);
+                    }
+                }
+                /* We only have to lookup the char code if we're *not* using an identity ordering 
+                   with the exception of Identity-UTF16 which is a different beast altogether */
+                if (unicode_cp || (cmapnmlen > 0 && !strncmp(cmapnm, utfcmap, cmapnmlen > utfcmaplen ? utfcmaplen : cmapnmlen))
+                    || (dict_find_string(pdr, "CIDSystemInfo", &CIDSystemInfo) >= 0
                     && r_has_type(CIDSystemInfo, t_dictionary)
                     && dict_find_string(CIDSystemInfo, "Ordering",
                                         &Ordering) >= 0
                     && r_has_type(Ordering, t_string)
                     && strncmp((const char *)Ordering->value.bytes,
-                               "Identity", 8) != 0) {
+                               "Identity", 8) != 0)) {
 
                     if ((code =
                          cid_to_TT_charcode(imemory, Decoding, TT_cmap,
@@ -1869,9 +2456,17 @@ ps_get_glyphname_or_cid(gs_font_base *pbfont, gs_string *charstring,
                         c = client_char_code;
                     }
                 }
+                if (pbfont->FontType == ft_CID_TrueType)
+                    c = ((gs_font_cid2 *)pbfont)->data.substitute_glyph_index_vertical((gs_font_type42 *)pbfont, c, wmode, ccode);
+            }
+            if (pbfont->FontType == ft_CID_TrueType && c == 0 && TT_cmap) {
+                ref cc32;
+                ref *gid;
+                make_int(&cc32, 32);
+                if (dict_find(TT_cmap, &cc32, &gid) >= 0)
+                    c = gid->value.intval;
             }
             cr->char_codes[0] = c;
-            cr->is_glyph_index = is_glyph_index;
             /* fixme : process the narrow/wide/proportional mapping type,
                using src_type, dst_type. Should adjust the 'matrix' above.
                Call get_font_proportional_feature for proper choice.
@@ -1901,22 +2496,33 @@ ps_get_glyphname_or_cid(gs_font_base *pbfont, gs_string *charstring,
                 if (r_has_type(CIDMap, t_array)) {
 
                     /* Too big for single string, so its an array of 2 strings */
-                    code =
-                        string_array_access_proc(pbfont->memory, CIDMap, 1,
+                    code = string_array_access_proc(pbfont->memory, CIDMap, 1,
                                                  client_char_code * gdb, gdb,
                                                  NULL, NULL,
                                                  (const byte **)&Map);
                 }
                 else {
-                    if (CIDMap->tas.rsize < c_code * gdb) {
+                    if (CIDMap->tas.rsize <= c_code * gdb) {
                         c_code = 0;
                     }
                     Map = &CIDMap->value.bytes[c_code * gdb];
                 }
                 cr->char_codes[0] = 0;
-
-                for (i = 0; i < gdb; i++) {
-                    cr->char_codes[0] = (cr->char_codes[0] << 8) + Map[i];
+                is_glyph_index = true;
+                if (code >= 0) {
+                    for (i = 0; i < gdb; i++) {
+                        cr->char_codes[0] = (cr->char_codes[0] << 8) + Map[i];
+                    }
+                }
+                else {
+                    ref *cstr, *refcode;
+                    code = dict_find_string(pdr, "CharStrings", &cstr);
+                    if (code > 0) {
+                        code = dict_find_string(cstr, ".notdef", &refcode);
+                        if (code > 0) {
+                            cr->char_codes[0] = refcode->value.intval;
+                        }
+                    }
                 }
             }
             else
@@ -1929,7 +2535,7 @@ ps_get_glyphname_or_cid(gs_font_base *pbfont, gs_string *charstring,
 
         if (dict_find_string(pdr, "CharStrings", &CharStrings) <= 0
             || !r_has_type(CharStrings, t_dictionary))
-            return_error(e_invalidfont);
+            return_error(gs_error_invalidfont);
         if ((dict_find(CharStrings, &char_name, &glyph_index) < 0)
             || r_has_type(glyph_index, t_null)) {
 #ifdef DEBUG
@@ -1981,10 +2587,10 @@ ps_get_glyphname_or_cid(gs_font_base *pbfont, gs_string *charstring,
             ref_assign(esp, glyph_index);
             return o_push_estack;
 #else
-            return (e_invalidfont);
+            return (gs_error_invalidfont);
 #endif
         }
-        cr->is_glyph_index = true;
+        is_glyph_index = true;
     }
     else if (is_embedded_type1) {
         /*  Since the client passes charstring by callback using I->ff.char_data,
@@ -2007,14 +2613,15 @@ ps_get_glyphname_or_cid(gs_font_base *pbfont, gs_string *charstring,
             ref *Encoding;
             ref glyph;
 
-            name_ref(pbfont->memory, name->data, name->size, &glyph, false);
+            if ((code = name_ref(pbfont->memory, name->data, name->size, &glyph, false)) < 0)
+                return code;
 
             if (dict_find_string(osp - 1, "Encoding", &Encoding) > 0) {
                 cr->char_codes[0] =
                     (uint) array_find(imemory, Encoding, &glyph);
             }
             else
-                return_error(e_invalidfont);
+                return_error(gs_error_invalidfont);
         }
     }
     else {                      /* a non-embedded font, i.e. a disk font */
@@ -2027,8 +2634,9 @@ ps_get_glyphname_or_cid(gs_font_base *pbfont, gs_string *charstring,
                            gx_extendeg_glyph_name_separator);
         if (p != NULL) {
             cr->char_name_length = p - cr->char_name;
-            name_ref(pbfont->memory, cr->char_name, cr->char_name_length,
-                     &char_name, true);
+            if ((code = name_ref(pbfont->memory, cr->char_name,
+                             cr->char_name_length, &char_name, true)) < 0)
+                return code;
         }
         if ((code =
              renderer_retcode(imemory, I,
@@ -2057,14 +2665,14 @@ ps_get_glyphname_or_cid(gs_font_base *pbfont, gs_string *charstring,
 
                         cr->char_codes_count = r_size(char_code);
                         if (cr->char_codes_count > count_of(cr->char_codes))
-                            code = gs_note_error(e_rangecheck);
+                            code = gs_note_error(gs_error_rangecheck);
                         if (code >= 0) {
                             for (i = 0; i < cr->char_codes_count; i++) {
                                 code = array_get(imemory, char_code, i, &v);
                                 if (code < 0)
                                     break;
                                 if (!r_has_type(char_code, t_integer)) {
-                                    code = gs_note_error(e_rangecheck);
+                                    code = gs_note_error(gs_error_rangecheck);
                                     break;
                                 }
                                 cr->char_codes[i] = v.value.intval;
@@ -2072,7 +2680,7 @@ ps_get_glyphname_or_cid(gs_font_base *pbfont, gs_string *charstring,
                         }
                     }
                     else {
-                        code = gs_note_error(e_rangecheck);
+                        code = gs_note_error(gs_error_rangecheck);
                     }
                     if (code < 0) {
                         char buf[16];
@@ -2086,7 +2694,7 @@ ps_get_glyphname_or_cid(gs_font_base *pbfont, gs_string *charstring,
                         emprintf1(imemory,
                                   "Wrong decoding entry for the character '%s'.\n",
                                   buf);
-                        return_error(e_rangecheck);
+                        return_error(gs_error_rangecheck);
                     }
                 }
             }
@@ -2138,8 +2746,13 @@ FAPI_char(i_ctx_t *i_ctx_p, bool bBuildGlyph, ref *charstring)
         int cindex = -1;
         ref gname;
 
+        if (I == NULL)
+            return_error(gs_error_invalidfont);
+
         /* initialise the FAPI font, this includes language specific stuff */
         I->ff = ps_ff_stub;
+
+        I->client_ctx_p = i_ctx_p;
 
         if (bBuildGlyph && !bCID) {
             if (r_type(op) != t_name) {
@@ -2163,11 +2776,11 @@ FAPI_char(i_ctx_t *i_ctx_p, bool bBuildGlyph, ref *charstring)
                  * here, the out of range CID is handled later
                  */
                 if ((dict_find_string(op - 1, "CharStrings", &chstrs)) <= 0) {
-                    return_error(e_undefined);
+                    return_error(gs_error_undefined);
                 }
 
                 if ((dict_find_string(chstrs, ".notdef", &chs)) <= 0) {
-                    return_error(e_undefined);
+                    return_error(gs_error_undefined);
                 }
                 ref_assign_inline(op, chs);
             }
@@ -2208,11 +2821,11 @@ FAPI_char(i_ctx_t *i_ctx_p, bool bBuildGlyph, ref *charstring)
          */
         if (code == gs_error_unregistered) {
             os_ptr op = osp;
-            ref *proc, gname;
+            ref *proc = NULL, gname;
 
             if (I->ff.is_type1
                 && (get_charstring(&I->ff, cindex, &proc, &gname) >= 0)
-                && (r_has_type(proc, t_array)
+                && proc != NULL && (r_has_type(proc, t_array)
                     || r_has_type(proc, t_mixedarray))) {
                 push(2);
                 ref_assign(op - 1, &gname);
@@ -2220,7 +2833,7 @@ FAPI_char(i_ctx_t *i_ctx_p, bool bBuildGlyph, ref *charstring)
                 return (zchar_exec_char_proc(i_ctx_p));
             }
             else {
-                return_error(e_invalidfont);
+                return_error(gs_error_invalidfont);
             }
         }
     }
@@ -2257,10 +2870,10 @@ zFAPIBuildGlyph9(i_ctx_t *i_ctx_p)
     font_index = op[0].value.intval;
     if (dict_find_string(&font9, "FDArray", &rFDArray) <= 0
         || r_type(rFDArray) != t_array)
-        return_error(e_invalidfont);
+        return_error(gs_error_invalidfont);
     if (array_get(imemory, rFDArray, font_index, &f) < 0
         || r_type(&f) != t_dictionary)
-        return_error(e_invalidfont);
+        return_error(gs_error_invalidfont);
 
     op[0] = op[-2];
     op[-2] = op[-1];            /* Keep the charstring on ostack for the garbager. */
@@ -2378,7 +2991,7 @@ zFAPIpassfont(i_ctx_t *i_ctx_p)
     if (fapi_request != NULL)
         gs_free_string(imemory, (byte *) fapi_request,
                        strlen(fapi_request) + 1, "do_FAPIpassfont");
-    if (code != 0)
+    if (code < 0 && code != gs_error_invalidaccess)
         return code;
 
     if (code >= 0 && fapi_id != NULL) {

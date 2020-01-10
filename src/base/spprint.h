@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -41,15 +41,15 @@ int stream_puts(stream * s, const char *str);
  * These functions return a pointer to the next %-element of the format, or
  * to the terminating 0.
  */
-const char *pprintg1(stream * s, const char *format, floatp v);
-const char *pprintg2(stream * s, const char *format, floatp v1, floatp v2);
+const char *pprintg1(stream * s, const char *format, double v);
+const char *pprintg2(stream * s, const char *format, double v1, double v2);
 const char *pprintg3(stream * s, const char *format,
-                     floatp v1, floatp v2, floatp v3);
+                     double v1, double v2, double v3);
 const char *pprintg4(stream * s, const char *format,
-                     floatp v1, floatp v2, floatp v3, floatp v4);
+                     double v1, double v2, double v3, double v4);
 const char *pprintg6(stream * s, const char *format,
-                     floatp v1, floatp v2, floatp v3, floatp v4,
-                     floatp v5, floatp v6);
+                     double v1, double v2, double v3, double v4,
+                     double v5, double v6);
 
 /*
  * The rest of these printing functions exist solely because the ANSI C

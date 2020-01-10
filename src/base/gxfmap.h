@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -96,11 +96,11 @@ frac gx_color_frac_map(frac, const frac *);		/* in gxcmap.c */
 
 /* Define a mapping procedure that just looks up the value in the cache. */
 /* (It is equivalent to gx_map_color_float with the arguments swapped.) */
-float gs_mapped_transfer(floatp, const gx_transfer_map *);
+float gs_mapped_transfer(double, const gx_transfer_map *);
 
 /* Define an identity mapping procedure. */
 /* Don't store this directly in proc/closure.proc: */
 /* use gx_set_identity_transfer. */
-float gs_identity_transfer(floatp, const gx_transfer_map *);
+float gs_identity_transfer(double, const gx_transfer_map *);
 
 #endif /* gxfmap_INCLUDED */

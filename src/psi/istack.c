@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -141,7 +141,18 @@ ref_stack_set_error_codes(ref_stack_t *pstack, int underflow_error,
 int
 ref_stack_set_max_count(ref_stack_t *pstack, long nmax)
 {
-    uint nmin = ref_stack_count_inline(pstack);
+    long nmin;
+
+    /* Bypass checking if we're setting the amximum to -1 'no limits' */
+    if (nmax == -1) {
+        pstack->max_stack.value.intval = nmax;
+        return 0;
+    }
+
+    /* check how many items we already have on the stack, don't allow
+     * a maximum less than this.
+     */
+    nmin = ref_stack_count_inline(pstack);
 
     if (nmax < nmin)
         nmax = nmin;
@@ -171,7 +182,7 @@ ref_stack_set_margin(ref_stack_t *pstack, uint margin)
         refset_null_new(pstack->top + 1, pstack->margin - margin, 0);
     } else {
         if (margin > data_size >> 1)
-            return_error(e_rangecheck);
+            return_error(gs_error_rangecheck);
         if (pstack->top - pstack->p < margin) {
             uint used = pstack->p + 1 - pstack->bot;
             uint keep = data_size - margin;
@@ -244,7 +255,7 @@ ref_stack_counttomark(const ref_stack_t *pstack)
 
 /*
  * Do the store check for storing 'count' elements of a stack, starting
- * 'skip' elements below the top, into an array.  Return 0 or e_invalidaccess.
+ * 'skip' elements below the top, into an array.  Return 0 or gs_error_invalidaccess.
  */
 int
 ref_stack_store_check(const ref_stack_t *pstack, ref *parray, uint count,
@@ -286,8 +297,8 @@ ref_stack_store_check(const ref_stack_t *pstack, ref *parray, uint count,
 /*
  * Store the top 'count' elements of a stack, starting 'skip' elements below
  * the top, into an array, with or without store/undo checking.  age=-1 for
- * no check, 0 for old, 1 for new.  May return e_rangecheck or
- * e_invalidaccess.
+ * no check, 0 for old, 1 for new.  May return gs_error_rangecheck or
+ * gs_error_invalidaccess.
  */
 #undef idmemory			/****** NOTA BENE ******/
 int
@@ -300,7 +311,7 @@ ref_stack_store(const ref_stack_t *pstack, ref *parray, uint count,
     ref_stack_enum_t rsenum;
 
     if (count > ref_stack_count(pstack) || count > r_size(parray))
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     if (check) {
         int code = ref_stack_store_check(pstack, parray, count, skip);
 
@@ -408,7 +419,7 @@ ref_stack_pop_block(ref_stack_t *pstack)
         uint left;
 
         if (moved == 0)
-            return_error(e_Fatal);
+            return_error(gs_error_Fatal);
         memmove(bot + moved, bot, count * sizeof(ref));
         left = used - moved;
         memcpy(bot, body + left, moved * sizeof(ref));
@@ -437,7 +448,7 @@ ref_stack_pop_block(ref_stack_t *pstack)
 
 /*
  * Extend a stack to recover from an overflow condition.
- * May return overflow_error or e_VMerror.
+ * May return overflow_error or gs_error_VMerror.
  */
 int
 ref_stack_extend(ref_stack_t *pstack, uint request)
@@ -459,7 +470,7 @@ ref_stack_extend(ref_stack_t *pstack, uint request)
  * Push N empty slots onto a stack.  These slots are not initialized:
  * the caller must immediately fill them.  May return overflow_error
  * (if max_stack would be exceeded, or the stack has no allocator)
- * or e_VMerror.
+ * or gs_error_VMerror.
  */
 int
 ref_stack_push(ref_stack_t *pstack, uint count)
@@ -492,7 +503,7 @@ ref_stack_push(ref_stack_t *pstack, uint count)
  * Push a block onto the stack, specifying how many elements of the current
  * top block should remain in the top block and also how many elements we
  * are trying to add.  Requires keep <= count.  May return overflow_error or
- * e_VMerror.
+ * gs_error_VMerror.
  */
 static int
 ref_stack_push_block(ref_stack_t *pstack, uint keep, uint add)
@@ -507,14 +518,17 @@ ref_stack_push_block(ref_stack_t *pstack, uint keep, uint add)
     int code;
 
     if (keep > count)
-        return_error(e_Fatal);
+        return_error(gs_error_Fatal);
     /* Check for overflowing the maximum size, */
     /* or expansion not allowed.  */
-    if (pstack->extension_used + (pstack->top - pstack->bot) + add >=
-        pstack->max_stack.value.intval ||
-        !params->allow_expansion
-        )
-        return_error(params->overflow_error);
+    /* Or specifically allowing unlimited expansion */
+    if (pstack->max_stack.value.intval > 0) {
+        if (pstack->extension_used + (pstack->top - pstack->bot) + add >=
+            pstack->max_stack.value.intval ||
+            !params->allow_expansion
+            )
+            return_error(params->overflow_error);
+    }
     code = gs_alloc_ref_array(pstack->memory, &next, 0,
                               params->block_size, "ref_stack_push_block");
     if (code < 0)

@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -266,21 +266,8 @@ s_DCTE_process(stream_state * st, stream_cursor_read * pr,
     return ERRC;
 }
 
-/* Release the stream */
-static void
-s_DCTE_release(stream_state * st)
-{
-    stream_DCT_state *const ss = (stream_DCT_state *) st;
-
-    gs_jpeg_destroy(ss);
-    gs_free_object(ss->data.common->memory, ss->data.compress,
-                   "s_DCTE_release");
-    /* Switch the template pointer back in case we still need it. */
-    st->templat = &s_DCTE_template;
-}
-
 /* Stream template */
 const stream_template s_DCTE_template =
-{&st_DCT_state, s_DCTE_init, s_DCTE_process, 1000, 4000, s_DCTE_release,
+{&st_DCT_state, s_DCTE_init, s_DCTE_process, 1000, 4000, NULL,
  s_DCTE_set_defaults
 };

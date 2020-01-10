@@ -1,4 +1,4 @@
-% Copyright (C) 2001-2012 Artifex Software, Inc.
+% Copyright (C) 2001-2018 Artifex Software, Inc.
 % All Rights Reserved.
 %
 % This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
 % of the license contained in the file LICENSE in this distribution.
 %
 % Refer to licensing information at http://www.artifex.com or contact
-% Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-% CA  94903, U.S.A., +1(415)492-9861, for further information.
+% Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+% CA 94945, U.S.A., +1(415)492-9861, for further information.
 %
 
 % A procset for Postscript font emulation
@@ -267,30 +267,6 @@ currentdict end def
  ISOLatin1Encoding /ISOLatin1Encoding
  SymbolEncoding /SymbolEncoding
  DingbatsEncoding /DingbatsEncoding
- /resourceforall where {
-   pop (*) { dup cvn
-     EncodingDirectory exch .knownget not {
-       % A work around bug 688710 on Linux :
-       % findencoding can't load resource files until gs_init.ps executes .fixresources .
-       % It will happen after gs_init.ps runs INITFILES,
-       % from which the current file runs.
-       % Windows build has no such problem.
-       (.svn) anchorsearch {
-         % HACK : skip .svn or */* names, which are subdirectories.
-         pop pop
-       } {
-         (/) search {
-           pop pop pop
-         } {
-           cvn dup /Encoding findresource
-         } ifelse
-       } ifelse
-     } {
-       exch cvn exch
-     } ifelse
-     exch
-   } 1024 string /Encoding resourceforall
- } if
 .dicttomark def
 
 /ChooseDecoding  % <font> ChooseDecoding <font>
@@ -432,7 +408,7 @@ currentdict end def
     exit
   } loop
   exch setglobal
-} bind def
+} .bind executeonly def % must be bound and hidden for .forceput
 
 currentdict end /ProcSet defineresource pop
 

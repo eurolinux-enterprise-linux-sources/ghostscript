@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -55,7 +55,7 @@ zsqrt(i_ctx_t *i_ctx_p)
     if (code < 0)
         return code;
     if (num < 0.0)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     make_real(op, sqrt(num));
     return 0;
 }
@@ -150,7 +150,7 @@ zexp(i_ctx_t *i_ctx_p)
     if (code < 0)
         return code;
     if (args[0] < 0.0 && modf(args[1], &ipart) != 0.0)
-        return_error(e_undefinedresult);
+        return_error(gs_error_undefinedresult);
     if (args[0] == 0.0 && args[1] == 0.0)
         result = 1.0;		/* match Adobe; can't rely on C library */
     else
@@ -171,7 +171,7 @@ zln(i_ctx_t *i_ctx_p)
     if (code < 0)
         return code;
     if (num <= 0.0)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     make_real(op, log(num));
     return 0;
 }
@@ -187,7 +187,7 @@ zlog(i_ctx_t *i_ctx_p)
     if (code < 0)
         return code;
     if (num <= 0.0)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     make_real(op, log10(num));
     return 0;
 }

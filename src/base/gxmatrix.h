@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -47,13 +47,13 @@ typedef struct gs_matrix_fixed_s gs_matrix_fixed;
 int gs_matrix_fixed_from_matrix(gs_matrix_fixed *, const gs_matrix *);
 
 /* Coordinate transformations to fixed point. */
-int gs_point_transform2fixed(const gs_matrix_fixed *, floatp, floatp,
+int gs_point_transform2fixed(const gs_matrix_fixed *, double, double,
                              gs_fixed_point *);
-int gs_distance_transform2fixed(const gs_matrix_fixed *, floatp, floatp,
+int gs_distance_transform2fixed(const gs_matrix_fixed *, double, double,
                                 gs_fixed_point *);
 #if PRECISE_CURRENTPOINT
 int gs_point_transform2fixed_rounding(const gs_matrix_fixed * pmat,
-                         floatp x, floatp y, gs_fixed_point * ppt);
+                         double x, double y, gs_fixed_point * ppt);
 #endif
 
 /*

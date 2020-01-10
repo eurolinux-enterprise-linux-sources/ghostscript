@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -45,9 +45,9 @@ z_imscale_d(i_ctx_t * i_ctx_p)
     check_type(*op, t_dictionary);
     check_dict_read(*op);
     if (dict_int_param(op, "Width", 0, 1<<24, -1, &width) < 0)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     if (dict_int_param(op, "Height", 0, 1<<24, -1, &height) < 0)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
 
     state.params.spp_decode = 1;		
     state.params.spp_interp = 1;            

@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -28,7 +28,7 @@
 
 /* Forward references */
 static int common_arc(i_ctx_t *,
-          int (*)(gs_state *, floatp, floatp, floatp, floatp, floatp));
+          int (*)(gs_gstate *, double, double, double, double, double));
 static int common_arct(i_ctx_t *, float *);
 
 /* <x> <y> <r> <ang1> <ang2> arc - */
@@ -48,7 +48,7 @@ zarcn(i_ctx_t *i_ctx_p)
 /* Common code for arc[n] */
 static int
 common_arc(i_ctx_t *i_ctx_p,
-      int (*aproc)(gs_state *, floatp, floatp, floatp, floatp, floatp))
+      int (*aproc)(gs_gstate *, double, double, double, double, double))
 {
     os_ptr op = osp;
     double xyra[5];		/* x, y, r, ang1, ang2 */
@@ -195,9 +195,10 @@ zpathforall(i_ctx_t *i_ctx_p)
     check_proc(op[-1]);
     check_proc(*op);
     check_estack(8);
+
     if ((penum = gs_path_enum_alloc(imemory, "pathforall")) == 0)
-        return_error(e_VMerror);
-    code = gs_path_enum_init(penum, igs);
+        return_error(gs_error_VMerror);
+    code = gs_path_enum_init(imemory, penum, igs);
     if (code < 0) {
         ifree_object(penum, "path_cleanup");
         return code;
@@ -231,6 +232,8 @@ path_continue(i_ctx_t *i_ctx_p)
             path_cleanup(i_ctx_p);
             return o_pop_estack;
         default:		/* error */
+            esp -= 6;
+            path_cleanup(i_ctx_p);
             return code;
         case gs_pe_moveto:
             esp[2] = esp[-4];	/* moveto proc */

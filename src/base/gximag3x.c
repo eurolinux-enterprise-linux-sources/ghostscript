@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -27,7 +27,7 @@
 #include "gxdevice.h"
 #include "gxdevmem.h"
 #include "gximag3x.h"
-#include "gxistate.h"
+#include "gxgstate.h"
 #include "gdevbbox.h"
 
 extern_st(st_color_space);
@@ -125,7 +125,7 @@ static int check_image3x_mask(const gs_image3x_t *pim,
                                gs_memory_t *mem);
 int
 gx_begin_image3x_generic(gx_device * dev,
-                        const gs_imager_state *pis, const gs_matrix *pmat,
+                        const gs_gstate *pgs, const gs_matrix *pmat,
                         const gs_image_common_t *pic, const gs_int_rect *prect,
                         const gx_drawing_color *pdcolor,
                         const gx_clip_path *pcpath, gs_memory_t *mem,
@@ -198,7 +198,7 @@ gx_begin_image3x_generic(gx_device * dev,
     penum->bpc = pim->BitsPerComponent;
     penum->memory = mem;
     if (pmat == 0)
-        pmat = &ctm_only(pis);
+        pmat = &ctm_only(pgs);
     for (i = 0; i < NUM_MASKS; ++i) {
         gs_rect mrect;
         gx_device *mdev;
@@ -230,10 +230,12 @@ gx_begin_image3x_generic(gx_device * dev,
                         (int)ceil(mrect.q.x) - origin[i].x,
                         (int)ceil(mrect.q.y) - origin[i].y,
                         penum->mask[i].depth, mem);
-        code = dev_proc(dev, get_profile)(dev, &mdev->icc_struct);
-        rc_increment(mdev->icc_struct);
         if (code < 0)
             goto out1;
+        code = dev_proc(dev, get_profile)(dev, &mdev->icc_struct);
+        if (code < 0)
+            goto out1;  /* Device not yet open */
+        rc_increment(mdev->icc_struct);
         penum->mask[i].mdev = mdev;
         gs_image_t_init(&mask[i].image, pmcs);
         mask[i].image.ColorSpace = pmcs;
@@ -261,15 +263,15 @@ gx_begin_image3x_generic(gx_device * dev,
             m_mat.tx -= origin[i].x;
             m_mat.ty -= origin[i].y;
             /*
-             * Peter put in a comment that said " Note that pis = NULL here,
-             * since we don't want to have to create another imager state with
-             * default log_op, etc." and passed NULL instead of pis to this
-             * routine.  However Image type 1 need the imager state (see
+             * Peter put in a comment that said " Note that pgs = NULL here,
+             * since we don't want to have to create another gs_gstate with
+             * default log_op, etc." and passed NULL instead of pgs to this
+             * routine.  However Image type 1 need the gs_gstate (see
              * bug 688348) thus his optimization was removed.
              * dcolor = NULL is OK because this is an opaque image with
              * CombineWithColor = false.
              */
-            code = gx_device_begin_typed_image(mdev, pis, &m_mat,
+            code = gx_device_begin_typed_image(mdev, pgs, &m_mat,
                                (const gs_image_common_t *)&mask[i].image,
                                                &mask[i].rect, NULL, NULL,
                                                mem, &penum->mask[i].info);
@@ -287,7 +289,7 @@ gx_begin_image3x_generic(gx_device * dev,
         pixel.image.type = type1;
         pixel.image.image_parent_type = gs_image_type3x;
     }
-    code = make_mcde(dev, pis, pmat, (const gs_image_common_t *)&pixel.image,
+    code = make_mcde(dev, pgs, pmat, (const gs_image_common_t *)&pixel.image,
                      prect, pdcolor, pcpath, mem, &penum->pixel.info,
                      &pcdev, midev, minfo, origin, pim);
     if (code < 0)
@@ -359,7 +361,7 @@ gx_begin_image3x_generic(gx_device * dev,
     return code;
 }
 static bool
-check_image3x_extent(floatp mask_coeff, floatp data_coeff)
+check_image3x_extent(double mask_coeff, double data_coeff)
 {
     if (mask_coeff == 0)
         return data_coeff == 0;
@@ -524,7 +526,7 @@ make_midx_default(gx_device **pmidev, gx_device *dev, int width, int height,
 }
 static IMAGE3X_MAKE_MCDE_PROC(make_mcdex_default);  /* check prototype */
 static int
-make_mcdex_default(gx_device *dev, const gs_imager_state *pis,
+make_mcdex_default(gx_device *dev, const gs_gstate *pgs,
                    const gs_matrix *pmat, const gs_image_common_t *pic,
                    const gs_int_rect *prect, const gx_drawing_color *pdcolor,
                    const gx_clip_path *pcpath, gs_memory_t *mem,
@@ -565,7 +567,7 @@ make_mcdex_default(gx_device *dev, const gs_imager_state *pis,
 
     gx_device_bbox_fwd_open_close(bbdev, false);
     code = dev_proc(bbdev, begin_typed_image)
-        ((gx_device *)bbdev, pis, pmat, pic, prect, pdcolor, pcpath, mem,
+        ((gx_device *)bbdev, pgs, pmat, pic, prect, pdcolor, pcpath, mem,
          pinfo);
     if (code < 0) {
         gs_free_object(mem, bbdev, "make_mcdex_default");
@@ -576,12 +578,12 @@ make_mcdex_default(gx_device *dev, const gs_imager_state *pis,
 }
 static int
 gx_begin_image3x(gx_device * dev,
-                const gs_imager_state * pis, const gs_matrix * pmat,
+                const gs_gstate * pgs, const gs_matrix * pmat,
                 const gs_image_common_t * pic, const gs_int_rect * prect,
                 const gx_drawing_color * pdcolor, const gx_clip_path * pcpath,
                 gs_memory_t * mem, gx_image_enum_common_t ** pinfo)
 {
-    return gx_begin_image3x_generic(dev, pis, pmat, pic, prect, pdcolor,
+    return gx_begin_image3x_generic(dev, pgs, pmat, pic, prect, pdcolor,
                                     pcpath, mem, make_midx_default,
                                     make_mcdex_default, pinfo);
 }
@@ -609,6 +611,7 @@ gx_image3x_plane_data(gx_image_enum_common_t * info,
         int mh = mask_height[i] = penum->mask[i].height;
 
         mask_plane[i].data = 0;
+        mask_plane[i].raster = 0;
         mask_used[i] = 0;
         if (!penum->mask[i].depth)
             continue;
@@ -644,12 +647,14 @@ gx_image3x_plane_data(gx_image_enum_common_t * info,
         /* Pull apart the source data and the mask data. */
         /* We do this in the simplest (not fastest) way for now. */
         uint bit_x = bpc * (num_components + num_chunky) * planes[pi].data_x;
-        sample_load_declare_setup(sptr, sbit, planes[0].data + (bit_x >> 3),
-                                  bit_x & 7, bpc);
-        sample_store_declare_setup(pptr, pbit, pbbyte,
-                                   penum->pixel.data, 0, bpc);
-        sample_store_declare(dptr[NUM_MASKS], dbit[NUM_MASKS],
-                             dbbyte[NUM_MASKS]);
+        const byte *sptr = planes[0].data + (bit_x >> 3);
+        int sbit = bit_x & 7;
+        byte *pptr = penum->pixel.data;
+        int pbit = 0;
+        byte pbbyte = (pbit ? (byte)(*pptr & (0xff00 >> pbit)) : 0);
+        byte *dptr[NUM_MASKS];
+        int dbit[NUM_MASKS];
+        byte dbbyte[NUM_MASKS];
         int depth[NUM_MASKS];
         int x;
 
@@ -663,8 +668,8 @@ gx_image3x_plane_data(gx_image_enum_common_t * info,
                 mask_plane[i].data = dptr[i] = penum->mask[i].data;
                 mask_plane[i].data_x = 0;
                 /* raster doesn't matter */
-                sample_store_setup(dbit[i], 0, depth[i]);
-                sample_store_preload(dbbyte[i], dptr[i], 0, depth[i]);
+                dbit[i] = 0;
+                dbbyte[i] = 0;
             } else
                 depth[i] = 0;
         pixel_plane.data = pptr;
@@ -676,19 +681,24 @@ gx_image3x_plane_data(gx_image_enum_common_t * info,
 
             for (i = 0; i < NUM_MASKS; ++i)
                 if (depth[i]) {
-                    sample_load_next12(value, sptr, sbit, bpc);
-                    sample_store_next12(value, dptr[i], dbit[i], depth[i],
-                                        dbbyte[i]);
+                    if (sample_load_next12(&value, &sptr, &sbit, bpc) < 0)
+                        return_error(gs_error_rangecheck);
+                    if (sample_store_next12(value, &dptr[i], &dbit[i], depth[i],
+                                        &dbbyte[i]) < 0)
+                        return_error(gs_error_rangecheck);
                 }
             for (i = 0; i < num_components; ++i) {
-                sample_load_next12(value, sptr, sbit, bpc);
-                sample_store_next12(value, pptr, pbit, bpc, pbbyte);
+                if (sample_load_next12(&value, &sptr, &sbit, bpc) < 0)
+                    return_error(gs_error_rangecheck);
+                if (sample_store_next12(value, &pptr, &pbit, bpc, &pbbyte) < 0)
+                    return_error(gs_error_rangecheck);
             }
         }
         for (i = 0; i < NUM_MASKS; ++i)
-            if (penum->mask[i].data)
-                sample_store_flush(dptr[i], dbit[i], depth[i], dbbyte[i]);
-        sample_store_flush(pptr, pbit, bpc, pbbyte);
+            if (penum->mask[i].data) {
+                sample_store_flush(dptr[i], dbit[i], dbbyte[i]);
+            }
+        sample_store_flush(pptr, pbit, pbbyte);
         }
     /*
      * Process the mask data first, so it will set up the mask

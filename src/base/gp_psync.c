@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,18 +9,20 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
 /* POSIX pthreads threads / semaphore / monitor implementation */
 #include "std.h"
+#include "string_.h"
 #include "malloc_.h"
+#include "unistd_.h" /* for __USE_UNIX98 */
 #include <pthread.h>
 #include "gserrors.h"
 #include "gpsync.h"
-
+#include "assert_.h"
 /*
  * Thanks to Larry Jones <larry.jones@sdrc.com> for this revision of
  * Aladdin's original code into a form that depends only on POSIX APIs.
@@ -64,12 +66,24 @@ gp_semaphore_open(gp_semaphore * sema)
     pt_semaphore_t * const sem = (pt_semaphore_t *)sema;
     int scode;
 
+#ifdef MEMENTO_SQUEEZE_BUILD
+    eprintf("Can't create semaphores when memory squeezing with forks\n");
+    Memento_bt();
+    return_error(gs_error_VMerror);
+#endif
+
     if (!sema)
         return -1;		/* semaphores are not movable */
     sem->count = 0;
     scode = pthread_mutex_init(&sem->mutex, NULL);
     if (scode == 0)
+    {
         scode = pthread_cond_init(&sem->cond, NULL);
+        if (scode)
+            pthread_mutex_destroy(&sem->mutex);
+    }
+    if (scode)
+        memset(sem, 0, sizeof(*sem));
     return SEM_ERROR_CODE(scode);
 }
 
@@ -91,6 +105,12 @@ gp_semaphore_wait(gp_semaphore * sema)
 {
     pt_semaphore_t * const sem = (pt_semaphore_t *)sema;
     int scode, scode2;
+
+#ifdef MEMENTO_SQUEEZE_BUILD
+    eprintf("Can't create mutexes when memory squeezing with forks\n");
+    Memento_bt();
+    return_error(gs_error_VMerror);
+#endif
 
     scode = pthread_mutex_lock(&sem->mutex);
     if (scode != 0)
@@ -128,13 +148,20 @@ gp_semaphore_signal(gp_semaphore * sema)
 /* Monitor supports enter/leave semantics */
 
 /*
- * We need PTHREAD_MUTEX_RECURSIVE behavior, but this isn't totally portable
- * so we implement it in a more portable fashion, keeping track of the
- * owner thread using 'pthread_self()'
+ * We need PTHREAD_MUTEX_RECURSIVE behavior, but this isn't
+ * supported on all pthread platforms, so if it's available
+ * we'll use it, otherwise we'll emulate it.
+ * GS_RECURSIVE_MUTEXATTR is set by the configure script
+ * on Unix-like machines to the attribute setting for
+ * PTHREAD_MUTEX_RECURSIVE - on linux this is usually
+ * PTHREAD_MUTEX_RECURSIVE_NP
  */
 typedef struct gp_pthread_recursive_s {
     pthread_mutex_t mutex;	/* actual mutex */
+#ifndef GS_RECURSIVE_MUTEXATTR
     pthread_t	self_id;	/* owner */
+    int lcount;
+#endif
 } gp_pthread_recursive_t;
 
 uint
@@ -148,12 +175,38 @@ gp_monitor_open(gp_monitor * mona)
 {
     pthread_mutex_t *mon;
     int scode;
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_t *attrp = NULL;
+
+#ifdef MEMENTO_SQUEEZE_BUILD
+    eprintf("Can't create monitors when memory squeezing with forks\n");
+    Memento_bt();
+    return_error(gs_error_VMerror);
+#endif
 
     if (!mona)
         return -1;		/* monitors are not movable */
-    mon = &((gp_pthread_recursive_t *)mona)->mutex;
+
+
+#ifdef GS_RECURSIVE_MUTEXATTR
+    attrp = &attr;
+    scode = pthread_mutexattr_init(attrp);
+    if (scode < 0) goto done;
+
+    scode = pthread_mutexattr_settype(attrp, GS_RECURSIVE_MUTEXATTR);
+    if (scode < 0) {
+        goto done;
+    }
+#else     
     ((gp_pthread_recursive_t *)mona)->self_id = 0;	/* Not valid unless mutex is locked */
-    scode = pthread_mutex_init(mon, NULL);
+    ((gp_pthread_recursive_t *)mona)->lcount = 0;
+#endif
+
+    mon = &((gp_pthread_recursive_t *)mona)->mutex;
+    scode = pthread_mutex_init(mon, attrp);
+    if (attrp)
+        (void)pthread_mutexattr_destroy(attrp);
+done:
     return SEM_ERROR_CODE(scode);
 }
 
@@ -173,29 +226,52 @@ gp_monitor_enter(gp_monitor * mona)
     pthread_mutex_t * const mon = (pthread_mutex_t *)mona;
     int scode;
 
+#ifdef GS_RECURSIVE_MUTEXATTR
+    scode = pthread_mutex_lock(mon);
+#else
+    assert(((gp_pthread_recursive_t *)mona)->lcount >= 0);
+
     if ((scode = pthread_mutex_trylock(mon)) == 0) {
         ((gp_pthread_recursive_t *)mona)->self_id = pthread_self();
-        return SEM_ERROR_CODE(scode);
+        ((gp_pthread_recursive_t *)mona)->lcount++;
     } else {
-        if (pthread_equal(pthread_self(),((gp_pthread_recursive_t *)mona)->self_id))
-            return 0;
+        if (pthread_equal(pthread_self(),((gp_pthread_recursive_t *)mona)->self_id)) {
+            ((gp_pthread_recursive_t *)mona)->lcount++;
+            scode = 0;
+        }
         else {
             /* we were not the owner, wait */
             scode = pthread_mutex_lock(mon);
             ((gp_pthread_recursive_t *)mona)->self_id = pthread_self();
-            return SEM_ERROR_CODE(scode);
+            ((gp_pthread_recursive_t *)mona)->lcount++;
         }
     }
+#endif
+    return SEM_ERROR_CODE(scode);
 }
 
 int
 gp_monitor_leave(gp_monitor * mona)
 {
     pthread_mutex_t * const mon = (pthread_mutex_t *)mona;
-    int scode;
+    int scode = 0;
 
+#ifdef GS_RECURSIVE_MUTEXATTR
     scode = pthread_mutex_unlock(mon);
-    ((gp_pthread_recursive_t *)mona)->self_id = 0;	/* Not valid unless mutex is locked */
+#else
+    assert(((gp_pthread_recursive_t *)mona)->lcount > 0 && ((gp_pthread_recursive_t *)mona)->self_id != 0);
+
+    if (pthread_equal(pthread_self(),((gp_pthread_recursive_t *)mona)->self_id)) {
+      if ((--((gp_pthread_recursive_t *)mona)->lcount) == 0) {
+          ((gp_pthread_recursive_t *)mona)->self_id = 0;	/* Not valid unless mutex is locked */
+          scode = pthread_mutex_unlock(mon);
+
+      }
+    }
+    else {
+        scode = -1 /* should be EPERM */;
+    }
+#endif
     return SEM_ERROR_CODE(scode);
 }
 
@@ -232,6 +308,12 @@ gp_create_thread(gp_thread_creation_callback_t proc, void *proc_data)
     pthread_t ignore_thread;
     pthread_attr_t attr;
     int code;
+
+#ifdef MEMENTO_SQUEEZE_BUILD
+    eprintf("Can't create threads when memory squeezing with forks\n");
+    Memento_bt();
+    return_error(gs_error_VMerror);
+#endif
 
     if (!closure)
         return_error(gs_error_VMerror);
@@ -280,4 +362,30 @@ void gp_thread_finish(gp_thread_id thread)
     if (thread == NULL)
         return;
     pthread_join((pthread_t)thread, NULL);
+}
+
+void (gp_monitor_label)(gp_monitor * mona, const char *name)
+{
+    pthread_mutex_t * const mon = &((gp_pthread_recursive_t *)mona)->mutex;
+
+    (void)mon;
+    (void)name;
+    Bobbin_label_mutex(mon, name);
+}
+
+void (gp_semaphore_label)(gp_semaphore * sema, const char *name)
+{
+    pt_semaphore_t * const sem = (pt_semaphore_t *)sema;
+
+    (void)sem;
+    (void)name;
+    Bobbin_label_mutex(&sem->mutex, name);
+    Bobbin_label_cond(&sem->cond, name);
+}
+
+void (gp_thread_label)(gp_thread_id thread, const char *name)
+{
+    (void)thread;
+    (void)name;
+    Bobbin_label_thread((pthread_t)thread, name);
 }

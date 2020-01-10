@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -55,7 +55,7 @@ RELOC_PTRS_END
 /* Default CRD procedures. */
 
 static int
-tpqr_identity(int index, floatp in, const gs_cie_wbsd * pwbsd,
+tpqr_identity(int index, double in, const gs_cie_wbsd * pwbsd,
               gs_cie_render * pcrd, float *out)
 {
     *out = in;
@@ -63,7 +63,7 @@ tpqr_identity(int index, floatp in, const gs_cie_wbsd * pwbsd,
 }
 
 static int
-tpqr_from_cache(int index, floatp in, const gs_cie_wbsd * pwbsd,
+tpqr_from_cache(int index, double in, const gs_cie_wbsd * pwbsd,
                 gs_cie_render * pcrd, float *out)
 {
     /*
@@ -76,7 +76,7 @@ tpqr_from_cache(int index, floatp in, const gs_cie_wbsd * pwbsd,
 }
 
 static float
-render_identity(floatp in, const gs_cie_render * pcrd)
+render_identity(double in, const gs_cie_render * pcrd)
 {
     return in;
 }
@@ -89,32 +89,32 @@ render_table_identity(byte in, const gs_cie_render * pcrd)
 /* Transformation procedures that just consult the cache. */
 
 static float
-EncodeABC_cached_A(floatp in, const gs_cie_render * pcrd)
+EncodeABC_cached_A(double in, const gs_cie_render * pcrd)
 {
     return gs_cie_cached_value(in, &pcrd->caches.EncodeABC[0].floats);
 }
 static float
-EncodeABC_cached_B(floatp in, const gs_cie_render * pcrd)
+EncodeABC_cached_B(double in, const gs_cie_render * pcrd)
 {
     return gs_cie_cached_value(in, &pcrd->caches.EncodeABC[1].floats);
 }
 static float
-EncodeABC_cached_C(floatp in, const gs_cie_render * pcrd)
+EncodeABC_cached_C(double in, const gs_cie_render * pcrd)
 {
     return gs_cie_cached_value(in, &pcrd->caches.EncodeABC[2].floats);
 }
 static float
-EncodeLMN_cached_L(floatp in, const gs_cie_render * pcrd)
+EncodeLMN_cached_L(double in, const gs_cie_render * pcrd)
 {
     return gs_cie_cached_value(in, &pcrd->caches.EncodeLMN.caches[0].floats);
 }
 static float
-EncodeLMN_cached_M(floatp in, const gs_cie_render * pcrd)
+EncodeLMN_cached_M(double in, const gs_cie_render * pcrd)
 {
     return gs_cie_cached_value(in, &pcrd->caches.EncodeLMN.caches[1].floats);
 }
 static float
-EncodeLMN_cached_N(floatp in, const gs_cie_render * pcrd)
+EncodeLMN_cached_N(double in, const gs_cie_render * pcrd)
 {
     return gs_cie_cached_value(in, &pcrd->caches.EncodeLMN.caches[2].floats);
 }
@@ -184,7 +184,7 @@ tpqr_do_lookup(gs_cie_render *pcrd, const gx_device *dev_proto)
     return code;
 }
 static int
-tpqr_lookup(int index, floatp in, const gs_cie_wbsd * pwbsd,
+tpqr_lookup(int index, double in, const gs_cie_wbsd * pwbsd,
             gs_cie_render * pcrd, float *out)
 {
     const gx_device *const *dev_list;
@@ -262,6 +262,29 @@ gs_cie_render1_build(gs_cie_render ** ppcrd, gs_memory_t * mem,
     return 0;
 }
 
+static bool render_proc3_equal(const gs_cie_render_proc3 *p1, const gs_cie_render_proc3 *p2)
+{
+    int k;
+
+    for (k = 0; k < 3; k++) {
+        if (p1->procs[k] != p2->procs[k])
+            return false;
+    }
+    return true;
+}
+
+static bool render_table_procs_equal(const gs_cie_render_table_procs *p1,
+    const gs_cie_render_table_procs *p2)
+{
+    int k;
+
+    for (k = 0; k < 4; k++) {
+        if (p1->procs[k] != p2->procs[k])
+            return false;
+    }
+    return true;
+}
+
 /*
  * Initialize a CRD given all of the relevant parameters.
  * Any of the pointers except WhitePoint may be zero, meaning
@@ -305,28 +328,20 @@ gs_cie_render1_init_from(const gs_memory_t *mem,
         *(TransformPQR ? TransformPQR : &TransformPQR_default);
     pcrd->MatrixLMN = *(MatrixLMN ? MatrixLMN : &Matrix3_default);
     pcrd->EncodeLMN = *(EncodeLMN ? EncodeLMN : &Encode_default);
-    if (pfrom_crd &&
-        !memcmp(&pcrd->EncodeLMN, &EncodeLMN_from_cache,
-                sizeof(EncodeLMN_from_cache))
-        )
+    if (pfrom_crd && render_proc3_equal(&pcrd->EncodeLMN, &EncodeLMN_from_cache))
         memcpy(&pcrd->caches.EncodeLMN, &pfrom_crd->caches.EncodeLMN,
                sizeof(pcrd->caches.EncodeLMN));
     pcrd->RangeLMN = *(RangeLMN ? RangeLMN : &Range3_default);
     pcrd->MatrixABC = *(MatrixABC ? MatrixABC : &Matrix3_default);
     pcrd->EncodeABC = *(EncodeABC ? EncodeABC : &Encode_default);
-    if (pfrom_crd &&
-        !memcmp(&pcrd->EncodeABC, &EncodeABC_from_cache,
-                sizeof(EncodeABC_from_cache))
-        )
+    if (pfrom_crd && render_proc3_equal(&pcrd->EncodeABC, &EncodeABC_from_cache))
         memcpy(pcrd->caches.EncodeABC, pfrom_crd->caches.EncodeABC,
                sizeof(pcrd->caches.EncodeABC));
     pcrd->RangeABC = *(RangeABC ? RangeABC : &Range3_default);
     if (RenderTable) {
         pcrd->RenderTable = *RenderTable;
-        if (pfrom_crd &&
-            !memcmp(&pcrd->RenderTable.T, &RenderTableT_from_cache,
-                    sizeof(RenderTableT_from_cache))
-            ) {
+        if (pfrom_crd && render_table_procs_equal(&pcrd->RenderTable.T,
+            &RenderTableT_from_cache)) {
             memcpy(pcrd->caches.RenderTableT, pfrom_crd->caches.RenderTableT,
                    sizeof(pcrd->caches.RenderTableT));
             pcrd->caches.RenderTableT_is_identity =

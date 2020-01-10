@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -24,8 +24,8 @@
 
 /* Forward references */
 static int common_transform(i_ctx_t *,
-                int (*)(gs_state *, floatp, floatp, gs_point *),
-                int (*)(floatp, floatp, const gs_matrix *, gs_point *));
+                int (*)(gs_gstate *, double, double, gs_point *),
+                int (*)(double, double, const gs_matrix *, gs_point *));
 
 /* - initmatrix - */
 static int
@@ -265,8 +265,8 @@ zidtransform(i_ctx_t *i_ctx_p)
 /* Common logic for [i][d]transform */
 static int
 common_transform(i_ctx_t *i_ctx_p,
-        int (*ptproc)(gs_state *, floatp, floatp, gs_point *),
-        int (*matproc)(floatp, floatp, const gs_matrix *, gs_point *))
+        int (*ptproc)(gs_gstate *, double, double, gs_point *),
+        int (*matproc)(double, double, const gs_matrix *, gs_point *))
 {
     os_ptr op = osp;
     double opxy[2];
@@ -279,7 +279,7 @@ common_transform(i_ctx_t *i_ctx_p,
             opxy[1] = op->value.realval;
             break;
         case t_integer:
-            opxy[1] = op->value.intval;
+            opxy[1] = (double)op->value.intval;
             break;
         case t_array:		/* might be a matrix */
         case t_shortarray:
@@ -306,7 +306,7 @@ common_transform(i_ctx_t *i_ctx_p,
             opxy[0] = (op - 1)->value.realval;
             break;
         case t_integer:
-            opxy[0] = (op - 1)->value.intval;
+            opxy[0] = (double)(op - 1)->value.intval;
             break;
         default:
             return_op_typecheck(op - 1);
@@ -346,7 +346,7 @@ zbbox_transform(i_ctx_t *i_ctx_p)
     gs_matrix m;
     float bbox[4];
     gs_point aa, az, za, zz;
-    floatp temp;
+    double temp;
     int code;
 
     if ((code = read_matrix(imemory, op, &m)) < 0)
@@ -356,7 +356,7 @@ zbbox_transform(i_ctx_t *i_ctx_p)
         return_op_typecheck(op - 1);
     check_read(op[-1]);
     if (r_size(op - 1) != 4)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     if ((code = process_float_array(imemory, op - 1, 4, bbox) < 0))
         return code;
 
@@ -391,6 +391,82 @@ zbbox_transform(i_ctx_t *i_ctx_p)
     return 0;
 }
 
+/* <matrix> .currenttextlinematrix <matrix> */
+static int
+zcurrenttextlinematrix(i_ctx_t *i_ctx_p)
+{
+    os_ptr op = osp;
+    gs_matrix mat;
+
+    check_op(1);
+    if (!r_has_type(op, t_array))
+        return_error(gs_error_typecheck);
+
+    gs_gettextlinematrix(igs, &mat);
+    return write_matrix(op, &mat);
+}
+
+static int
+zsettextlinematrix(i_ctx_t *i_ctx_p)
+{
+    os_ptr op = osp;
+    int code;
+
+    check_op(1);
+    if (r_has_type(op, t_array)) {
+        gs_matrix mat;
+
+        code = read_matrix(imemory, op, &mat);
+        if (code < 0)
+            return code;
+        code = gs_settextlinematrix(igs, &mat);
+    } else
+        code = gs_error_typecheck;
+
+    if (code < 0)
+        return code;
+    pop(1);
+    return 0;
+}
+
+/* <matrix> .currenttextmatrix <matrix> */
+static int
+zcurrenttextmatrix(i_ctx_t *i_ctx_p)
+{
+    os_ptr op = osp;
+    gs_matrix mat;
+
+    check_op(1);
+    if (!r_has_type(op, t_array))
+        return_error(gs_error_typecheck);
+
+    gs_gettextmatrix(igs, &mat);
+    return write_matrix(op, &mat);
+}
+
+static int
+zsettextmatrix(i_ctx_t *i_ctx_p)
+{
+    os_ptr op = osp;
+    int code;
+
+    check_op(1);
+    if (r_has_type(op, t_array)) {
+        gs_matrix mat;
+
+        code = read_matrix(imemory, op, &mat);
+        if (code < 0)
+            return code;
+        code = gs_settextmatrix(igs, &mat);
+    } else
+        code = gs_error_typecheck;
+
+    if (code < 0)
+        return code;
+    pop(1);
+    return 0;
+}
+
 /* ------ Initialization procedure ------ */
 
 const op_def zmatrix_op_defs[] =
@@ -416,5 +492,9 @@ const op_def zmatrix_op_defs[] =
 const op_def zmatrix2_op_defs[] =
 {
     {"2.bbox_transform", zbbox_transform},
+    {"1.currenttextlinematrix", zcurrenttextlinematrix},
+    {"1.settextlinematrix", zsettextlinematrix},
+    {"1.currenttextmatrix", zcurrenttextmatrix},
+    {"1.settextmatrix", zsettextmatrix},
     op_def_end(0)
 };

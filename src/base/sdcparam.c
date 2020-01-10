@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -38,6 +38,7 @@ static const gs_param_item_t jsd_param_items[] =
 {
     dctp("Picky", gs_param_type_int, jpeg_stream_data, Picky),
     dctp("Relax", gs_param_type_int, jpeg_stream_data, Relax),
+    dctp("Height", gs_param_type_int, jpeg_stream_data, Height),
     gs_param_item_end
 };
 
@@ -86,7 +87,7 @@ static const byte inverse_natural_order[DCTSIZE2] =
 
 static int
 quant_param_string(gs_param_string * pstr, int count, const UINT16 * pvals,
-                   floatp QFactor, gs_memory_t * mem)
+                   double QFactor, gs_memory_t * mem)
 {
     byte *data;
     int code = 0;
@@ -96,7 +97,7 @@ quant_param_string(gs_param_string * pstr, int count, const UINT16 * pvals,
     if (data == 0)
         return_error(gs_error_VMerror);
     for (i = 0; i < count; ++i) {
-        floatp val = pvals[jpeg_inverse_order(i)] / QFactor;
+        double val = pvals[jpeg_inverse_order(i)] / QFactor;
 
         data[i] =
             (val < 1 ? (code = 1) : val > 255 ? (code = 255) : (byte) val);
@@ -109,7 +110,7 @@ quant_param_string(gs_param_string * pstr, int count, const UINT16 * pvals,
 
 static int
 quant_param_array(gs_param_float_array * pfa, int count, const UINT16 * pvals,
-                  floatp QFactor, gs_memory_t * mem)
+                  double QFactor, gs_memory_t * mem)
 {
     float *data;
     int i;
@@ -140,7 +141,7 @@ s_DCT_get_quantization_tables(gs_param_list * plist,
     JQUANT_TBL **table_ptrs;
     JQUANT_TBL **default_table_ptrs;
     gs_param_array quant_tables;
-    floatp QFactor = pdct->QFactor;
+    double QFactor = pdct->QFactor;
     int i;
     int code;
 
@@ -200,7 +201,7 @@ s_DCT_get_quantization_tables(gs_param_list * plist,
         gs_param_string str;
         gs_param_float_array fa;
 
-        sprintf(key, "%d", i);
+        gs_sprintf(key, "%d", i);
         if (QFactor == 1.0) {
             code = quant_param_string(&str, DCTSIZE2,
                             table_ptrs[comp_info[i].quant_tbl_no]->quantval,
@@ -261,7 +262,6 @@ s_DCT_get_huffman_tables(gs_param_list * plist,
     gs_param_string *huff_data;
     gs_param_string_array hta;
     int num_in_tables;
-    jpeg_component_info *comp_info;
     JHUFF_TBL **dc_table_ptrs;
     JHUFF_TBL **ac_table_ptrs;
     int i;
@@ -271,7 +271,6 @@ s_DCT_get_huffman_tables(gs_param_list * plist,
         dc_table_ptrs = pdct->data.compress->cinfo.dc_huff_tbl_ptrs;
         ac_table_ptrs = pdct->data.compress->cinfo.ac_huff_tbl_ptrs;
         num_in_tables = pdct->data.compress->cinfo.input_components * 2;
-        comp_info = pdct->data.compress->cinfo.comp_info;
     } else {
         dc_table_ptrs = pdct->data.decompress->dinfo.dc_huff_tbl_ptrs;
         ac_table_ptrs = pdct->data.decompress->dinfo.ac_huff_tbl_ptrs;
@@ -279,7 +278,6 @@ s_DCT_get_huffman_tables(gs_param_list * plist,
             if (dc_table_ptrs[i - 1] || ac_table_ptrs[i - 1])
                 break;
         num_in_tables = i * 2;
-        comp_info = NULL;	/* do not set for decompress case */
     }
 /****** byte_array IS WRONG ******/
     huff_data = (gs_param_string *)
@@ -333,34 +331,52 @@ s_DCT_byte_params(gs_param_list * plist, gs_param_name key, int start,
     int i;
     gs_param_string bytes;
     gs_param_float_array floats;
+    gs_param_int_array ints;
     int code = param_read_string(plist, key, &bytes);
 
     switch (code) {
         case 0:
             if (bytes.size < start + count) {
                 code = gs_note_error(gs_error_rangecheck);
-                break;
+            } else {
+                for (i = 0; i < count; ++i)
+                    pvals[i] = (UINT8) bytes.data[start + i];
+                code = 0;
             }
-            for (i = 0; i < count; ++i)
-                pvals[i] = (UINT8) bytes.data[start + i];
-            return 0;
+            break;
         default:		/* might be a float array */
-            code = param_read_float_array(plist, key, &floats);
+            code = param_read_int_array(plist, key, &ints);
             if (!code) {
-                if (floats.size < start + count) {
+                if (ints.size < start + count) {
                     code = gs_note_error(gs_error_rangecheck);
-                    break;
-                }
-                for (i = 0; i < count; ++i) {
-                    float v = floats.data[start + i];
-
-                    if (v < 0 || v > 255) {
-                        code = gs_note_error(gs_error_rangecheck);
-                        break;
+                } else {
+                    for (i = 0; i < count; ++i) {
+                        pvals[i] = ints.data[start + i];
                     }
-                    pvals[i] = (UINT8) (v + 0.5);
+                    code = 0;
                 }
+            } else {
+                code = param_read_float_array(plist, key, &floats);
+                if (!code) {
+                    if (floats.size < start + count) {
+                        code = gs_note_error(gs_error_rangecheck);
+                    } else {
+                        for (i = 0; i < count; ++i) {
+                            float v = floats.data[start + i];
+
+                            if (v < 0 || v > 255) {
+                                code = gs_note_error(gs_error_rangecheck);
+                                break;
+                            }
+                            pvals[i] = (UINT8) (v + 0.5);
+                        }
+                    }
+                    if (code >= 0)
+                        code = 0;
+                } else
+                    code = 1;
             }
+            break;
     }
     if (code < 0)
         param_signal_error(plist, key, code);
@@ -370,7 +386,7 @@ s_DCT_byte_params(gs_param_list * plist, gs_param_name key, int start,
 /* Get N quantization values from an array or a string. */
 static int
 quant_params(gs_param_list * plist, gs_param_name key, int count,
-             UINT16 * pvals, floatp QFactor)
+             UINT16 * pvals, double QFactor)
 {
     int i;
     gs_param_string bytes;
@@ -474,7 +490,7 @@ s_DCT_put_quantization_tables(gs_param_list * plist, stream_DCT_state * pdct,
         char istr[5];		/* i converted to string key */
         UINT16 values[DCTSIZE2];
 
-        sprintf(istr, "%d", i);
+        gs_sprintf(istr, "%d", i);
         code = quant_params(quant_tables.list, istr, DCTSIZE2, values,
                             pdct->QFactor);
         if (code < 0)
@@ -566,7 +582,7 @@ s_DCT_put_huffman_tables(gs_param_list * plist, stream_DCT_state * pdct,
         UINT8 counts[16], values[256];
 
         /* Collect the Huffman parameters. */
-        sprintf(istr, "%d", i);
+        gs_sprintf(istr, "%d", i);
         code = s_DCT_byte_params(huff_tables.list, istr, 0, 16, counts);
         if (code < 0)
             return code;

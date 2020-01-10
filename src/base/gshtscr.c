@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -178,7 +178,7 @@ gs_screen_enum_alloc(gs_memory_t * mem, client_name_t cname)
 
 /* Set up for halftone sampling. */
 int
-gs_screen_init(gs_screen_enum * penum, gs_state * pgs,
+gs_screen_init(gs_screen_enum * penum, gs_gstate * pgs,
                gs_screen_halftone * phsp)
 {
     gs_lib_ctx_t *ctx = gs_lib_ctx_get_interp_instance(pgs->memory);
@@ -187,7 +187,7 @@ gs_screen_init(gs_screen_enum * penum, gs_state * pgs,
                                    ctx->screen_accurate_screens);
 }
 int
-gs_screen_init_memory(gs_screen_enum * penum, gs_state * pgs,
+gs_screen_init_memory(gs_screen_enum * penum, gs_gstate * pgs,
                 gs_screen_halftone * phsp, bool accurate, gs_memory_t * mem)
 {
     int code =
@@ -232,7 +232,7 @@ gs_screen_order_alloc(gx_ht_order *porder, gs_memory_t *mem)
     return code;
 }
 int
-gs_screen_order_init_memory(gx_ht_order * porder, const gs_state * pgs,
+gs_screen_order_init_memory(gx_ht_order * porder, const gs_gstate * pgs,
                             gs_screen_halftone * phsp, bool accurate,
                             gs_memory_t * mem)
 {
@@ -358,11 +358,18 @@ pick_cell_size(gs_screen_halftone * ph, const gs_matrix * pmat, ulong max_size,
         p.R = p.R1 = rt;
         for (p.M = m0 + 1; p.M >= m0; p.M--)
             for (p.N = n0 + 1; p.N >= n0; p.N--) {
-                long raster, wt, wt_size;
+                long raster, wt;
+#ifdef DEBUG
+                long wt_size;
+#endif
                 double fr, ar, ft, at, f_diff, a_diff, f_err, a_err;
 
                 p.M1 = (int)floor(p.M / T + 0.5);
                 p.N1 = (int)floor(p.N * T + 0.5);
+
+                if (p.M1 == 0 && p.N1 == 0)
+                    return_error(gs_error_rangecheck);
+
                 gx_compute_cell_values(&p);
                 if_debug3('h', "[h]trying m=%d, n=%d, r=%d\n", p.M, p.N, rt);
                 wt = p.W;
@@ -373,7 +380,9 @@ pick_cell_size(gs_screen_halftone * ph, const gs_matrix * pmat, ulong max_size,
                 raster = bitmap_raster(wt);
                 if (raster > max_size / p.D || raster > max_long / wt)
                     continue;
+#ifdef DEBUG
                 wt_size = raster * wt;
+#endif
 
                 /* Compute the corresponding values of F and A. */
 
@@ -466,7 +475,7 @@ pick_cell_size(gs_screen_halftone * ph, const gs_matrix * pmat, ulong max_size,
 /* This is the second half of gs_screen_init_accurate. */
 int
 gs_screen_enum_init_memory(gs_screen_enum * penum, const gx_ht_order * porder,
-                           gs_state * pgs, const gs_screen_halftone * phsp,
+                           gs_gstate * pgs, const gs_screen_halftone * phsp,
                            gs_memory_t * mem)
 {
     penum->pgs = pgs;           /* ensure clean for GC */
@@ -569,7 +578,7 @@ gs_screen_currentpoint(gs_screen_enum * penum, gs_point * ppt)
 
 /* Record next halftone sample */
 int
-gs_screen_next(gs_screen_enum * penum, floatp value)
+gs_screen_next(gs_screen_enum * penum, double value)
 {
     ht_sample_t sample;
     int width = penum->order.width;

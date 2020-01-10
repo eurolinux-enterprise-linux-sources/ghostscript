@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -62,7 +62,7 @@ typedef struct calc_value_s {
 
 /* Store a float. */
 static inline void
-store_float(calc_value_t *vsp, floatp f)
+store_float(calc_value_t *vsp, double f)
 {
     vsp->value.f = f;
     vsp->type = CVT_FLOAT;
@@ -221,6 +221,9 @@ fn_PtCr_evaluate(const gs_function_t *pfn_common, const float *in, float *out)
         OP_NONE(PtCr_repeat_end)	/* repeat_end */
     };
 
+    memset(repeat_count, 0x00, MAX_PSC_FUNCTION_NESTING * sizeof(int));
+    memset(repeat_proc_size, 0x00, MAX_PSC_FUNCTION_NESTING * sizeof(int));
+
     vstack[-1].type = CVT_NONE;  /* for type dispatch in empty stack case */
     vstack[0].type = CVT_NONE;	/* catch underflow */
     for (i = 0; i < pfn->params.m; ++i)
@@ -242,12 +245,13 @@ fn_PtCr_evaluate(const gs_function_t *pfn_common, const float *in, float *out)
             /* Coerce and re-dispatch */
 
         case PtCr_int_to_float:
-            store_float(vsp, (floatp)vsp->value.i);
+            store_float(vsp, (double)vsp->value.i);
             --p; goto sw;
         case PtCr_int2_to_float:
-            store_float(vsp, (floatp)vsp->value.i);
+            store_float(vsp, (double)vsp->value.i);
+            /* fall through */
         case PtCr_2nd_int_to_float:
-            store_float(vsp - 1, (floatp)vsp[-1].value.i);
+            store_float(vsp - 1, (double)vsp[-1].value.i);
             --p; goto sw;
 
             /* Arithmetic operators */
@@ -351,7 +355,7 @@ fn_PtCr_evaluate(const gs_function_t *pfn_common, const float *in, float *out)
         case PtCr_neg_int:
         neg_int:
             if (vsp->value.i == min_int)
-                store_float(vsp, (floatp)vsp->value.i); /* =self negated */
+                store_float(vsp, (double)vsp->value.i); /* =self negated */
             else
                 vsp->value.i = -vsp->value.i;
             continue;
@@ -535,6 +539,9 @@ fn_PtCr_evaluate(const gs_function_t *pfn_common, const float *in, float *out)
             p += 3 + (p[0] <<8) + p[1];		    /* advance just past the repeat_end */
             /* falls through */
         case PtCr_repeat_end:
+            if (repeat_nesting_level < 0)
+                return_error(gs_error_rangecheck);
+
             if ((repeat_count[repeat_nesting_level])-- <= 0)
                 repeat_nesting_level--;
             else

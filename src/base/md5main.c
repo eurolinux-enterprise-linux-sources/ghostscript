@@ -1,5 +1,5 @@
 /*
-  Copyright (C) 2002-2012 Artifex Software, Inc.
+  Copyright (C) 2002-2018 Artifex Software, Inc.
   All rights reserved.
 
   This software is provided 'as-is', without any express or implied
@@ -42,7 +42,7 @@
   2002-04-13 lpd Splits off main program into a separate file, md5main.c.
  */
 
-#include "md5.h"
+#include "gsmd5.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -87,7 +87,7 @@ do_test(void)
         gs_md5_append(&state, (const gs_md5_byte_t *)test[i], strlen(test[i]));
         gs_md5_finish(&state, digest);
         for (di = 0; di < 16; ++di)
-            sprintf(hex_output + di * 2, "%02x", digest[di]);
+            gs_sprintf(hex_output + di * 2, "%02x", digest[di]);
         if (strcmp(hex_output, test[i + 1])) {
             printf("MD5 (\"%s\") = ", test[i]);
             puts(hex_output);

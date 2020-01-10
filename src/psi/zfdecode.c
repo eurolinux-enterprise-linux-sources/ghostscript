@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -142,7 +142,7 @@ filter_read_predictor(i_ctx_t *i_ctx_p, int npop,
                 code = zpp_setup(op, &pps);
                 break;
             default:
-                return_error(e_rangecheck);
+                return_error(gs_error_rangecheck);
         }
         if (code < 0)
             return code;
@@ -193,6 +193,7 @@ zlz_setup(os_ptr op, stream_LZW_state * plzs)
     int code;
     const ref *dop;
 
+    s_LZW_set_defaults_inline(plzs);
     if (r_has_type(op, t_dictionary)) {
         check_dict_read(*op);
         dop = op;
@@ -264,7 +265,7 @@ zpd_setup(os_ptr op, stream_PDiff_state * ppds)
         (code = dict_int_param(op, "Columns", 1, max_int, 1,
                                &ppds->Columns)) < 0
         )
-        return (code < 0 ? code : gs_note_error(e_rangecheck));
+        return (code < 0 ? code : gs_note_error(gs_error_rangecheck));
     ppds->BitsPerComponent = bpc;
     return 0;
 }
@@ -315,7 +316,7 @@ zpp_setup(os_ptr op, stream_PNGP_state * ppps)
         (code = dict_int_param(op, "Predictor", 10, 15, 15,
                                &ppps->Predictor)) < 0
         )
-        return (code < 0 ? code : gs_note_error(e_rangecheck));
+        return (code < 0 ? code : gs_note_error(gs_error_rangecheck));
     ppps->BitsPerComponent = bpc;
     return 0;
 }

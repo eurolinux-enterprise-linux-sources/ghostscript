@@ -1,670 +1,493 @@
-%define gs_ver 9.07
-%define gs_dot_ver 9.07
-%{expand: %%define build_with_freetype %{?_with_freetype:1}%{!?_with_freetype:0}}
-Summary: A PostScript interpreter and renderer
-Name: ghostscript
-Version: %{gs_ver}
+#
+# Important notes regarding the package:
+# ======================================
+# 1) This package has GUI versions (*-x11, *-gtk), but we are not shipping the
+#    desktop files, because the GUI versions are used for displaying of files
+#    invoked from command line. The displaying GUI does not contain any buttons
+#    or other means for user interaction. It can't even open a different file
+#    from the GUI version. Therefore it does not make sense to ship desktop
+#    files...
 
-Release: 31%{?dist}.11
+# === GLOBAL MACROS ===========================================================
 
-# Included CMap data is Redistributable, no modification permitted,
-# see http://bugzilla.redhat.com/487510
-License: AGPLv3+ and Redistributable, no modification permitted
-URL: http://www.ghostscript.com/
-Group: Applications/Publishing
-Source0: ghostscript-%{gs_ver}-cleaned.tar.bz2
-# ghostscript contains a jpegxr directory containing code we cannot
-# ship due to licensing concerns. Therefore we use this script to
-# remove that directory before shipping it. Download the upstream
-# tarball and invoke this script while in the tarball's directory:
-Source1: generate-tarball.sh
-Source2: CIDFnmap
-Source4: cidfmap
+# According to Fedora Package Guidelines, it is advised that packages that can
+# process untrusted input are build with position-independent code (PIC).
+#
+# Koji should override the compilation flags and add the -fPIC or -fPIE flags by
+# default. This is here just in case this wouldn't happen for some reason.
+# For more info: https://fedoraproject.org/wiki/Packaging:Guidelines#PIE
+%global _hardened_build 1
 
-Patch1: ghostscript-multilib.patch
-Patch2: ghostscript-scripts.patch
-Patch3: ghostscript-noopt.patch
-Patch4: ghostscript-runlibfileifexists.patch
-Patch5: ghostscript-icc-missing-check.patch
-Patch6: ghostscript-cups-filters.patch
-Patch7: ghostscript-Fontmap.local.patch
-Patch8: ghostscript-iccprofiles-initdir.patch
-Patch9: ghostscript-gdevcups-debug-uninit.patch
-Patch10: ghostscript-gs_sprintf.patch
-Patch11: ghostscript-pdfwrite-segfault.patch
-Patch12: ghostscript-strange-fonts.patch
-Patch13: ghostscript-wrf-snprintf.patch
-Patch14: ghostscript-cups-colord.patch
-Patch15: ghostscript-zfapi-crash.patch
-Patch16: ghostscript-gstoraster-costs.patch
-Patch17: ghostscript-trio-g.patch
-Patch18: ghostscript-crash.patch
-Patch19: ghostscript-import-lcms2-2.6-changes.patch
-Patch20: ghostscript-hanging-in-convert.patch
-Patch21: ghostscript-check-icc-profile-errors.patch
-Patch22: ghostscript-cups-icc-profile.patch
-Patch28: ghostscript-handle-glyphdirectory-array.patch
-Patch29: ghostscript-fix-locksafe.patch
-Patch30: ghostscript-fix-infinite-for-loop.patch
-Patch33: ghostscript-cope-with-negative-run-length.patch
-Patch34: ghostscript-raise-VMThreshold-limit.patch
-Patch35: ghostscript-fix-pxl-devices-printing.patch
-Patch36: ghostscript-more-than-11-elements-in-array.patch
-Patch41: ghostscript-remove-as-many-non-standard-operators-as-possible.patch
-Patch47: ghostscript-restore-flushpage.patch
-Patch57: ghostscript-pdf2ps-reports-error-when-reading-stdin.patch
-Patch66: ghostscript-fix-DSC-comment-parsing.patch
-Patch69: ghostscript-pdf2dsc-regression.patch
+# By redefining the '_docdir_fmt' macro we override the default location of
+# documentation or license files. Instead of them being located in 'libgs'
+# folder, they are now located in 'ghostscript'.
+%global _docdir_fmt     %{name}
 
-# Security patches:
-# -----------------
-Patch23: ghostscript-cve-2013-5653.patch
-Patch24: ghostscript-cve-2016-7977.patch
-Patch25: ghostscript-cve-2016-7978.patch
-Patch26: ghostscript-cve-2016-7979.patch
-Patch27: ghostscript-cve-2016-8602.patch
-Patch31: ghostscript-cve-2017-7207.patch
-Patch32: ghostscript-cve-2017-8291.patch
-Patch37: ghostscript-cve-2018-10194.patch
-Patch38: ghostscript-cve-2018-16509.patch
-Patch39: ghostscript-cve-2018-15910.patch
-Patch40: ghostscript-cve-2018-16542.patch
-Patch42: ghostscript-cve-2018-16511.patch
-Patch43: ghostscript-cve-2018-16539.patch
-Patch44: ghostscript-cve-2018-15908.patch
-Patch45: ghostscript-cve-2018-15909.patch
-Patch46: ghostscript-cve-2018-16863.patch
-Patch48: ghostscript-cve-2018-15911.patch
-Patch49: ghostscript-cve-2018-16802.patch
-Patch50: ghostscript-cve-2018-19409.patch
-Patch51: ghostscript-cve-2018-16541.patch
-Patch52: ghostscript-cve-2018-17183.patch
-Patch53: ghostscript-cve-2018-18073.patch
-Patch54: ghostscript-cve-2018-17961.patch
-Patch55: ghostscript-cve-2018-18284.patch
-Patch56: ghostscript-cve-2018-19134.patch
-Patch58: ghostscript-cve-2018-16540.patch
-Patch59: ghostscript-cve-2018-19475.patch
-Patch60: ghostscript-cve-2018-19476.patch
-Patch61: ghostscript-cve-2018-19477.patch
-Patch62: ghostscript-cve-2019-3839-part1.patch
-Patch63: ghostscript-cve-2019-6116.patch
-Patch64: ghostscript-cve-2019-6116-downstream.patch
-Patch65: ghostscript-cve-2019-3839-part2.patch
-Patch67: ghostscript-cve-2019-3835.patch
-Patch68: ghostscript-cve-2019-3838.patch
+# NOTE: Artifex is using Github only as a mirror for providing the source
+#       tarballs, and their release tags/branches do not use the dot in version
+#       tag. This makes obtaining the current version harder, and might prevent
+#       automatic builds of new releases...
+%global version_short   %(echo "%{version}" | tr -d '.')
 
+# =============================================================================
+
+Name:             ghostscript
+Summary:          Interpreter for PostScript language & PDF
+Version:          9.25
+Release:          2%{?dist}
+
+License:          AGPLv3+
+
+URL:              https://ghostscript.com/
+Source0:          https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs%{version_short}/ghostscript-%{version}.tar.xz
+Source1:          ghostscript-cups-9.07.tar.xz
+
+# NOTE: We're not explicitly requiring 'dvips' utility needed for 'dvipdf'
+#       script, because it would pull a lot of 'texlive-*' to user as a result.
+#
+#       If user needs to use 'dvipdf', then they will need to install the
+Requires:         libgs%{?_isa} = %{version}-%{release}
+
+# Auxiliary build requirements:
+BuildRequires:    autoconf
+BuildRequires:    automake
+BuildRequires:    libtool
+BuildRequires:    gcc
+BuildRequires:    git
+
+# Already packaged Resources -- needed to build package correctly:
+BuildRequires:    adobe-mappings-cmap-devel
+BuildRequires:    adobe-mappings-pdf-devel
+BuildRequires:    urw-base35-fonts-devel
+
+# Already packaged software -- needed for debundling of Ghostscript:
+BuildRequires:    cups-devel
+BuildRequires:    dbus-devel
+BuildRequires:    fontconfig-devel
+BuildRequires:    freetype-devel
+BuildRequires:    lcms2-devel
+BuildRequires:    libidn-devel
+BuildRequires:    libjpeg-turbo-devel
+BuildRequires:    libpng-devel
+BuildRequires:    libpaper-devel
+BuildRequires:    libtiff-devel
+BuildRequires:    openjpeg2-devel
+BuildRequires:    zlib-devel
+
+# Enabling the GUI possibilities of Ghostscript:
+BuildRequires:    gtk3-devel
+BuildRequires:    libXt-devel
+
+# =============================================================================
+
+# NOTE: 'autosetup' macro (below) uses 'git' for applying the patches:
+#       ->> All the patches should be provided in 'git format-patch' format.
+#       ->> Auxiliary repository will be created during 'fedpkg prep', you
+#           can see all the applied patches there via 'git log'.
+
+# Upstream patches -- official upstream patches released by upstream since the
+# ----------------    last rebase that are necessary for any reason:
+#Patch000: example000.patch
+Patch000: ghostscript-cve-2018-19409.patch
+Patch001: ghostscript-cve-2018-18073.patch
+Patch002: ghostscript-cve-2018-17961.patch
+Patch003: ghostscript-cve-2018-18284.patch
+Patch004: ghostscript-cve-2018-19134.patch
+Patch005: ghostscript-cve-2018-19475.patch
+Patch006: ghostscript-cve-2018-19476.patch
+Patch007: ghostscript-cve-2018-19477.patch
+Patch008: ghostscript-cve-2019-6116.patch
+Patch009: ghostscript-cve-2019-6116-downstream.patch
+Patch010: ghostscript-cve-2019-3839.patch
+Patch011: ghostscript-cve-2019-3835.patch
+Patch012: ghostscript-cve-2019-3838.patch
+Patch013: ghostscript-fix-DSC-comment-parsing.patch
+Patch014: ghostscript-pdf2dsc-regression.patch
+
+# Downstream patches -- these should be always included when doing rebase:
+# ------------------
+Patch100: ghostscript-9.23-100-run-dvipdf-securely.patch
+Patch101: ghostscript-9.25-101-reenable-cups-filters.patch
+
+
+# Downstream patches for RHEL -- patches that we keep only in RHEL for various
+# ---------------------------    reasons, but are not enabled in Fedora:
+%if %{defined rhel} || %{defined centos}
+#Patch200: example200.patch
+%endif
+
+
+# Patches to be removed -- deprecated functionality which shall be removed at
+# ---------------------    some point in the future:
+
+
+%description
+This package provides useful conversion utilities based on Ghostscript software,
+for converting PS, PDF and other document formats between each other.
+
+Ghostscript is a suite of software providing an interpreter for Adobe Systems'
+PostScript (PS) and Portable Document Format (PDF) page description languages.
+Its primary purpose includes displaying (rasterization & rendering) and printing
+of document pages, as well as conversions between different document formats.
+
+# === SUBPACKAGES =============================================================
+
+# Below requirements are resources, which are not detected by RPM automatically:
+%package -n libgs
+Summary:          Library providing Ghostcript's core functionality
+Requires:         adobe-mappings-cmap
+Requires:         adobe-mappings-cmap-deprecated
+Requires:         adobe-mappings-pdf
+Requires:         urw-base35-fonts
+
+# NOTE: Keeping this here for RHEL-7 to avoid possilible regressions:
+#
 # Upstream is not versioning the SONAME correctly, thus the rpmbuild is unable
 # to recognize we need a newer version of lcms2. This 'hackish' workaround
 # will make ghostscript to require at least the version we are built with. (bug #1436273)
 %global lcms2_version %(pkg-config --modversion lcms2 2>/dev/null || echo 0)
-Requires: lcms2 >= %{lcms2_version}
+Requires:         lcms2 >= %{lcms2_version}
 
-Requires: urw-fonts >= 1.1, ghostscript-fonts
-Requires: poppler-data
-BuildRequires: xz
-BuildRequires: libjpeg-devel, libXt-devel
-BuildRequires: zlib-devel, libpng-devel, unzip, gtk3-devel
-BuildRequires: glib2-devel, gnutls-devel
-# Omni requires libxml
-BuildRequires: libxml2-devel
-BuildRequires: libtiff-devel
-BuildRequires: cups-devel >= 1.1.13
-BuildRequires: libtool
-BuildRequires: jasper-devel
-BuildRequires: dbus-devel
-BuildRequires: poppler-data
-BuildRequires: lcms2-devel
-BuildRequires: openjpeg-devel
-%{?_with_freetype:BuildRequires: freetype-devel}
-BuildRoot: %{_tmppath}/%{name}-%{gs_ver}-root
+%description -n libgs
+This library provides Ghostscript's core functionality, based on Ghostscript's
+API, which is useful for many packages that are build on top of Ghostscript.
 
-# See bug #83516.
-Conflicts: ttfonts-ja < 1.2-23
-Conflicts: ttfonts-ko < 1.0.11-27
-Conflicts: ttfonts-zh_CN < 2.12-2
-Conflicts: ttfonts-zh_TW < 2.11-20
+# ---------------
 
-%description
-Ghostscript is a set of software that provides a PostScript
-interpreter, a set of C procedures (the Ghostscript library, which
-implements the graphics capabilities in the PostScript language) and
-an interpreter for Portable Document Format (PDF) files. Ghostscript
-translates PostScript code into many common, bitmapped formats, like
-those understood by your printer or screen. Ghostscript is normally
-used to display PostScript files and to print PostScript files to
-non-PostScript printers.
+%package -n libgs-devel
+Summary:          Development files for Ghostscript's library
+Requires:         libgs%{?_isa} = %{version}-%{release}
 
-If you need to display PostScript files or print them to
-non-PostScript printers, you should install ghostscript. If you
-install ghostscript, you also need to install the ghostscript-fonts
-package.
+# This virtual provides is useful in case people get confused what *-devel
+# subpackage they should actually use (i.e. ghostscript-devel vss libgs-devel?).
+# By having this virtual provide both of the options above will work...
+Provides:         %{name}-devel         = %{version}-%{release}
+Provides:         %{name}-devel%{?_isa} = %{version}-%{release}
+Obsoletes:        %{name}-devel < 9.07-32
 
-%package devel
-Summary: Files for developing applications that use ghostscript
-Requires: %{name} = %{version}-%{release}
-Group: Development/Libraries
+%description -n libgs-devel
+This package contains development files that are useful for building packages
+against Ghostscript's library, which provides Ghostscript's core functionality.
 
-%description devel
-The header files for developing applications that use ghostscript.
-
-%package doc
-Summary: Documentation for ghostscript
-Requires: %{name} = %{version}-%{release}
-Group: Documentation
-BuildArch: noarch
-
-%description doc
-The documentation files that come with ghostscript.
+# ---------------
 
 %package gtk
-Summary: A GTK-enabled PostScript interpreter and renderer
-Requires: %{name} = %{version}-%{release}
-Group: Applications/Publishing
+Summary:          Ghostscript's GTK-based document renderer
+Requires:         libgs%{?_isa} = %{version}-%{release}
 
 %description gtk
-A GTK-enabled version of Ghostscript, called 'gsx'.
+This package provides GTK-based utility 'gsx', which can be used for displaying
+of various document files (including PS and PDF).
+
+# ---------------
 
 %package cups
-Summary: CUPS filter for interpreting PostScript and PDF
-Requires: %{name} = %{version}-%{release}
-Requires: cups
-Group: System Environment/Daemons
+Summary:          CUPS filter for interpreting PostScript and PDF
+Requires:         %{name} = %{version}-%{release}
+Requires:         libgs%{?_isa} = %{version}-%{release}
+Requires:         cups
 
 %description cups
 CUPS filter and conversion rules for interpreting PostScript and PDF.
 
+# ---------------
+
+%package doc
+Summary:          Documentation files for Ghostscript
+Requires:         %{name} = %{version}-%{release}
+BuildArch:        noarch
+
+%description doc
+This package provides detailed documentation files for Ghostscript software.
+
+# === BUILD INSTRUCTIONS ======================================================
+
+# Call the 'autosetup' macro to prepare the environment, but do not patch the
+# source code yet -- we need to remove bundled software before the build first:
 %prep
-%setup -q -n %{name}-%{gs_ver}
-rm -rf expat freetype icclib jasper jpeg lcms lcms2 libpng openjpeg zlib cups/libs
+%autosetup -N -S git
 
-# Fix ijs-config not to have multilib conflicts (bug #192672)
-%patch1 -p1 -b .multilib
+# Libraries that we already have packaged in Fedora (see Build Requirements):
+rm -rf cups/libs freetype jpeg lcms2* libpng openjpeg tiff windows zlib
 
-# Fix some shell scripts
-%patch2 -p1 -b .scripts
+# We need to extract additional sources for the ghostscript-cups supbackage.
+# These sources are already patched - taken from RHEL-7.6 branch:
+tar -xf %{SOURCE1}
 
-# Build igcref.c with -O0 to work around bug #150771.
-%patch3 -p1 -b .noopt
+# Add the remaining source code to the initial commit, patch the source code:
+git add --all --force .
+git commit --all --amend --no-edit > /dev/null
+%autopatch -p1
 
-# Define .runlibfileifexists.
-%patch4 -p1
-
-# Fixed missing error check when setting ICC profile.
-%patch5 -p1 -b .icc-missing-check
-
-# Install CUPS filter convs files in the correct place.
-%patch6 -p1 -b .cups-filters
-
-# Restored Fontmap.local patch, incorrectly dropped after
-# ghostscript-8.15.4-3 (bug #610301).
-# Note: don't use -b here to avoid the backup file ending up in the
-# package manifest.
-%patch7 -p1
-
-# Don't assume %%rom%% device is available for initial ICC profile dir.
-%patch8 -p1 -b .iccprofiles-initdir
-
-# gdevcups: don't use uninitialized variables in debugging output.
-%patch9 -p1 -b .gdevcups-debug-uninit
-
-# Back-ported locale fix (bug #961149).
-%patch10 -p1 -b .gs_sprintf
-
-# Upstream patch to fix pdfwrite segfault (bug #962120).
-%patch11 -p1 -b .pdfwrite-segfault
-
-# Upstream patch from bug #690692 to handle strange fonts (bug #969660).
-%patch12 -p1 -b .strange-fonts
-
-# Use more caution when converting floats to strings (bug #980085).
-%patch13 -p1 -b .wrf-snprintf
-
-# Use correct colord device ID in gstoraster.
-%patch14 -p1 -b .cups-colord
-
-# Upstream patch from bug #693921 to avoid zfapi crash (bug #969785).
-%patch15 -p1 -b .zfapi-crash
-
-# Tweak filter costs for gstoraster (part of bug #998977).
-%patch16 -p1 -b .gstoraster-costs
-
-# Fix insufficient integer digits in trio's rendering of "%g" (bug #1096158).
-%patch17 -p1 -b .trio-g
-
-# Prevent memory handling crash (bug #1105519).
-%patch18 -p1 -b .crash
-
-# Prevent crashing when opening a .ps file followed by another (bug #959351)
-%patch19 -p1 -b .import-lcms2-2.6-changes
-
-# Fix ghostscript hanging indefinitely when converting PDF -> PNG (bug #1302121)
-%patch20 -p1
-
-# Do not SIGSEGV after icc_profile error, report error instead (bug #1243784)
-%patch21 -p1
-
-# Fix the color printing on HP InkJet printers (bug #1225858)
-%patch22 -p1
-
-# getenv and filenameforall: do not ignore -dSAFER (bug #1380327)
-%patch23 -p1
-
-# .libfile: honor -dSAFER (bug #1380415)
-%patch24 -p1
-
-# Avoid reference leak in .setdevice (bug #1382300)
-%patch25 -p1
-
-# DSC parser - validate parameters (bug #1382305)
-%patch26 -p1
-
-# check for sufficient params in .sethalftone5 (bug #1383940)
-%patch27 -p1
-
-# Fix of SIGSEGV when processing GlyphDirectory (bug #1390847)
-%patch28 -p1
-
-# Fix .locksafe [fixes regression from previous CVE fixes](bug #1411725)
-%patch29 -p1
-
-# Fix infinite 'for' loop in gdevp14.c file (bug #1424752)
-%patch30 -p1
-
-# Check for null-pointer dereference in mem_get_bits_rectangle() (bug #1435546):
-%patch31 -p1
-
-# Fix for corruption of operand stack (bug #1446063):
-%patch32 -p1
-
-# Cope with negative run length in CCITT Fax decode (bug #1473337):
-%patch33 -p1
-
-# Raise the default VMThreshold from 1Mb to 8Mb (bug #1479852):
-%patch34 -p1
-
-# Fix MediaPosition, ManualFeed and MediaType with pxl devices (bug #1551782):
-%patch35 -p1
-
-# Allow more than 11 elements in array for setdash (bug #1432209):
-%patch36 -p1
-
-# CVE-2018-10194 (bug #1569819):
-%patch37 -p1
-
-# CVE-2018-16509 (bug #1621158):
-%patch38 -p1
-
-# CVE-2018-15910 (bug #1621160):
-%patch39 -p1
-
-# CVE-2018-16542 (bug #1621382):
-%patch40 -p1
-
-# Remove as many non-standard operators as possible to make the codebase
-# closer to upstream for later CVEs:
-%patch41 -p1
-
-# CVE-2018-16511 (bug #1621383):
-%patch42 -p1
-
-# CVE-2018-16539 (bug #1649721):
-%patch43 -p1
-
-# CVE-2018-15908 (bug #1621159):
-%patch44 -p1
-
-# CVE-2018-15909 (bug #1621381):
-%patch45 -p1
-
-# CVE-2018-16863 (bug #1652901):
-%patch46 -p1
-
-# ghostscript update breaks xdvi (gs: Error: /undefined in flushpage) (bug #1654290):
-%patch47 -p1
-
-# CVE-2018-15911 (bug #1651149):
-%patch48 -p1
-
-# CVE-2018-16802 (bug #1650060):
-%patch49 -p1
-
-# CVE-2018-19409 (bug #1652935):
-%patch50 -p1
-
-# CVE-2018-16541 (bug #1654621):
-%patch51 -p1
-
-# CVE-2018-17183 (bug #1650210):
-%patch52 -p1
-
-# CVE-2018-18073 (bug #1645516):
-%patch53 -p1
-
-# CVE-2018-17961 (bug #1648891):
-%patch54 -p1
-
-# CVE-2018-18284 (bug #1643115):
-%patch55 -p1
-
-# CVE-2018-19134 (bug #1655937):
-%patch56 -p1
-
-# pdf2ps reports an error when reading from stdin (bug #1665919):
-%patch57 -p1
-
-# CVE-2018-16540 (bug #1657333):
-%patch58 -p1
-
-# CVE-2018-19475 (bug #1660569):
-%patch59 -p1
-
-# CVE-2018-19476 (bug #1660828):
-%patch60 -p1
-
-# CVE-2018-19477 (bug #1661278):
-%patch61 -p1
-
-# CVE-2019-3839 part1 (bug #1673398):
-%patch62 -p1
-
-# CVE-2019-6116 (bug #1667442):
-%patch63 -p1
-
-# CVE-2019-6116 downstream changes (bug #1667442):
-%patch64 -p1
-
-# CVE-2019-3839 part2 (bug #1673398):
-%patch65 -p1
-
-# ghostscript: Regression: double comment chars '%%' in gs_init.ps
-# leading to missing metadata (bug #1673915):
-%patch66 -p1
-
-# CVE-2019-3835 (bug #1678171):
-%patch67 -p1
-
-# CVE-2019-3838 (bug #1680025):
-%patch68 -p1
-
-# fix for pdf2dsc regression to allow fix for CVE-2019-3839
-# https://bugs.ghostscript.com/show_bug.cgi?id=700704
-%patch69 -p1
-
-# Remove pdfopt man pages which were mistakenly left in (bug #963882).
-rm man/{de/,}pdfopt.1
-
-# Convert manual pages to UTF-8
-from8859_1() {
-        iconv -f iso-8859-1 -t utf-8 < "$1" > "${1}_"
-        mv "${1}_" "$1"
-}
-for i in man/de/*.1; do
-  if [ "$(file --brief --mime-encoding "$i")" = iso-8859-1 ]; then
-    from8859_1 "$i"
-  fi
-done
-
-# Convert ps files to UTF-8
-for i in examples/cjk/gsc*.ps; do from8859_1 "$i"; done
+# ---------------
 
 %build
-# Compile without strict aliasing opts due to these files:
-# gdevescv.c gdevl4v.c gdevopvp.c gdevbbox.c gdevdbit.c gdevddrw.c 
-# gdevp14.c gdevpdfd.c gdevpdfi.c gdevpdfo.c gdevpdft.c gdevpdfv.c 
-# gdevpdte.c gdevpdtt.c gdevps.c gdevpx.c gscoord.c gscparam.c gscrd.c 
-# gsdps1.c gsimage.c gspath1.c gsptype1.c gsptype2.c gstype2.c 
-# gstype42.c gxccache.c gxchar.c gxclimag.c gxclpath.c gxfcopy.c 
-# gximag3x.c gximage3.c gxipixel.c gxshade1.c gxstroke.c gxtype1.c 
-# ibnum.c iscanbin.c zchar1.c zchar.c zcharx.c zfapi.c zfont32.c 
-# zfunc0.c zfunc3.c zfunc4.c zpcolor.c zshade.c
-EXTRACFLAGS="-fno-strict-aliasing"
+# NOTE: The ghostscript-9.25-101-fix-for-cups-filters.patch updates the
+#       configure.ac, so we need to keep this here permanently...
+autoreconf -fv
 
-FONTPATH=
-for path in \
-        %{_datadir}/fonts/default/%{name} \
-        %{_datadir}/fonts/default/Type1 \
-        %{_datadir}/fonts/default/amspsfnt/pfb \
-        %{_datadir}/fonts/default/cmpsfont/pfb \
-        %{_datadir}/fonts \
-        %{_datadir}/%{name}/conf.d \
-        %{_sysconfdir}/%{name} \
-        %{_sysconfdir}/%{name}/%{gs_dot_ver} \
-        %{_datadir}/poppler/cMap/*
-do
-  FONTPATH="$FONTPATH${FONTPATH:+:}$path"
-done
-autoconf --force
-%configure --with-ijs --enable-dynamic --with-fontpath="$FONTPATH" \
-        --with-drivers=ALL --disable-compile-inits --with-system-libtiff \
-        --with-install-cups \
-        CFLAGS="$CFLAGS $EXTRACFLAGS"
+# --enable-dynamic
+#     ... enables dynamically loaded drivers
+#
+# --disable-compile-inits
+#     ... disables compiling of init files (PS code, fonts, etc.) into resulting
+#         binaries, so they are loaded dynamically
+#
+# --without-versioned-path
+#     ... tells configure to not use version string in the resulting paths after
+#         'make_install' macro - this is safe, because only one version of
+#         package can be installed at a given time on Fedora distribution,
+#         so we won't end up with conflicting folders when doing rebase
+#
+# --with-fonthpath
+#     ... searches for necessary fonts in these column-separated directories,
+#         not just default ones
+#
+# --with-install-cups
+#     ... needed to correctly install CUPS filters
+#
+# NOTE:   In RHEL we need to keep the /usr/share/ghostscript/conf.d/ folder
+#         for China's GB18030 official certification:
+%configure --enable-dynamic --disable-compile-inits --without-versioned-path \
+           --with-fontpath="%{urw_base35_fontpath}:%{_datadir}/%{name}/conf.d/:%{_sysconfdir}/%{name}/" \
+           --with-install-cups --with-ijs
 
 # Build IJS
 cd ijs
-./autogen.sh
-%configure --enable-shared --disable-static
+autoreconf -ifv
+%configure --disable-static --enable-shared
 make
 cd ..
 
-%if %{build_with_freetype}
-FT_CFLAGS=$(pkg-config --cflags freetype2)
-make so RPM_OPT_FLAGS="$RPM_OPT_FLAGS $EXTRACFLAGS" prefix=%{_prefix} \
-        FT_BRIDGE=1 FT_CFLAGS="$FT_CFLAGS" FT_LIB=freetype
-make RPM_OPT_FLAGS="$RPM_OPT_FLAGS $EXTRACFLAGS" prefix=%{_prefix} \
-        FT_BRIDGE=1 FT_CFLAGS="$FT_CFLAGS" FT_LIB=freetype
-%else
-make so RPM_OPT_FLAGS="$RPM_OPT_FLAGS $EXTRACFLAGS" prefix=%{_prefix}
-make RPM_OPT_FLAGS="$RPM_OPT_FLAGS $EXTRACFLAGS" prefix=%{_prefix}
-%endif
-make cups
+# NOTE: In RHEL-7, we need to ship ghostscript-cups (filters). In RHEL-8 the
+#       filters are provided by cups-filters package.
+%make_build
+%make_build cups
+
+%make_build so
+
+# ---------------
 
 %install
-rm -rf $RPM_BUILD_ROOT
-mkdir -p $RPM_BUILD_ROOT
-mkdir -p $RPM_BUILD_ROOT/{%{_mandir},%{_bindir},%{_datadir},%{_docdir}}
-mkdir -p $RPM_BUILD_ROOT/{%{_libdir},%{_includedir}/ijs}
+# Before we run 'soinstall' target, we need to run 'install' first. Without it,
+# the CUPS filters would not get installed into buildroot...
+make DESTDIR=%{buildroot} install
 
-make install soinstall \
-%{?_with_freetype:FT_BRIDGE=1} \
-        prefix=$RPM_BUILD_ROOT%{_prefix} \
-        mandir=$RPM_BUILD_ROOT%{_mandir} \
-        datadir=$RPM_BUILD_ROOT%{_datadir} \
-        gsincludedir=$RPM_BUILD_ROOT%{_includedir}/ghostscript/ \
-        bindir=$RPM_BUILD_ROOT%{_bindir} \
-        libdir=$RPM_BUILD_ROOT%{_libdir} \
-        docdir=$RPM_BUILD_ROOT%{_docdir}/%{name}-%{gs_dot_ver} \
-        gsdir=$RPM_BUILD_ROOT%{_datadir}/%{name} \
-        gsdatadir=$RPM_BUILD_ROOT%{_datadir}/%{name}/%{gs_dot_ver} \
-        gssharedir=$RPM_BUILD_ROOT%{_libdir}/%{name}/%{gs_dot_ver} \
-        CUPSSERVERROOT=$RPM_BUILD_ROOT`cups-config --serverroot` \
-        CUPSSERVERBIN=$RPM_BUILD_ROOT`cups-config --serverbin` \
-        CUPSDATA=$RPM_BUILD_ROOT`cups-config --datadir`
-
-mv -f $RPM_BUILD_ROOT%{_bindir}/gsc $RPM_BUILD_ROOT%{_bindir}/gs
+# Using the 'make_install' macro with 'soinstall' target would result in some
+# files being installed unnecessary, so we are using traditional way:
+make DESTDIR=%{buildroot} soinstall
 
 cd ijs
-%makeinstall
+make DESTDIR=%{buildroot} install
 cd ..
 
-echo ".so man1/gs.1" > $RPM_BUILD_ROOT/%{_mandir}/man1/ghostscript.1
-ln -sf gs $RPM_BUILD_ROOT%{_bindir}/ghostscript
-
-# Rename an original cidfmap to cidfmap.GS
-mv $RPM_BUILD_ROOT%{_datadir}/%{name}/%{gs_dot_ver}/Resource/Init/cidfmap{,.GS}
-# Install our own cidfmap to allow the separated
-# cidfmap which the font packages own.
-install -m0644 %{SOURCE2} $RPM_BUILD_ROOT%{_datadir}/%{name}/%{gs_dot_ver}/Resource/Init/CIDFnmap
-install -m0644 %{SOURCE4} $RPM_BUILD_ROOT%{_datadir}/%{name}/%{gs_dot_ver}/Resource/Init/cidfmap
-
-# Documentation
-install -m0644 doc/COPYING $RPM_BUILD_ROOT%{_docdir}/%{name}-%{gs_dot_ver}
-
 # Don't ship libtool la files.
-rm -f $RPM_BUILD_ROOT%{_libdir}/libijs.la
+rm -f %{buildroot}%{_libdir}/libijs.la
 
 # Don't ship ijs example client or server
-rm -f $RPM_BUILD_ROOT%{_bindir}/ijs_{client,server}_example
+rm -f %{buildroot}%{_bindir}/ijs_{client,server}_example
 
-# Don't ship URW fonts; we already have them.
-rm -rf $RPM_BUILD_ROOT%{_datadir}/ghostscript/%{gs_dot_ver}/Resource/Font
+# NOTE: In RHEL-8, we have dropped the LPR scripts, since they should not be
+#       needed anymore. However, for RHEL-7 we have to keep them.
 
-mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}/ghostscript/%{gs_dot_ver}
-touch $RPM_BUILD_ROOT%{_sysconfdir}/ghostscript/%{gs_dot_ver}/Fontmap.local
-touch $RPM_BUILD_ROOT%{_sysconfdir}/ghostscript/%{gs_dot_ver}/cidfmap.local
-touch $RPM_BUILD_ROOT%{_sysconfdir}/ghostscript/%{gs_dot_ver}/CIDFnmap.local
+# Rename the dynamic binary to be used by default as 'gs' binary.
+mv -f %{buildroot}%{_bindir}/{gsc,gs}
 
-# The man/de/man1 symlinks are broken (bug #66238).
-find $RPM_BUILD_ROOT%{_mandir}/de/man1 -type l | xargs rm -f
+# Remove useless files from doc/ directory and doc/ symlink:
+rm -f %{buildroot}%{_docdir}/%{name}/{AUTHORS,COPYING,*.tex,*.hlp,*.txt}
+rm -f %{buildroot}%{_datadir}/%{name}/doc
 
-# Don't ship fixmswrd.pl as it pulls in perl (bug #463948).
-rm -f $RPM_BUILD_ROOT%{_bindir}/fixmswrd.pl
+# ---------------
 
-# Don't ship CMaps (instead poppler-data paths are in search path).
-rm -f $RPM_BUILD_ROOT%{_datadir}/ghostscript/%{gs_dot_ver}/Resource/CMap/*
+# Move html documentation into html/ subdir:
+install -m 0755 -d %{buildroot}%{_docdir}/%{name}/html
+mv -f %{buildroot}%{_docdir}/%{name}/{*.htm*,*.el,html}
 
-MAIN_PWD=`pwd`
-(cd $RPM_BUILD_ROOT; find .%{_datadir}/ghostscript/%{gs_dot_ver}/Resource -type f | \
-                sed -e 's/\.//;' | grep -v Fontmap | grep -v gs_init.ps > $MAIN_PWD/rpm.sharelist
- find .%{_bindir}/ | sed -e 's/\.//;' | \
-                grep -v '/$\|/hpijs$\|/gsx$\|/ijs-config$' \
-                >> $MAIN_PWD/rpm.sharelist)
+# ---------------
 
-%clean
-rm -rf $RPM_BUILD_ROOT
+# Create 'ghostscript' symlink for its binary:
+ln -s %{_bindir}/gs %{buildroot}%{_bindir}/ghostscript
 
-%post -p /sbin/ldconfig
+# Create a man page symlink for 'ghostscript':
+ln -s %{_mandir}/man1/gs.1 %{buildroot}%{_mandir}/man1/ghostscript.1
 
-%postun -p /sbin/ldconfig
+# ---------------
 
-%files -f rpm.sharelist
-%defattr(-,root,root)
-%dir %{_sysconfdir}/ghostscript
-%dir %{_sysconfdir}/ghostscript/%{gs_dot_ver}
-%dir %{_datadir}/ghostscript/%{gs_dot_ver}
-%dir %{_datadir}/ghostscript/%{gs_dot_ver}/Resource
-%dir %{_datadir}/ghostscript/%{gs_dot_ver}/Resource/Init
-%config %{_datadir}/ghostscript/%{gs_dot_ver}/Resource/Init/gs_init.ps
-%config %{_datadir}/ghostscript/%{gs_dot_ver}/Resource/Init/Fontmap*
-%dir %{_datadir}/ghostscript/%{gs_dot_ver}/Resource/CMap
-%dir %{_datadir}/ghostscript/%{gs_dot_ver}/Resource/CIDFont
-%dir %{_datadir}/ghostscript/%{gs_dot_ver}/Resource/CIDFSubst
-%dir %{_datadir}/ghostscript/%{gs_dot_ver}/Resource/ColorSpace
-%dir %{_datadir}/ghostscript/%{gs_dot_ver}/Resource/Decoding
-%dir %{_datadir}/ghostscript/%{gs_dot_ver}/Resource/Encoding
-%dir %{_datadir}/ghostscript/%{gs_dot_ver}/Resource/SubstCID
-%{_datadir}/ghostscript/%{gs_dot_ver}/lib
-%{_datadir}/ghostscript/%{gs_dot_ver}/iccprofiles
-%{_mandir}/man*/*
-%lang(de) %{_mandir}/de/man*/*
+# According to upstream, using fontconfig for fonts lookup is quite a slow
+# process for Ghostscript startup, and they advise using the symlinks where
+# possible. The fontconfig (Ghostscript's search path) should be used preferably
+# as a fallback only.
+
+# NOTE: We're bundling the Google Droid Sans Fallback font into libgs to avoid
+#       adding Google Droid Fonts package into RHEL, just because of one font.
+
+for font in $(basename --multiple %{buildroot}%{_datadir}/%{name}/Resource/Font/*); do
+  ln -fs %{urw_base35_fontpath}/${font}.t1 %{buildroot}%{_datadir}/%{name}/Resource/Font/${font}
+done
+
+# Using the system-wide available CMap files from Adobe via Ghostscript's search
+# path is not safe (nor was ever intended to be supported) way of doing so
+# according to upstream. Their preferred solution is to just create symlink for
+# each of the CMap files in Ghostscript's Resources/CMap folder.
+for file in $(basename --multiple %{buildroot}%{_datadir}/%{name}/Resource/CMap/*); do
+  find %{adobe_mappings_rootpath} -type f -name ${file} -exec ln -fs {} %{buildroot}%{_datadir}/%{name}/Resource/CMap/${file} \;
+done
+
+
+# NOTE: In RHEL-7/8 we have to keep this configuration folder to support
+#       Chineese font certification (see above %%build section above):
+install -m 0755 -d %{buildroot}%{_datadir}/%{name}/conf.d/
+
+# NOTE: For RHEL-7 (but not for RHEL-8̈́) we also have to support this folder:
+install -m 0755 -d %{buildroot}%{_sysconfdir}/%{name}/
+
+# === INSTALLATION INSTRUCTIONS ===============================================
+
+%post
+/sbin/ldconfig
+
+%postun
+/sbin/ldconfig
+
+# === PACKAGING INSTRUCTIONS ==================================================
+
+%files -n libgs
+%license LICENSE doc/COPYING
+
 %{_libdir}/libgs.so.*
 %{_libdir}/libijs-*.so*
-%dir %{_libdir}/%{name}
-%{_libdir}/%{name}/%{gs_dot_ver}
-%config(noreplace) %{_sysconfdir}/ghostscript/%{gs_dot_ver}/*
+%{_datadir}/%{name}/
 
-%files doc
-%defattr(-,root,root)
-%doc %{_datadir}/ghostscript/%{gs_dot_ver}/examples
-%doc %{_docdir}/%{name}-%{gs_dot_ver}
+%dir %{_sysconfdir}/%{name}/
 
-%files gtk
-%defattr(-,root,root)
-%{_bindir}/gsx
+# ---------------
 
-%files cups
-%defattr(-,root,root)
-%{_datadir}/cups/model/pxl*
-%{_datadir}/cups/mime/*.convs
-%{_cups_serverbin}/filter/*
-
-%files devel
-%defattr(-,root,root)
-%dir %{_includedir}/ghostscript
-%{_includedir}/ghostscript/*.h
-%dir %{_includedir}/ijs
+%files -n libgs-devel
+%{_libdir}/libgs.so
+%{_includedir}/%{name}/
+%{_includedir}/ijs
 %{_includedir}/ijs/*
-%{_bindir}/ijs-config
 %{_libdir}/pkgconfig/ijs.pc
 %{_libdir}/libijs.so
-%{_libdir}/libgs.so
+
+# ---------------
+
+%files
+%{_bindir}/gs
+%{_bindir}/gsnd
+%{_bindir}/ghostscript
+
+# Useful conversion scripts:
+%{_bindir}/eps2*
+%{_bindir}/dvipdf
+%{_bindir}/pdf2*
+%{_bindir}/ps2*
+
+# Useful scripts for working with fonts:
+%{_bindir}/pf2afm
+%{_bindir}/pfbtopfa
+%{_bindir}/printafm
+
+# Useful scripts for printing:
+%{_bindir}/gsbj
+%{_bindir}/gsdj
+%{_bindir}/gsdj500
+%{_bindir}/gslj
+%{_bindir}/gslp
+%{_bindir}/pphs
+
+# Scripts for setting up LPR:
+%{_bindir}/lprsetup.sh
+%{_bindir}/unix-lpr.sh
+
+# X11 driver:
+%{_libdir}/%{name}/
+
+%{_mandir}/man1/*
+%lang(de) %{_mandir}/de/man1/*
+
+# ---------------
+
+%files gtk
+%{_bindir}/gsx
+
+# ---------------
+
+%files cups
+%{_datadir}/cups/mime/*
+%{_datadir}/cups/model/*
+%{_cups_serverbin}/filter/*
+
+# ---------------
+
+%files doc
+%doc %{_docdir}/%{name}/
+
+# =============================================================================
 
 %changelog
-* Thu Mar 21 2019 Martin Osvald <mosvald@redhat.com> - 9.07-31.el7_6.11
-- Resolves: #1673398 - CVE-2019-3839 ghostscript: missing attack vector
+* Tue Apr 02 2019 Martin Osvald <mosvald@redhat.com> - 9.25-2
+- obsoleted old ghostscript-devel to allow clean upgrade to libgs-devel
+
+* Thu Feb 14 2019 Martin Osvald <mosvald@redhat.com> - 9.25-1
+- Rebase to latest upstream version (bug #1636115)
+- Resolves: #1673399 - CVE-2019-3839 ghostscript: missing attack vector
   protections for CVE-2019-6116
-- fix for pdf2dsc regression added
-
-* Tue Jan 29 2019 Martin Osvald <mosvald@redhat.com> - 9.07-31.el7_6.10
-- Resolves: #1673915 - ghostscript: Regression: double comment chars
-  '%%' in gs_init.ps leading to missing metadata
-- Resolves: #1678171 - CVE-2019-3835 ghostscript: superexec operator
+- Resolves: #1678172 - CVE-2019-3835 ghostscript: superexec operator
   is available (700585)
-- Resolves: #1680025 - CVE-2019-3838 ghostscript: forceput in DefineResource
+- Resolves: #1680026 - CVE-2019-3838 ghostscript: forceput in DefineResource
   is still accessible (700576)
+- Resolves: #1670443 - ghostscript: Regression: double comment chars
+  '%%' in gs_init.ps leading to missing metadata
+- fix for pdf2dsc regression added to allow fix for CVE-2019-3839
 
-* Thu Jan 24 2019 Martin Osvald <mosvald@redhat.com> - 9.07-31.el7_6.9
-- Related: #1667442 - CVE-2019-6116 - added missing parts of patch
-
-* Fri Jan 18 2019 Martin Osvald <mosvald@redhat.com> - 9.07-31.el7_6.8
-- Resolves: #1667442 - CVE-2019-6116 ghostscript: subroutines within
-  pseudo-operators must themselves be pseudo-operators
-
-* Thu Dec 20 2018 Martin Osvald <mosvald@redhat.com> - 9.07-31.el7_6.7
-- Resolves: #1665919 pdf2ps reports an error when reading from stdin
-- Resolves: #1657333 - CVE-2018-16540 ghostscript: use-after-free in
-  copydevice handling (699661)
-- Resolves: #1660569 - CVE-2018-19475 ghostscript: access bypass in
-  psi/zdevice2.c (700153)
-- Resolves: #1660828 - CVE-2018-19476 ghostscript: access bypass in
-  psi/zicc.c
-- Resolves: #1661278 - CVE-2018-19477 ghostscript: access bypass in
-  psi/zfjbig2.c (700168)
-
-* Mon Dec 10 2018 Martin Osvald <mosvald@redhat.com> - 9.07-31.el7_6.6
-- Resolves: #1657822 - ghostscript: Regression: Warning: Dropping incorrect
-  smooth shading object (Error: /rangecheck in --run--) 
-
-* Wed Dec 05 2018 Martin Osvald <mosvald@redhat.com> - 9.07-31.el7_6.5
-- Resolves: #1654621 - CVE-2018-16541 ghostscript: incorrect free logic in
-  pagedevice replacement (699664)
-- Resolves: #1650210 - CVE-2018-17183 ghostscript: User-writable error
-  exception table
-- Resolves: #1645516 - CVE-2018-18073 ghostscript: saved execution stacks
-  can leak operator arrays
-- Resolves: #1648891 - CVE-2018-17961 ghostscript: saved execution stacks
-  can leak operator arrays (incomplete fix for CVE-2018-17183)
-- Resolves: #1643115 - CVE-2018-18284 ghostscript: 1Policy operator
-  allows a sandbox protection bypass
-- Resolves: #1655937 - CVE-2018-19134 ghostscript: Type confusion in
-  setpattern (700141)
-
-* Thu Nov 29 2018 Martin Osvald <mosvald@redhat.com> - 9.07-31.el7_6.4
-- Resolves: #1651149 - CVE-2018-15911 ghostscript: uninitialized memory
-  access in the aesdecode operator (699665)
-- Resolves: #1650060 - CVE-2018-16802 ghostscript: Incorrect "restoration of
-  privilege" checking when running out of stack during exception handling
-- Resolves: #1652935 - CVE-2018-19409 ghostscript: Improperly implemented
-  security check in zsetdevice function in psi/zdevice.c
-
-* Wed Nov 28 2018 Martin Osvald <mosvald@redhat.com> - 9.07-31.el7_6.3
-- Resolves: #1654290 ghostscript update breaks xdvi (gs: Error: /undefined in flushpage)
-
-* Mon Nov 26 2018 Martin Osvald <mosvald@redhat.com> - 9.07-31.el7_6.2
-- Resolves: #1652901 - CVE-2018-16863 ghostscript: incomplete fix for
-  CVE-2018-16509
-
-* Wed Nov 14 2018 Martin Osvald <mosvald@redhat.com> - 9.07-31.el7_6.1
+* Wed Jan 16 2019 Martin Osvald <mosvald@redhat.com> - 9.07-32
 - Remove as many non-standard operators as possible to make the codebase
   closer to upstream for later CVEs
-- Resolves: #1621383 - CVE-2018-16511 ghostscript: missing type check in type
+- Resolves: #1621385 - CVE-2018-16511 ghostscript: missing type check in type
   checker (699659)
-- Resolves: #1649721 - CVE-2018-16539 ghostscript: incorrect access checking
+- Resolves: #1649722 - CVE-2018-16539 ghostscript: incorrect access checking
   in temp file handling to disclose contents of files (699658) 
-- Resolves: #1621159 - CVE-2018-15908 ghostscript: .tempfile file permission
+- Resolves: #1621162 - CVE-2018-15908 ghostscript: .tempfile file permission
   issues (699657)
-- Resolves: #1621381 - CVE-2018-15909 ghostscript: shading_param incomplete
+- Resolves: #1621384 - CVE-2018-15909 ghostscript: shading_param incomplete
   type checking (699660)
+- Resolves: #1652902 - CVE-2018-16863 ghostscript: incomplete fix for
+  CVE-2018-16509
+- Resolves: #1654045 ghostscript update breaks xdvi (gs: Error: /undefined in flushpage)
+- Resolves: #1651150 - CVE-2018-15911 ghostscript: uninitialized memory
+  access in the aesdecode operator (699665)
+- Resolves: #1650061 - CVE-2018-16802 ghostscript: Incorrect "restoration of
+  privilege" checking when running out of stack during exception handling
+- Resolves: #1652936 - CVE-2018-19409 ghostscript: Improperly implemented
+  security check in zsetdevice function in psi/zdevice.c
+- Resolves: #1654622 - CVE-2018-16541 ghostscript: incorrect free logic in
+  pagedevice replacement (699664)
+- Resolves: #1650211 - CVE-2018-17183 ghostscript: User-writable error
+  exception table
+- Resolves: #1645517 - CVE-2018-18073 ghostscript: saved execution stacks
+  can leak operator arrays
+- Resolves: #1648892 - CVE-2018-17961 ghostscript: saved execution stacks
+  can leak operator arrays (incomplete fix for CVE-2018-17183)
+- Resolves: #1643117 - CVE-2018-18284 ghostscript: 1Policy operator
+  allows a sandbox protection bypass
+- Resolves: #1655939 - CVE-2018-19134 ghostscript: Type confusion in
+  setpattern (700141)
+- Resolves: #1657694 - ghostscript: Regression: Warning: Dropping incorrect
+  smooth shading object (Error: /rangecheck in --run--)
+- Resolves: #1661210 pdf2ps reports an error when reading from stdin
+- Resolves: #1657334 - CVE-2018-16540 ghostscript: use-after-free in
+  copydevice handling (699661)
+- Resolves: #1660570 - CVE-2018-19475 ghostscript: access bypass in
+  psi/zdevice2.c (700153)
+- Resolves: #1660829 - CVE-2018-19476 ghostscript: access bypass in
+  psi/zicc.c
+- Resolves: #1661279 - CVE-2018-19477 ghostscript: access bypass in
+  psi/zfjbig2.c (700168)
+- Resolves: #1667443 - CVE-2019-6116 ghostscript: subroutines within
+  pseudo-operators must themselves be pseudo-operators
+- Resolves: #1670443 - ghostscript: Regression: double comment chars
+  '%%' in gs_init.ps leading to missing metadata
 
 * Mon Sep 10 2018 David Kaspar [Dee'Kej] <dkaspar@redhat.com> - 9.07-31
 - Added security fixes for:

@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -116,6 +116,22 @@ typedef struct gxdso_device_child_request_s
     int        n;
 } gxdso_device_child_request;
 
+/* structure used to request a specific device parameter
+ * be returned by a device.
+ */
+typedef struct dev_param_req_s {
+    char *Param;
+    void *list;
+}dev_param_req_t;
+
+/* structure used to pass the parameters for pattern handling */
+typedef struct pattern_accum_param_t {
+    void *pinst;
+    gs_memory_t *interpreter_memory;
+    void *graphics_state;
+    int pinst_id;
+}pattern_accum_param_s;
+
 enum {
     /* All gxdso_ keys must be defined in this structure.
      * Do NOT rely on your particular gxdso_ having a particular value.
@@ -197,18 +213,17 @@ enum {
     gxdso_is_std_cmyk_1bit,
 
     /* gxdso_is_pdf14_device:
+     * Either:
      *     data = NULL
      *     size = 0
-     * Returns 1 if the device is a pdf14 device .
+     *   Returns 1 if the device is a pdf14 device .
+     * Or:
+     *     data = pointer to a place to store a pdf14_device *
+     *     size = sizeof(pdf14_device *).
+     *   Returns 1 if the device is a pdf14 device, and fills data with the
+     *   pointer to the pdf14 device (may be a child of the original device)
      */
     gxdso_is_pdf14_device,
-
-    /* gxdso_is_native_planar:
-     *      data = NULL
-     *      size = 0
-     * Returns the number of bits per plane if the device's native format is planar
-     */
-    gxdso_is_native_planar,
 
     /* gxdso_device_child:
      *      data = pointer to gxdso_device_child_request struct
@@ -233,7 +248,7 @@ enum {
      *      data = NULL
      *      size = 0
      * Returns 1 if the device supports devicen colors.  example tiffsep.
-     */    
+     */
     gxdso_supports_devn,
     /* gxdso_supports_hlcolor:
      * for devices that can handle pattern and other high level structures
@@ -253,6 +268,65 @@ enum {
      * Return 0 for 'no special treatment', or 1 for the anitdropout
      * downscaler. */
     gxdso_interpolate_antidropout,
+    /* gxdso_needs_invariant_palette:
+     * The PCL interpreter can set a /Indexed coluor space, and then
+     * alter the palette afterwards. For rendering the paletter lookup
+     * is done as required, so this works, but for high level devices
+     * (eg pdfwrite) we can't deal with this. return '0' if the device
+     * doesn't care if the palette changes, and 1 if it does.
+     */
+    gxdso_needs_invariant_palette,
+    /* gxdso_supports_saved_pages:
+     * gx_device_printer devices can support this saving pages as clist
+     */
+    gxdso_supports_saved_pages,
+    /* Form handling, we need one to start and one to stop a form
+     */
+    gxdso_form_begin,
+    gxdso_form_end,
+    /* These next two relate to high level form handling. After executing a form the
+     * PostScript will request an ID for the form. If it gets one, it stores it in the
+     * /Implementation in the Form dictioanry. Next time it encoutners 'execform' for that
+     * form it will not call gxdso_form_begin and gxdso_form_end, instead it will simply call
+     * gxdso_repeat_form with the ID presented earlier. You should not return anything in response
+     * to the gxdso_form_ID unless the device is capable of storing the form and repeating it
+     * without running the PaintProc again.
+     */
+    gxdso_get_form_ID,
+    gxdso_repeat_form,
+    /* gxdso_adjust_bandheight:
+     * Adjust the bandheight given in 'size' (normally downwards). Typically
+     * to round it to a multiple of a given number.
+     */
+    gxdso_adjust_bandheight,
+    /* Retrieve a *single* device parameter */
+    gxdso_get_dev_param,
+    /* gxdso_in_pattern_accumulator:
+     *     data = NULL
+     *     size = 0
+     * Returns +ve value if we are rendering into a pattern accumulator
+     * device.
+     */
+    gxdso_in_pattern_accumulator,
+    /* Determine if we are in a PDF14 device and the target is a separation
+     * device.   In this case, we may want to not use the alternate tint
+     * tranform even if the blending color space is RGB or Gray. */
+    gxdso_pdf14_sep_device,
+    /* Used only by pdfwrite to paa a Form Appearance Name, so that
+     * we can use the name in a pdfmark.
+     */
+    gxdso_pdf_form_name,
+    gxdso_pdf_last_form_ID,
+    /* Restrict the supplied bbox to that actually used by the underlying device.
+     * Used to restrict alphabits drawing to the area defined by compositors etc.*/
+    gxdso_restrict_bbox,
+    /* JPEG passthrough requests/control. Currently used for the pdfwrite family only.
+     */
+    gxdso_JPEG_passthrough_query,
+    gxdso_JPEG_passthrough_begin,
+    gxdso_JPEG_passthrough_data,
+    gxdso_JPEG_passthrough_end,
+    gxdso_supports_iccpostrender,
     /* Add new gxdso_ keys above this. */
     gxdso_pattern__LAST
 };

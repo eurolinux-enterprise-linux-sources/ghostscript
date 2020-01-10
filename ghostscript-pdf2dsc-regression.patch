@@ -1,19 +1,16 @@
+From db24f253409d5d085c2760c814c3e1d3fa2dac59 Mon Sep 17 00:00:00 2001
 From: Ray Johnston <ray.johnston@artifex.com>
-Date: Tue, 19 Mar 2019 16:25:48 +0000 (-0700)
+Date: Tue, 19 Mar 2019 09:25:48 -0700
 Subject: Fix lib/pdf2dsc.ps to use documented Ghostscript pdf procedures.
-
-Fix lib/pdf2dsc.ps to use documented Ghostscript pdf procedures.
 
 We eliminated GS_PDF_ProcSet and pdfdict, but runpdfbegin, dopdfpages,
 and runpdfend are still available.
 
-https://git.ghostscript.com/?p=ghostpdl.git;a=commit;h=db24f253409d5d085c2760c814c3e1d3fa2dac59
----
-
-diff -up ghostscript-9.07/lib/pdf2dsc.ps.pdf2dsc-fix ghostscript-9.07/lib/pdf2dsc.ps
---- ghostscript-9.07/lib/pdf2dsc.ps.pdf2dsc-fix	2013-02-14 08:58:16.000000000 +0100
-+++ ghostscript-9.07/lib/pdf2dsc.ps	2019-03-21 15:57:27.006345954 +0100
-@@ -52,10 +52,7 @@ systemdict /.setsafe known { .setsafe }
+diff --git a/lib/pdf2dsc.ps b/lib/pdf2dsc.ps
+index 4547849c2..d836bf320 100644
+--- a/lib/pdf2dsc.ps
++++ b/lib/pdf2dsc.ps
+@@ -52,10 +52,7 @@ systemdict /.setsafe known { .setsafe } if
  /DSCstring 255 string def
  /MediaTypes 10 dict def
  
@@ -25,7 +22,7 @@ diff -up ghostscript-9.07/lib/pdf2dsc.ps.pdf2dsc-fix ghostscript-9.07/lib/pdf2ds
     /FirstPage where { pop } { /FirstPage 1 def } ifelse
     /LastPage where { pop } { /LastPage pdfpagecount def } ifelse
  
-@@ -108,13 +105,12 @@ systemdict /.setsafe known { .setsafe }
+@@ -108,13 +105,12 @@ systemdict /.setsafe known { .setsafe } if
     (%%BeginProlog\n) puts
     (/Page null def\n/Page# 0 def\n/PDFSave null def\n) puts
     (/DSCPageCount 0 def\n) puts
@@ -41,7 +38,7 @@ diff -up ghostscript-9.07/lib/pdf2dsc.ps.pdf2dsc-fix ghostscript-9.07/lib/pdf2ds
     ( process_trailer_attrs\n) puts
     (%%EndSetup\n) puts
  
-@@ -239,13 +235,10 @@ systemdict /.setsafe known { .setsafe }
+@@ -239,13 +235,10 @@ systemdict /.setsafe known { .setsafe } if
         DSCfile exch DSCstring cvs writestring
         ( DoPDFPage\n) puts
      } for

@@ -1,4 +1,4 @@
-# Copyright (C) 2001-2012 Artifex Software, Inc.
+# Copyright (C) 2001-2018 Artifex Software, Inc.
 # All Rights Reserved.
 #
 # This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
 # of the license contained in the file LICENSE in this distribution.
 #
 # Refer to licensing information at http://www.artifex.com or contact
-# Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-# CA  94903, U.S.A., +1(415)492-9861, for further information.
+# Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+# CA 94945, U.S.A., +1(415)492-9861, for further information.
 #
 # makefile for OpenVMS VAX and Alpha using MMK
 #
@@ -32,8 +32,11 @@
 
 BINDIR=[.bin]
 GLSRCDIR=[.base]
+DEVSRCDIR=[.devices]
 GLGENDIR=[.obj]
 GLOBJDIR=[.obj]
+DEVGENDIR=[.obj]
+DEVOBJDIR=[.obj]
 PSSRCDIR=[.psi]
 PSGENDIR=[.obj]
 PSOBJDIR=[.obj]
@@ -240,10 +243,10 @@ DEVICE_DEVS8=$(DD)pcxmono.dev $(DD)pcxgray.dev $(DD)pcx16.dev $(DD)pcx256.dev $(
 DEVICE_DEVS9=$(DD)pbm.dev $(DD)pbmraw.dev $(DD)pgm.dev $(DD)pgmraw.dev $(DD)pgnm.dev $(DD)pgnmraw.dev
 DEVICE_DEVS10=$(DD)tiffcrle.dev $(DD)tiffg3.dev $(DD)tiffg32d.dev $(DD)tiffg4.dev $(DD)tifflzw.dev $(DD)tiffpack.dev
 DEVICE_DEVS11=$(DD)tiff12nc.dev $(DD)tiff24nc.dev
-DEVICE_DEVS12=$(DD)psmono.dev $(DD)psgray.dev $(DD)psrgb.dev $(DD)bit.dev $(DD)bitrgb.dev $(DD)bitcmyk.dev
+DEVICE_DEVS12=$(DD)bit.dev $(DD)bitrgb.dev $(DD)bitcmyk.dev
 DEVICE_DEVS13=$(DD)pngmono.dev $(DD)pnggray.dev $(DD)png16.dev $(DD)png256.dev $(DD)png16m.dev $(DD)pngalpha.dev
 DEVICE_DEVS14=$(DD)jpeg.dev $(DD)jpeggray.dev
-DEVICE_DEVS15=$(DD)pdfwrite.dev $(DD)pswrite.dev $(DD)epswrite.dev $(DD)pxlmono.dev $(DD)pxlcolor.dev
+DEVICE_DEVS15=$(DD)pdfwrite.dev $(DD)eps2write.dev $(DD)pxlmono.dev $(DD)pxlcolor.dev
 DEVICE_DEVS16=$(DD)bbox.dev
 # Overflow from DEVS9
 DEVICE_DEVS17=$(DD)pnm.dev $(DD)pnmraw.dev $(DD)ppm.dev $(DD)ppmraw.dev $(DD)pkm.dev $(DD)pkmraw.dev $(DD)pksm.dev $(DD)pksmraw.dev
@@ -284,7 +287,7 @@ STDIO_IMPLEMENTATION=c
 
 # Define the platform name.
 
-PLATFORM=openvms_
+GSPLATFORM=openvms_
 
 # Define the name of the makefile -- used in dependencies.
 

@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -47,24 +47,28 @@ gs_initialize_wordimagedevice(gx_device_memory * new_dev, const gs_matrix * pmat
         case 3 * 2:
             palette_count = 2;
             num_components = 3;
+            /* fall through */
         case 2:
             bits_per_pixel = 1;
             break;
         case 3 * 4:
             palette_count = 4;
             num_components = 3;
+            /* fall through */
         case 4:
             bits_per_pixel = 2;
             break;
         case 3 * 16:
             palette_count = 16;
             num_components = 3;
+            /* fall through */
         case 16:
             bits_per_pixel = 4;
             break;
         case 3 * 256:
             palette_count = 256;
             num_components = 3;
+            /* fall through */
         case 256:
             bits_per_pixel = 8;
             break;
@@ -185,10 +189,8 @@ gs_initialize_wordimagedevice(gx_device_memory * new_dev, const gs_matrix * pmat
     rc_init(new_dev, new_dev->memory, 1);
 
     new_dev->initial_matrix = *pmat;
-    new_dev->MarginsHWResolution[0] = new_dev->HWResolution[0] =
-        fabs(x_pixels_per_unit) * 72;
-    new_dev->MarginsHWResolution[1] = new_dev->HWResolution[1] =
-        fabs(y_pixels_per_unit) * 72;
+    new_dev->HWResolution[0] = fabs(x_pixels_per_unit) * 72;
+    new_dev->HWResolution[1] = fabs(y_pixels_per_unit) * 72;
     gx_device_set_width_height((gx_device *) new_dev, width, height);
     /* Set the ImagingBBox so we get a correct clipping region. */
     {
@@ -223,6 +225,18 @@ gs_makewordimagedevice(gx_device ** pnew_dev, const gs_matrix * pmat,
 
     if (pnew == 0)
         return_error(gs_error_VMerror);
+
+    /* Bug #697450 "Null pointer dereference in gx_device_finalize()"
+     * If we have incorrect data passed to gs_initialise_wordimagedevice() then the
+     * initialisation will fail, crucially it will fail *before* it calls
+     * gs_make_mem_device() which initialises the device. This means that the
+     * icc_struct member will be uninitialsed, but the device finalise method
+     * will unconditionally free that memory. Since its a garbage pointer, bad things happen.
+     * Apparently we do still need makeimagedevice to be available from
+     * PostScript, so in here just zero the device memory, which means that
+     * the finalise routine won't have a problem.
+     */
+    memset(pnew, 0x00, st_device_memory.ssize);
     code = gs_initialize_wordimagedevice(pnew, pmat, width, height,
                                          colors, num_colors, word_oriented,
                                          page_device, mem);

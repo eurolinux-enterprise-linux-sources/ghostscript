@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -32,7 +32,7 @@
 
 /* Dummy spot function */
 static float
-spot_dummy(floatp x, floatp y)
+spot_dummy(double x, double y)
 {
     return (x + y) / 2;
 }
@@ -70,7 +70,7 @@ zsetcolorscreen(i_ctx_t *i_ctx_p)
     rc_alloc_struct_0(pdht, gx_device_halftone, &st_device_halftone,
                       mem, pdht = 0, "setcolorscreen(device halftone)");
     if (pht == 0 || pdht == 0)
-        code = gs_note_error(e_VMerror);
+        code = gs_note_error(gs_error_VMerror);
     else {
         pht->type = ht_type_colorscreen;
         pht->params.colorscreen = cscreen;
@@ -115,8 +115,11 @@ setcolorscreen_finish(i_ctx_t *i_ctx_p)
 
     pdht->order = pdht->components[0].corder;
     code = gx_ht_install(igs, r_ptr(esp - 1, gs_halftone), pdht);
-    if (code < 0)
+    if (code < 0) {
+        esp -= 7;
+        setcolorscreen_cleanup(i_ctx_p);
         return code;
+    }
     istate->screen_procs.red   = esp[-5];
     istate->screen_procs.green = esp[-4];
     istate->screen_procs.blue  = esp[-3];

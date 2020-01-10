@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -24,6 +24,7 @@
 #include "ipacked.h"		/* for inline dict lookup */
 #include "ivmspace.h"
 #include "store.h"
+#include "iscan.h"              /* for SCAN_PDF_RULES */
 
 /* <int> dict <dict> */
 int
@@ -33,7 +34,7 @@ zdict(i_ctx_t *i_ctx_p)
 
     check_type(*op, t_integer);
     if (op->value.intval < 0)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     return dict_create((uint) op->value.intval, op);
 }
 
@@ -61,7 +62,7 @@ zbegin(i_ctx_t *i_ctx_p)
         int code = ref_stack_extend(&d_stack, 1);
 
         if ( code < 0 ) {
-            if (code == e_dictstackoverflow) {
+            if (code == gs_error_dictstackoverflow) {
                 /* Adobe doesn't restore the operand that caused stack */
                 /* overflow. We do the same to match CET 20-02-02      */
                 pop(1);
@@ -82,7 +83,7 @@ zend(i_ctx_t *i_ctx_p)
 {
     if (ref_stack_count_inline(&d_stack) == min_dstack_size) {
         /* We would underflow the d-stack. */
-        return_error(e_dictstackunderflow);
+        return_error(gs_error_dictstackunderflow);
     }
     while (dsp == dsbot) {
         /* We would underflow the current block. */
@@ -119,9 +120,9 @@ zop_def(i_ctx_t *i_ctx_p)
             break;		/* handle all slower cases */
             }
         case t_null:
-            return_error(e_typecheck);
+            return_error(gs_error_typecheck);
         case t__invalid:
-            return_error(e_stackunderflow);
+            return_error(gs_error_stackunderflow);
     }
     /*
      * Combine the check for a writable top dictionary with
@@ -133,7 +134,7 @@ zop_def(i_ctx_t *i_ctx_p)
          * If the dictionary is writable, the problem must be
          * an invalid store.
          */
-        return_error(e_invalidaccess);
+        return_error(gs_error_invalidaccess);
     }
     /*
      * Save a level of procedure call in the common (redefinition)
@@ -171,13 +172,13 @@ zload(i_ctx_t *i_ctx_p)
         case t_name:
             /* Use the fast lookup. */
             if ((pvalue = dict_find_name(op)) == 0)
-                return_error(e_undefined);
+                return_error(gs_error_undefined);
             ref_assign(op, pvalue);
             return 0;
         case t_null:
-            return_error(e_typecheck);
+            return_error(gs_error_typecheck);
         case t__invalid:
-            return_error(e_stackunderflow);
+            return_error(gs_error_stackunderflow);
         default: {
                 /* Use an explicit loop. */
                 uint size = ref_stack_count(&d_stack);
@@ -192,7 +193,7 @@ zload(i_ctx_t *i_ctx_p)
                         return 0;
                     }
                 }
-                return_error(e_undefined);
+                return_error(gs_error_undefined);
             }
     }
 }
@@ -214,7 +215,7 @@ zundef(i_ctx_t *i_ctx_p)
     if (i_ctx_p->in_superexec == 0)
         check_dict_write(*op1);
     code = idict_undef(op1, op);
-    if (code < 0 && code != e_undefined) /* ignore undefined error */
+    if (code < 0 && code != gs_error_undefined) /* ignore undefined error */
         return code;
     pop(2);
     return 0;
@@ -233,7 +234,7 @@ zknown(i_ctx_t *i_ctx_p)
     check_dict_read(*op1);
     code = dict_find(op1, op, &pvalue);
     switch (code) {
-    case e_dictfull:
+    case gs_error_dictfull:
         code = 0;
     case 0: case 1:
         break;
@@ -264,7 +265,7 @@ zwhere(i_ctx_t *i_ctx_p)
         while (pdref-- > bot) {
             check_dict_read(*pdref);
             code = dict_find(pdref, op, &pvalue);
-            if (code < 0 && code != e_dictfull)
+            if (code < 0 && code != gs_error_dictfull)
                 return code;
             if (code > 0) {
                 push(1);
@@ -293,7 +294,7 @@ zcopy_dict(i_ctx_t *i_ctx_p)
     if (!imemory->gs_lib_ctx->dict_auto_expand &&
         (dict_length(op) != 0 || dict_maxlength(op) < dict_length(op1))
         )
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     code = idict_copy(op1, op);
     if (code < 0)
         return code;
@@ -346,9 +347,9 @@ zdictstack(i_ctx_t *i_ctx_p)
     if (!r_is_array(op))
         return_op_typecheck(op);
     if (r_size(op) < count)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     if (!r_has_type_attrs(op, t_array, a_write))
-        return_error(e_invalidaccess);
+        return_error(gs_error_invalidaccess);
     return ref_stack_store(&d_stack, op, count, 0, 0, true, idmemory,
                            "dictstack");
 }
@@ -375,22 +376,34 @@ zdicttomark(i_ctx_t *i_ctx_p)
     uint idx;
 
     if (count2 == 0)
-        return_error(e_unmatchedmark);
+        return_error(gs_error_unmatchedmark);
     count2--;
     if ((count2 & 1) != 0)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     code = dict_create(count2 >> 1, &rdict);
     if (code < 0)
         return code;
-    /* << /a 1 /a 2 >> => << /a 1 >>, i.e., */
-    /* we must enter the keys in top-to-bottom order. */
-    for (idx = 0; idx < count2; idx += 2) {
-        code = idict_put(&rdict,
-                         ref_stack_index(&o_stack, idx + 1),
-                         ref_stack_index(&o_stack, idx));
-        if (code < 0) {		/* There's no way to free the dictionary -- too bad. */
-            return code;
-        }
+    if ((i_ctx_p->scanner_options & SCAN_PDF_RULES) != 0) {
+       for (idx = count2; idx > 0; idx -= 2) {
+           code = idict_put(&rdict,
+                            ref_stack_index(&o_stack, idx - 1),
+                            ref_stack_index(&o_stack, idx - 2));
+           if (code < 0) {         /* There's no way to free the dictionary -- too bad. */
+               return code;
+           }
+       }
+    }
+    else {
+       /* << /a 1 /a 2 >> => << /a 1 >>, i.e., */
+       /* we must enter the keys in top-to-bottom order. */
+       for (idx = 0; idx < count2; idx += 2) {
+           code = idict_put(&rdict,
+                            ref_stack_index(&o_stack, idx + 1),
+                            ref_stack_index(&o_stack, idx));
+           if (code < 0) {         /* There's no way to free the dictionary -- too bad. */
+               return code;
+           }
+       }
     }
     ref_stack_pop(&o_stack, count2);
     ref_assign(osp, &rdict);
@@ -417,7 +430,7 @@ zforcecopynew(i_ctx_t *i_ctx_p)
     /*check_dict_write(*op);*/	/* see above */
     /* This is only recognized in Level 2 mode. */
     if (!imemory->gs_lib_ctx->dict_auto_expand)
-        return_error(e_undefined);
+        return_error(gs_error_undefined);
     code = idict_copy_new(op1, op);
     if (code < 0)
         return code;
@@ -495,10 +508,10 @@ zsetmaxlength(i_ctx_t *i_ctx_p)
         check_dict_write(*op1);
     check_type(*op, t_integer);
     if (op->value.intval < 0)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     new_size = (uint) op->value.intval;
     if (dict_length(op - 1) > new_size)
-        return_error(e_dictfull);
+        return_error(gs_error_dictfull);
     code = idict_resize(op - 1, new_size);
     if (code >= 0)
         pop(2);

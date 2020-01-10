@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -38,9 +38,9 @@
  % %%ViewingOrientation: xx xy yx yy
 */
 
-#include <stdio.h>	/* for sprintf(), not file I/O */
+#include <stdio_.h>	/* for sprintf(), not file I/O */
 #include <stdlib.h>
-#include <string.h>
+#include <string_.h>
 #include <ctype.h>
 
 #define MAXSTR 256
@@ -584,7 +584,7 @@ dsc_fixup(CDSC *dsc)
     /* make sure all pages have a label */
     for (i=0; i<dsc->page_count; i++) {
         if (strlen(dsc->page[i].label) == 0) {
-            sprintf(buf, "%d", i+1);
+            gs_sprintf(buf, "%d", i+1);
             if ((dsc->page[i].label = dsc_alloc_string(dsc, buf, (int)strlen(buf)))
                 == (char *)NULL)
                 return CDSC_ERROR;	/* no memory */
@@ -1088,7 +1088,7 @@ dsc_read_line(CDSC *dsc)
              * <type> ::= Hex | Binary | ASCII (Type of data)
              * <bytesorlines> ::= Bytes | Lines (Read in bytes or lines)
              */
-            char begindata[MAXSTR+1];
+            char begindata[MAXSTR+1], *bdatalast = NULL;
             int cnt;
             const char *numberof, *bytesorlines;
             cnt = dsc->line_length;
@@ -1096,9 +1096,9 @@ dsc_read_line(CDSC *dsc)
                 cnt = sizeof(begindata)-1;
             memcpy(begindata, dsc->line, cnt);
             begindata[cnt] = '\0';
-            numberof = strtok(begindata+12, " \r\n");
-            strtok(NULL, " \r\n");	/* dump type */
-            bytesorlines = strtok(NULL, " \r\n");
+            numberof = gs_strtok(begindata+12, " \r\n", &bdatalast);
+            gs_strtok(NULL, " \r\n", &bdatalast);	/* dump type */
+            bytesorlines = gs_strtok(NULL, " \r\n", &bdatalast);
             if (bytesorlines == NULL)
                 bytesorlines = "Bytes";
 
@@ -1178,7 +1178,7 @@ dsc_unknown(CDSC *dsc)
     if (dsc->debug_print_fn) {
         char line[DSC_LINE_LENGTH];
         unsigned int length = min(DSC_LINE_LENGTH-1, dsc->line_length);
-        sprintf(line, "Unknown in %s section at line %d:\n  ",
+        gs_sprintf(line, "Unknown in %s section at line %d:\n  ",
             dsc_scan_section_name[dsc->scan_section], dsc->line_count);
         dsc_debug_print(dsc, line);
         strncpy(line, dsc->line, length);
@@ -1605,10 +1605,10 @@ dsc_parse_bounding_box(CDSC *dsc, CDSCBBOX** pbbox, int offset)
                     *pbbox = (CDSCBBOX *)dsc_memalloc(dsc, sizeof(CDSCBBOX));
                     if (*pbbox == NULL)
                         return CDSC_ERROR;	/* no memory */
-                        (*pbbox)->llx = (int)fllx;
-                        (*pbbox)->lly = (int)flly;
-                        (*pbbox)->urx = (int)(furx+0.999);
-                        (*pbbox)->ury = (int)(fury+0.999);
+                    (*pbbox)->llx = (int)fllx;
+                    (*pbbox)->lly = (int)flly;
+                    (*pbbox)->urx = (int)(furx+0.999);
+                    (*pbbox)->ury = (int)(fury+0.999);
                 }
                 return CDSC_OK;
             case CDSC_RESPONSE_CANCEL:
@@ -2218,7 +2218,7 @@ dsc_scan_comments(CDSC *dsc)
     }
 
     /* Handle continuation lines.
-     * To simply processing, we assume that contination lines
+     * To simply processing, we assume that continuation lines
      * will only occur if repeat parameters are allowed and that
      * a complete set of these parameters appears on each line.
      * This is more restrictive than the DSC specification, but
@@ -2238,26 +2238,30 @@ dsc_scan_comments(CDSC *dsc)
             return CDSC_ERROR;
     }
     else if (IS_DSC(line, "%%Creator:")) {
+        unsigned int n = continued ? 3 : 10;
         dsc->id = CDSC_CREATOR;
-        dsc->dsc_creator = dsc_add_line(dsc, dsc->line+10, dsc->line_length-10);
+        dsc->dsc_creator = dsc_add_line(dsc, dsc->line + n, dsc->line_length - n);
         if (dsc->dsc_creator==NULL)
             return CDSC_ERROR;
     }
     else if (IS_DSC(line, "%%CreationDate:")) {
+        unsigned int n = continued ? 3 : 15;
         dsc->id = CDSC_CREATIONDATE;
-        dsc->dsc_date = dsc_add_line(dsc, dsc->line+15, dsc->line_length-15);
+        dsc->dsc_date = dsc_add_line(dsc, dsc->line + n, dsc->line_length - n);
         if (dsc->dsc_date==NULL)
             return CDSC_ERROR;
     }
     else if (IS_DSC(line, "%%Title:")) {
+        unsigned int n = continued ? 3 : 8;
         dsc->id = CDSC_TITLE;
-        dsc->dsc_title = dsc_add_line(dsc, dsc->line+8, dsc->line_length-8);
+        dsc->dsc_title = dsc_add_line(dsc, dsc->line + n, dsc->line_length - n);
         if (dsc->dsc_title==NULL)
             return CDSC_ERROR;
     }
     else if (IS_DSC(line, "%%For:")) {
+        unsigned int n = continued ? 3 : 6;
         dsc->id = CDSC_FOR;
-        dsc->dsc_for = dsc_add_line(dsc, dsc->line+6, dsc->line_length-6);
+        dsc->dsc_for = dsc_add_line(dsc, dsc->line + n, dsc->line_length - n);
         if (dsc->dsc_for==NULL)
             return CDSC_ERROR;
     }
@@ -2665,11 +2669,12 @@ dsc_check_match_prompt(CDSC *dsc, const char *str, int count)
 {
     if (count != 0) {
         char buf[MAXSTR+MAXSTR];
-        if (dsc->line_length < (unsigned int)(sizeof(buf)/2-1))  {
+
+        memset(buf, 0x00, MAXSTR+MAXSTR);
+        if (dsc->line_length < (unsigned int)(sizeof(buf)/2-1))
             strncpy(buf, dsc->line, dsc->line_length);
-            buf[dsc->line_length] = '\0';
-        }
-        sprintf(buf+strlen(buf), "\n%%%%Begin%.40s: / %%%%End%.40s\n", str, str);
+
+        gs_sprintf(buf+strlen(buf), "\n%%%%Begin%.40s: / %%%%End%.40s\n", str, str);
         return dsc_error(dsc, CDSC_MESSAGE_BEGIN_END, buf, (int)strlen(buf));
     }
     return CDSC_RESPONSE_CANCEL;
@@ -3304,6 +3309,27 @@ dsc_scan_trailer(CDSC *dsc)
     /*  %%EOF */
     char *line = dsc->line;
     GSBOOL continued = FALSE;
+
+    if (dsc->endtrailer && IS_DSC(line, "%!PS-Adobe")) {
+        unsigned char *p = (unsigned char *)dsc->line;
+
+        dsc->endtrailer = 0;
+        dsc->dsc_version = dsc_add_line(dsc, dsc->line, dsc->line_length);
+        if (COMPARE(p, "%!PS-Adobe")) {
+            dsc->dsc = TRUE;
+            dsc->begincomments = DSC_START(dsc);
+            if (dsc->dsc_version == NULL)
+                return CDSC_ERROR;	/* no memory */
+            p = (unsigned char *)dsc->line + 14;
+            while (IS_WHITE(*p))
+                p++;
+            if (COMPARE(p, "EPSF-"))
+                dsc->epsf = TRUE;
+            dsc->scan_section = scan_comments;
+            return CDSC_PSADOBE;
+        }
+    }
+
     dsc->id = CDSC_OK;
 
     if (dsc->scan_section == scan_pre_trailer) {
@@ -4339,7 +4365,7 @@ dsc_parse_cmyk_custom_colour(CDSC *dsc)
         if (blank_line)
             break;
         else {
-            cyan = magenta = yellow = black = 0.0;
+            magenta = yellow = black = 0.0;
             cyan = dsc_get_real(dsc->line+n, dsc->line_length-n, &i);
             n += i;
             if (i)
@@ -4415,7 +4441,7 @@ dsc_parse_rgb_custom_colour(CDSC *dsc)
         if (blank_line)
             break;
         else {
-            red = green = blue = 0.0;
+            green = blue = 0.0;
             red = dsc_get_real(dsc->line+n, dsc->line_length-n, &i);
             n += i;
             if (i)

@@ -1,4 +1,4 @@
-% Copyright (C) 2001-2012 Artifex Software, Inc.
+% Copyright (C) 2001-2018 Artifex Software, Inc.
 % All Rights Reserved.
 %
 % This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
 % of the license contained in the file LICENSE in this distribution.
 %
 % Refer to licensing information at http://www.artifex.com or contact
-% Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-% CA  94903, U.S.A., +1(415)492-9861, for further information.
+% Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+% CA 94945, U.S.A., +1(415)492-9861, for further information.
 %
 
 % Fontmap - standard font catalog for Ghostscript.
@@ -81,51 +81,41 @@
 
 % Aliases
 
-/Bookman-Demi			/URWBookmanL-DemiBold	;
-/Bookman-DemiItalic		/URWBookmanL-DemiBoldItal	;
-/Bookman-Light			/URWBookmanL-Ligh	;
-/Bookman-LightItalic		/URWBookmanL-LighItal	;
-
-/Courier			/NimbusMonL-Regu	;
-/Courier-Oblique		/NimbusMonL-ReguObli	;
-/Courier-Bold			/NimbusMonL-Bold	;
-/Courier-BoldOblique		/NimbusMonL-BoldObli	;
-
-/AvantGarde-Book		/URWGothicL-Book	;
-/AvantGarde-BookOblique		/URWGothicL-BookObli	;
-/AvantGarde-Demi		/URWGothicL-Demi	;
-/AvantGarde-DemiOblique		/URWGothicL-DemiObli	;
-
-/Helvetica			/NimbusSanL-Regu	;
-/Helvetica-Oblique		/NimbusSanL-ReguItal	;
-/Helvetica-Bold			/NimbusSanL-Bold	;
-/Helvetica-BoldOblique		/NimbusSanL-BoldItal	;
-
-/Helvetica-Narrow		/NimbusSanL-ReguCond	;
-/Helvetica-Narrow-Oblique	/NimbusSanL-ReguCondItal	;
-/Helvetica-Narrow-Bold		/NimbusSanL-BoldCond	;
-/Helvetica-Narrow-BoldOblique	/NimbusSanL-BoldCondItal	;
-
-/Palatino-Roman			/URWPalladioL-Roma	;
-/Palatino-Italic		/URWPalladioL-Ital	;
-/Palatino-Bold			/URWPalladioL-Bold	;
-/Palatino-BoldItalic		/URWPalladioL-BoldItal	;
-
-/NewCenturySchlbk-Roman		/CenturySchL-Roma	;
-/NewCenturySchlbk-Italic	/CenturySchL-Ital	;
-/NewCenturySchlbk-Bold		/CenturySchL-Bold	;
-/NewCenturySchlbk-BoldItalic	/CenturySchL-BoldItal	;
-
-/Times-Roman			/NimbusRomNo9L-Regu	;
-/Times-Italic			/NimbusRomNo9L-ReguItal	;
-/Times-Bold			/NimbusRomNo9L-Medi	;
-/Times-BoldItalic		/NimbusRomNo9L-MediItal	;
-
-/Symbol				/StandardSymL	;
-
-/ZapfChancery-MediumItalic	/URWChanceryL-MediItal	;
-
-/ZapfDingbats			/Dingbats	;
+/AvantGarde-BookOblique		/URWGothic-BookOblique    ;
+/AvantGarde-Book		/URWGothic-Book        ;
+/AvantGarde-DemiOblique		/URWGothic-DemiOblique    ;
+/AvantGarde-Demi		/URWGothic-Demi        ;
+/Bookman-DemiItalic		/URWBookman-DemiItalic	;
+/Bookman-Demi			/URWBookman-Demi	;
+/Bookman-LightItalic		/URWBookman-LightItalic	;
+/Bookman-Light			/URWBookman-Light	;
+/Courier-Bold			/NimbusMonoPS-Bold	;
+/Courier-BoldOblique		/NimbusMonoPS-BoldItalic	;
+/Courier			/NimbusMonoPS-Regular	;
+/Courier-Oblique		/NimbusMonoPS-Italic	;
+/Helvetica-Bold			/NimbusSans-Bold ;
+/Helvetica-BoldOblique		/NimbusSans-BoldItalic      ;
+/Helvetica-Narrow-Bold		/NimbusSansNarrow-Bold    ;
+/Helvetica-Narrow-BoldOblique	/NimbusSansNarrow-BoldOblique        ;
+/Helvetica-Narrow		/NimbusSansNarrow-Regular    ;
+/Helvetica-Narrow-Oblique	/NimbusSansNarrow-Oblique        ;
+/Helvetica			/NimbusSans-Regular ;
+/Helvetica-Oblique		/NimbusSans-Italic      ;
+/NewCenturySchlbk-Bold		/C059-Bold	;
+/NewCenturySchlbk-BoldItalic	/C059-BdIta	;
+/NewCenturySchlbk-Italic	/C059-Italic	;
+/NewCenturySchlbk-Roman		/C059-Roman	;
+/Palatino-BoldItalic		/P052-BoldItalic	;
+/Palatino-Bold			/P052-Bold	;
+/Palatino-Italic		/P052-Italic	;
+/Palatino-Roman			/P052-Roman	;
+/Symbol				/StandardSymbolsPS	;
+/Times-BoldItalic		/NimbusRoman-BoldItalic	;
+/Times-Bold			/NimbusRoman-Bold	;
+/Times-Italic			/NimbusRoman-Italic	;
+/Times-Roman			/NimbusRoman-Regular	;
+/ZapfChancery-MediumItalic	/Z003-MediumItalic	;
+/ZapfDingbats			/D050000L	;
 
 % 
 %

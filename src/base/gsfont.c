@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -219,7 +219,7 @@ gs_font_dir_alloc2(gs_memory_t * struct_mem, gs_memory_t * bits_mem)
 {
     gs_font_dir *pdir = 0;
 
-#if !arch_small_memory
+#if !ARCH_SMALL_MEMORY
 #  ifdef DEBUG
     if (!gs_debug_c('.'))
 #  endif
@@ -251,9 +251,12 @@ gs_font_dir_alloc2_limits(gs_memory_t * struct_mem, gs_memory_t * bits_mem,
 
     if (pdir == 0)
         return 0;
+    memset(pdir, 0, sizeof(*pdir));
     code = gx_char_cache_alloc(struct_mem, bits_mem, pdir,
                                bmax, mmax, cmax, upper);
     if (code < 0) {
+        gs_free_object(struct_mem, pdir->ccache.table, "font_dir_alloc(chars)");
+        gs_free_object(struct_mem, pdir->fmcache.mdata, "font_dir_alloc(mdata)");
         gs_free_object(struct_mem, pdir, "font_dir_alloc(dir)");
         return 0;
     }
@@ -263,7 +266,7 @@ gs_font_dir_alloc2_limits(gs_memory_t * struct_mem, gs_memory_t * bits_mem,
     pdir->smax = smax;
     pdir->align_to_pixels = false;
     pdir->glyph_to_unicode_table = NULL;
-    pdir->grid_fit_tt = 2;
+    pdir->grid_fit_tt = 1;
     pdir->memory = struct_mem;
     pdir->tti = 0;
     pdir->ttm = 0;
@@ -277,9 +280,28 @@ static void
 gs_font_dir_finalize(const gs_memory_t *cmem, void *vptr)
 {
     gs_font_dir *pdir = vptr;
+    gx_bits_cache_chunk *chunk = pdir->ccache.chunks;
+    gx_bits_cache_chunk *start_chunk = chunk;
+    gx_bits_cache_chunk *prev_chunk;
+
     if (pdir == cmem->gs_lib_ctx->font_dir) {
         cmem->gs_lib_ctx->font_dir = NULL;
     }
+
+    /* free the circular list of memory chunks */
+    while (chunk) {
+        if (start_chunk == chunk->next) {
+            gs_free_object(pdir->ccache.bits_memory, chunk->data, "gs_font_dir_finalize");
+            gs_free_object(pdir->ccache.bits_memory, chunk, "gs_font_dir_finalize");
+            break;
+        }
+
+        prev_chunk = chunk;
+        chunk = chunk->next;
+        gs_free_object(pdir->ccache.bits_memory, prev_chunk->data, "gs_font_dir_finalize");
+        gs_free_object(pdir->ccache.bits_memory, prev_chunk, "gs_font_dir_finalize");
+    }
+    pdir->ccache.chunks = NULL;
 }
 
 
@@ -441,7 +463,7 @@ gs_font_find_similar(const gs_font_dir * pdir, const gs_font **ppfont,
 
 /* scalefont */
 int
-gs_scalefont(gs_font_dir * pdir, const gs_font * pfont, floatp scale,
+gs_scalefont(gs_font_dir * pdir, const gs_font * pfont, double scale,
              gs_font ** ppfont)
 {
     gs_matrix mat;
@@ -598,7 +620,7 @@ gs_makefont(gs_font_dir * pdir, const gs_font * pfont,
 /* Set the current font.  This is provided only for the benefit of cshow, */
 /* which must reset the current font without disturbing the root font. */
 void
-gs_set_currentfont(gs_state * pgs, gs_font * pfont)
+gs_set_currentfont(gs_gstate * pgs, gs_font * pfont)
 {
     pgs->font = pfont;
     pgs->char_tm_valid = false;
@@ -606,7 +628,7 @@ gs_set_currentfont(gs_state * pgs, gs_font * pfont)
 
 /* setfont */
 int
-gs_setfont(gs_state * pgs, gs_font * pfont)
+gs_setfont(gs_gstate * pgs, gs_font * pfont)
 {
     pgs->font = pgs->root_font = pfont;
     pgs->char_tm_valid = false;
@@ -615,14 +637,14 @@ gs_setfont(gs_state * pgs, gs_font * pfont)
 
 /* currentfont */
 gs_font *
-gs_currentfont(const gs_state * pgs)
+gs_currentfont(const gs_gstate * pgs)
 {
     return pgs->font;
 }
 
 /* rootfont */
 gs_font *
-gs_rootfont(const gs_state * pgs)
+gs_rootfont(const gs_gstate * pgs)
 {
     return pgs->root_font;
 }
@@ -642,7 +664,7 @@ gs_cachestatus(register const gs_font_dir * pdir, register uint pstat[7])
 
 /* setcacheparams */
 int
-gs_setcachesize(gs_state * pgs, gs_font_dir * pdir, uint size)
+gs_setcachesize(gs_gstate * pgs, gs_font_dir * pdir, uint size)
 {
     gs_memory_t *stable_mem = pdir->memory->stable_memory;
     if (size < 100000)             /* limits derived from CPSI emulation (CET 27-07) */
@@ -843,7 +865,7 @@ gs_default_font_info(gs_font *font, const gs_point *pscale, int members,
         /*
          * Scan the glyph space to compute the fixed width if any.
          */
-        gs_glyph notdef = gs_no_glyph;
+        gs_glyph notdef = GS_NO_GLYPH;
         gs_glyph glyph;
         int fixed_width = 0;
         int index;
@@ -858,6 +880,7 @@ gs_default_font_info(gs_font *font, const gs_point *pscale, int members,
              ) {
             gs_glyph_info_t glyph_info;
 
+            memset(&glyph_info, 0x00, sizeof(gs_glyph_info_t));
             code = font->procs.glyph_info(font, glyph, pmat,
                                           (GLYPH_INFO_WIDTH0 << wmode),
                                           &glyph_info);
@@ -865,7 +888,7 @@ gs_default_font_info(gs_font *font, const gs_point *pscale, int members,
                 ecode = code;
                 continue;
             }
-            if (notdef == gs_no_glyph && gs_font_glyph_is_notdef(bfont, glyph)) {
+            if (notdef == GS_NO_GLYPH && gs_font_glyph_is_notdef(bfont, glyph)) {
                 notdef = glyph;
                 info->MissingWidth = (int)glyph_info.width[wmode].x;
                 info->members |= FONT_INFO_MISSING_WIDTH;
@@ -963,10 +986,10 @@ gs_font_glyph_is_notdef(gs_font_base *bfont, gs_glyph glyph)
 {
     gs_const_string gnstr;
 
-    if (glyph == gs_no_glyph)
+    if (glyph == GS_NO_GLYPH)
         return false;
-    if (glyph >= gs_min_cid_glyph)
-        return (glyph == gs_min_cid_glyph);
+    if (glyph >= GS_MIN_CID_GLYPH)
+        return (glyph == GS_MIN_CID_GLYPH);
     return (bfont->procs.glyph_name((gs_font *)bfont, glyph, &gnstr) >= 0 &&
             gnstr.size == 7 && !memcmp(gnstr.data, ".notdef", 7));
 }
@@ -975,14 +998,14 @@ gs_font_glyph_is_notdef(gs_font_base *bfont, gs_glyph glyph)
 gs_glyph
 gs_no_encode_char(gs_font *pfont, gs_char chr, gs_glyph_space_t glyph_space)
 {
-    return gs_no_glyph;
+    return GS_NO_GLYPH;
 }
 
 /* Dummy glyph decoding procedure */
-gs_char
-gs_no_decode_glyph(gs_font *pfont, gs_glyph glyph, int ch)
+int
+gs_no_decode_glyph(gs_font *pfont, gs_glyph glyph, int ch, ushort *unicode_return, unsigned int length)
 {
-    return GS_NO_CHAR;
+    return (int)GS_NO_CHAR;
 }
 
 /* Dummy glyph enumeration procedure */

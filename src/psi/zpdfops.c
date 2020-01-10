@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -27,6 +27,8 @@
 #include "malloc_.h"
 #include "string_.h"
 #include "store.h"
+#include "gxgstate.h"
+#include "gxdevsop.h"
 
 #ifdef HAVE_LIBIDN
 #  include <stringprep.h>
@@ -51,9 +53,9 @@ zpdfinkpath(i_ctx_t *i_ctx_p)
     const double smooth_value = 1; /* from 0..1 range */
 
     if (count == 0)
-        return_error(e_unmatchedmark);
+        return_error(gs_error_unmatchedmark);
     if ((count & 1) == 0 || count < 3)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
 
     ocount = count - 1;
     optr = op - ocount + 1;
@@ -127,6 +129,27 @@ zpdfinkpath(i_ctx_t *i_ctx_p)
     return 0;
 }
 
+static int
+zpdfFormName(i_ctx_t *i_ctx_p)
+{
+    os_ptr op = osp;
+    uint count = ref_stack_count(&o_stack);
+    int code;
+
+    if (count == 0)
+        return_error(gs_error_stackunderflow);
+    check_read_type(*op, t_string);
+
+    code = (*dev_proc(i_ctx_p->pgs->device, dev_spec_op))((gx_device *)i_ctx_p->pgs->device,
+        gxdso_pdf_form_name, (void *)op->value.const_bytes, r_size(op));
+
+    if (code < 0)
+        return code;
+
+    ref_stack_pop(&o_stack, 1);
+    return 0;
+}
+
 #ifdef HAVE_LIBIDN
 /* Given a UTF-8 password string, convert it to the canonical form
  * defined by SASLprep (RFC 4013).  This is a permissive implementation,
@@ -156,7 +179,7 @@ zsaslprep(i_ctx_t *i_ctx_p)
     buffer_size = input_size * 11 + 1;
     buffer = ialloc_string(buffer_size, "saslprep result");
     if (buffer == 0)
-        return_error(e_VMerror);
+        return_error(gs_error_VMerror);
 
     memcpy(buffer, op->value.bytes, input_size);
     buffer[input_size] = '\0';
@@ -181,7 +204,7 @@ zsaslprep(i_ctx_t *i_ctx_p)
         if ((int)err < 100)
             return 0;
 
-        return_error(e_ioerror);
+        return_error(gs_error_ioerror);
     }
 
     output_size = strlen((char *)buffer);
@@ -198,6 +221,7 @@ zsaslprep(i_ctx_t *i_ctx_p)
 const op_def zpdfops_op_defs[] =
 {
     {"0.pdfinkpath", zpdfinkpath},
+    {"1.pdfFormName", zpdfFormName},
 #ifdef HAVE_LIBIDN
     {"1.saslprep", zsaslprep},
 #endif

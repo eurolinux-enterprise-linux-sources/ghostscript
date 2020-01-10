@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -33,7 +33,7 @@ cid_font_system_info_param(gs_cid_system_info_t *pcidsi, const ref *prfont)
     ref *prcidsi;
 
     if (dict_find_string(prfont, "CIDSystemInfo", &prcidsi) <= 0)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     return cid_system_info_param(pcidsi, prcidsi);
 }
 
@@ -76,17 +76,21 @@ cid_font_data_param(os_ptr op, gs_font_cid_data *pdata, ref *pGlyphDirectory)
          * the number of CIDs in the font. We need to know the maximum CID
          * when copying fonts, so calculate and store it now.
          */
-        index = dict_first(pgdir);
-        while (index >= 0) {
-            index = dict_next(pgdir, index, (ref *)&element);
-            if (index >= 0) {
-                if (element[0].value.intval > pdata->MaxCID)
-                    pdata->MaxCID = element[0].value.intval;
+        if (r_has_type(pgdir, t_dictionary)) {
+            index = dict_first(pgdir);
+            while (index >= 0) {
+                index = dict_next(pgdir, index, (ref *)&element);
+                if (index >= 0) {
+                    if (element[0].value.intval > pdata->MaxCID)
+                        pdata->MaxCID = element[0].value.intval;
+                }
             }
         }
-
+        else {
+            pdata->MaxCID = r_size(pgdir) - 1;
+        }
         return code;
     } else {
-        return_error(e_typecheck);
+        return_error(gs_error_typecheck);
     }
 }

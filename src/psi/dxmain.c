@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -76,13 +76,15 @@ read_stdin_handler(GIOChannel *channel, GIOCondition condition, gpointer data)
 {
     struct stdin_buf *input = (struct stdin_buf *)data;
     GError *error = NULL;
+    gsize c;
 
     if (condition & (G_IO_PRI)) {
         g_print("input exception");
         input->count = 0;	/* EOF */
     }
     else if (condition & (G_IO_IN)) {
-        g_io_channel_read_chars(channel, input->buf, input->len, (gsize *)&input->count, &error);
+        g_io_channel_read_chars(channel, input->buf, input->len, &c, &error);
+        input->count = (int)c;
         if (error) {
             g_print("%s\n", error->message);
             g_error_free(error);
@@ -143,6 +145,7 @@ gsdll_stderr(void *instance, const char *str, int len)
     fflush(stderr);
     return len;
 }
+
 
 /*********************************************************************/
 /* dll display device */
@@ -216,12 +219,22 @@ window_draw(GtkWidget *widget, cairo_t *cr, gpointer user_data)
         GdkPixbuf *pixbuf = NULL;
         int color = img->format & DISPLAY_COLORS_MASK;
         int depth = img->format & DISPLAY_DEPTH_MASK;
+#if GTK_CHECK_VERSION(3, 0, 0)
+        guint width, height;
+#endif
+
 #if !GTK_CHECK_VERSION(3, 0, 0)
         cairo_t *cr = gdk_cairo_create(gtk_widget_get_window(widget));
         gdk_cairo_region(cr, event->region);
         cairo_clip(cr);
 #endif
+#if GTK_CHECK_VERSION(3, 0, 0)
+        width = gtk_widget_get_allocated_width (widget);
+        height = gtk_widget_get_allocated_height (widget);
+        gtk_render_background(gtk_widget_get_style_context(widget), cr, 0, 0, width, height);
+#else
         gdk_cairo_set_source_color(cr, &gtk_widget_get_style(widget)->bg[GTK_STATE_NORMAL]);
+#endif
         cairo_paint(cr);
             switch (color) {
                 case DISPLAY_COLORS_NATIVE:
@@ -300,7 +313,7 @@ static void window_create(IMAGE *img)
     img->vbox = gtk_vbox_new(FALSE, 0);
 #else
     img->vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_box_set_homogeneous(img->vbox, FALSE);
+    gtk_box_set_homogeneous(GTK_BOX (img->vbox), FALSE);
 #endif
     gtk_container_add(GTK_CONTAINER(img->window), img->vbox);
     gtk_widget_show(img->vbox);
@@ -311,8 +324,9 @@ static void window_create(IMAGE *img)
     gtk_widget_show(img->scroll);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(img->scroll),
         GTK_POLICY_ALWAYS, GTK_POLICY_ALWAYS);
-    gtk_scrolled_window_add_with_viewport(GTK_SCROLLED_WINDOW(img->scroll),
-        img->darea);
+
+    gtk_container_add(GTK_CONTAINER(img->scroll), img->darea);
+
     gtk_box_pack_start(GTK_BOX(img->vbox), img->scroll, TRUE, TRUE, 0);
 #if !GTK_CHECK_VERSION(3, 0, 0)
     g_signal_connect(G_OBJECT (img->darea), "expose-event",
@@ -340,14 +354,17 @@ static void window_resize(IMAGE *img)
 #endif
 
     if (!visible) {
+        guint width, height;
         /* We haven't yet shown the window, so set a default size
          * which is smaller than the desktop to allow room for
          * desktop toolbars, and if possible a little larger than
          * the image to allow room for the scroll bars.
          * We don't know the width of the scroll bars, so just guess. */
+        width = gtk_widget_get_allocated_width (img->window) - 96;
+        height = gtk_widget_get_allocated_height (img->window) - 96;
         gtk_window_set_default_size(GTK_WINDOW(img->window),
-            min(gdk_screen_width()-96, img->width+24),
-            min(gdk_screen_height()-96, img->height+24));
+            min(width, img->width+24),
+            min(height, img->height+24));
     }
 }
 
@@ -504,7 +521,7 @@ static int display_presize(void *handle, void *device, int width, int height,
         int raster, unsigned int format)
 {
     /* Assume everything is OK.
-     * It would be better to return e_rangecheck if we can't
+     * It would be better to return gs_error_rangecheck if we can't
      * support the format.
      */
     return 0;
@@ -560,7 +577,7 @@ static int display_size(void *handle, void *device, int width, int height,
                     return -1;
             }
             else
-                return e_rangecheck;	/* not supported */
+                return gs_error_rangecheck;	/* not supported */
         case DISPLAY_COLORS_GRAY:
             if (depth == DISPLAY_DEPTH_8) {
                 img->rgbbuf = (guchar *)malloc(width * height * 3);
@@ -632,7 +649,7 @@ static int display_size(void *handle, void *device, int width, int height,
             img->cmyk_bar = gtk_hbox_new(FALSE, 0);
 #else
             img->cmyk_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-            gtk_box_set_homogeneous(img->cmyk_bar, FALSE);
+            gtk_box_set_homogeneous(GTK_BOX(img->cmyk_bar), FALSE);
 #endif
             gtk_box_pack_start(GTK_BOX(img->vbox), img->cmyk_bar,
                 FALSE, FALSE, 0);
@@ -1142,6 +1159,18 @@ display_callback display = {
     display_separation
 };
 
+static int
+write_stderr(const char *str)
+{
+    fwrite(str, 1, strlen(str), stderr);
+
+    return fflush(stderr);
+}
+
+
+/* Note the space! It makes the string merging simpler */
+#define OUR_DEFAULT_DEV_STR "display "
+
 /*********************************************************************/
 
 int main(int argc, char *argv[])
@@ -1154,6 +1183,9 @@ int main(int argc, char *argv[])
     char dformat[64];
     int exit_code;
     gboolean use_gui;
+    char *default_devs = NULL;
+    char *our_default_devs = NULL;
+    int len;
 
     /* Gtk initialisation */
     setlocale(LC_ALL, "");
@@ -1164,24 +1196,46 @@ int main(int argc, char *argv[])
             DISPLAY_COLORS_RGB | DISPLAY_ALPHA_NONE | DISPLAY_DEPTH_8 |
             DISPLAY_BIGENDIAN | DISPLAY_TOPFIRST);
     nargc = argc + 1;
-    nargv = (char **)malloc((nargc + 1) * sizeof(char *));
+    nargv = (char **)malloc(nargc * sizeof(char *));
     nargv[0] = argv[0];
     nargv[1] = dformat;
-    memcpy(&nargv[2], &argv[1], argc * sizeof(char *));
+    memcpy(&nargv[2], &argv[1], (argc-1) * sizeof(char *));
 
     /* run Ghostscript */
     if ((code = gsapi_new_instance(&instance, NULL)) == 0) {
         gsapi_set_stdio(instance, gsdll_stdin, gsdll_stdout, gsdll_stderr);
-        if (use_gui)
+        if (use_gui) {
             gsapi_set_display_callback(instance, &display);
-        code = gsapi_init_with_args(instance, nargc, nargv);
+
+            code = gsapi_get_default_device_list(instance, &default_devs, &len);
+            if (code >= 0) {
+                our_default_devs = malloc(len + strlen(OUR_DEFAULT_DEV_STR) + 1);
+                if (our_default_devs) {
+                    memcpy(our_default_devs, OUR_DEFAULT_DEV_STR, strlen(OUR_DEFAULT_DEV_STR));
+                    memcpy(our_default_devs + strlen(OUR_DEFAULT_DEV_STR), default_devs, len);
+                    our_default_devs[len + strlen(OUR_DEFAULT_DEV_STR)] = '\0';
+                    code = gsapi_set_default_device_list(instance, our_default_devs, strlen(default_devs));
+                    free(our_default_devs);
+                }
+                else {
+                    code = -1;
+                }
+            }
+            if (code < 0) {
+                write_stderr("Could not set default devices, continuing with existing defaults\n");
+                code = 0;
+            }
+        }
+        
+        if (code == 0)
+            code = gsapi_init_with_args(instance, nargc, nargv);
 
         if (code == 0)
             code = gsapi_run_string(instance, start_string, 0, &exit_code);
         code1 = gsapi_exit(instance);
-        if (code == 0 || code == e_Quit)
+        if (code == 0 || code == gs_error_Quit)
             code = code1;
-        if (code == e_Quit)
+        if (code == gs_error_Quit)
             code = 0;	/* user executed 'quit' */
 
         gsapi_delete_instance(instance);
@@ -1190,10 +1244,10 @@ int main(int argc, char *argv[])
     exit_status = 0;
     switch (code) {
         case 0:
-        case e_Info:
-        case e_Quit:
+        case gs_error_Info:
+        case gs_error_Quit:
             break;
-        case e_Fatal:
+        case gs_error_Fatal:
             exit_status = 1;
             break;
         default:

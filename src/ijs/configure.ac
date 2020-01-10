@@ -1,4 +1,4 @@
-dnl Copyright (C) 2001-2004 Artifex Software, Inc.
+dnl Copyright (C) 2001-2018 Artifex Software, Inc.
 dnl
 dnl Permission is hereby granted, free of charge, to any person
 dnl obtaining a copy of this software and associated documentation
@@ -49,9 +49,9 @@ pushdef([IJS_INTERFACE_AGE],     [1])
 pushdef([IJS_BINARY_AGE],        [0])
 pushdef([IJS_VERSION], IJS_MAJOR_VERSION.IJS_MINOR_VERSION[]IJS_EXTRA_VERSION)
 
-AC_INIT(IJS_NAME, IJS_VERSION, [inkjet-list@linuxprinting.org])
+AC_INIT([IJS_NAME], [IJS_VERSION])
 AC_PREREQ(2.53)
-AC_CONFIG_SRCDIR(ijs.c)
+AC_CONFIG_SRCDIR([ijs.c])
 AC_REVISION($Revision: 5783 $)
 
 dnl In the following script, there are a the following variants
@@ -61,8 +61,8 @@ dnl IJS_CFLAGS:  cflags for compiling libraries and example progs
 dnl IJS_LIBS:    libraries for linking programs. ONLY to be used
 dnl                    to generate ${ijs_libs}
 dnl IJS_DEPLIBS: libraries for linking libraries against
-dnl ijs_cflags:  cflags to store in ijs-config
-dnl ijs_libs:    libs to store in ijs-config
+dnl ijs_cflags:  cflags to store for pkg-config
+dnl ijs_libs:    libs to store for pkg-config
 dnl LIBIJS_LIBS  libs to link programs IN THIS PACKAGE ONLY against
 
 dnl initial default values
@@ -84,7 +84,7 @@ popdef([IJS_INTERFACE_AGE])
 popdef([IJS_BINARY_AGE])
 
 dnl Initialize automake stuff.
-AM_INIT_AUTOMAKE(IJS_NAME, IJS_VERSION)
+AM_INIT_AUTOMAKE
 popdef([IJS_NAME])
 popdef([IJS_VERSION])
 
@@ -117,7 +117,6 @@ AC_SUBST(LIBTOOL_DEPS)
 dnl Checks for programs
 
 AC_PROG_CC
-AM_PROG_CC_STDC
 AM_PROG_LIBTOOL
 AC_SUBST(LIBTOOL_DEPS)
 AC_ISC_POSIX
@@ -152,13 +151,12 @@ AC_SUBST(IJS_VERSION)
 AC_SUBST(ijs_cflags)
 ijs_libs="${IJS_LIBS} ${IJS_DEPLIBS}"
 AC_SUBST(ijs_libs)
-AC_SUBST(INCLUDES)
+AC_SUBST(AM_CPPFLAGS)
 LIBIJS_LIBS="${LIBIJS_LIBS} ${IJS_DEPLIBS}"
 AC_SUBST(LIBIJS_LIBS)
 
 
 dnl output files and headers
 AC_CONFIG_FILES([Makefile])
-AC_CONFIG_FILES([ijs-config], [chmod +x ijs-config])
 AC_CONFIG_FILES([ijs.pc])
 AC_OUTPUT

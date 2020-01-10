@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -301,7 +301,7 @@ zmatch_page_size(const gs_memory_t *mem, const ref * pvreq, const ref * pvmed,
         return_error(code);
     nm = r_size(pvmed);
     if (!((nm == 2 || nm == 4) && (nr == 2 || nr == nm)))
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     {
         uint i;
         double v[6];
@@ -349,7 +349,7 @@ match_page_size(const gs_point * request, const gs_rect * medium, int policy,
     double rx = request->x, ry = request->y;
 
     if ((rx <= 0) || (ry <= 0))
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     if (policy == 7) {
                 /* (Adobe) hack: just impose requested values */
         *best_mismatch = 0;
@@ -394,7 +394,7 @@ match_page_size(const gs_point * request, const gs_rect * medium, int policy,
             int rotate =
                 (orient >= 0 ? orient :
                  (rx < ry) ^ (medium->q.x < medium->q.y));
-            bool larger =
+            bool larger = (policy == 13) ? 0 :
                 (rotate & 1 ? medium->q.y >= rx && medium->q.x >= ry :
                  medium->q.x >= rx && medium->q.y >= ry);
             bool adjust = false;
@@ -404,13 +404,16 @@ match_page_size(const gs_point * request, const gs_rect * medium, int policy,
                 default:		/* exact match only */
                     return 0;
                 case 3:		/* nearest match, adjust */
+                case 13:        /* non-standard, nearest match, scale down OR up */
                     adjust = true;
+                    /* fall through */
                 case 5:		/* nearest match, don't adjust */
                     if (fabs(mismatch) >= fabs(*best_mismatch))
                         return 0;
                     break;
                 case 4:		/* next larger match, adjust */
                     adjust = true;
+                    /* fall through */
                 case 6:		/* next larger match, don't adjust */
                     if (!larger || mismatch >= *best_mismatch)
                         return 0;
@@ -451,6 +454,8 @@ match_page_size(const gs_point * request, const gs_rect * medium, int policy,
  * dimension (e.g., roll media in one dimension, or displays in both),
  * we must adjust its size in that dimension to match the request.
  * We recognize this by an unreasonably small medium->p.{x,y}.
+ * The PageSize Policy 3 only scales down, so 'scale' will be false if
+ * the medium is larger than the request. Policy 13 scales up OR down.
  */
 static void
 make_adjustment_matrix(const gs_point * request, const gs_rect * medium,
@@ -496,8 +501,7 @@ make_adjustment_matrix(const gs_point * request, const gs_rect * medium,
         double yfactor = my / ry;
         double factor = min(xfactor, yfactor);
 
-        if (factor < 1)
-            gs_matrix_scale(pmat, factor, factor, pmat);
+        gs_matrix_scale(pmat, factor, factor, pmat);
     }
     /* Now translate the origin back, */
     /* using the original, unswapped request. */

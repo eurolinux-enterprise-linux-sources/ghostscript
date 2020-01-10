@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -110,7 +110,7 @@ uint ref_stack_counttomark(const ref_stack_t *pstack);
 
 /*
  * Do the store check for storing 'count' elements of a stack, starting
- * 'skip' elements below the top, into an array.  Return 0 or e_invalidaccess.
+ * 'skip' elements below the top, into an array.  Return 0 or gs_error_invalidaccess.
  */
 int ref_stack_store_check(const ref_stack_t *pstack, ref *parray,
                           uint count, uint skip);
@@ -118,8 +118,8 @@ int ref_stack_store_check(const ref_stack_t *pstack, ref *parray,
 /*
  * Store the top 'count' elements of a stack, starting 'skip' elements below
  * the top, into an array, with or without store/undo checking.  age=-1 for
- * no check, 0 for old, 1 for new.  May return e_rangecheck or
- * e_invalidaccess.
+ * no check, 0 for old, 1 for new.  May return gs_error_rangecheck or
+ * gs_error_invalidaccess.
  */
 #ifndef gs_dual_memory_DEFINED
 #  define gs_dual_memory_DEFINED
@@ -145,7 +145,7 @@ int ref_stack_pop_block(ref_stack_t *pstack);
 /*
  * Extend a stack to recover from an overflow condition.
  * Uses the requested value to decide what to do.
- * May return overflow_error or e_VMerror.
+ * May return overflow_error or gs_error_VMerror.
  */
 int ref_stack_extend(ref_stack_t *pstack, uint request);
 
@@ -153,7 +153,7 @@ int ref_stack_extend(ref_stack_t *pstack, uint request);
  * Push N empty slots onto a stack.  These slots are not initialized:
  * the caller must immediately fill them.  May return overflow_error
  * (if max_stack would be exceeded, or the stack has no allocator)
- * or e_VMerror.
+ * or gs_error_VMerror.
  */
 int ref_stack_push(ref_stack_t *pstack, uint count);
 

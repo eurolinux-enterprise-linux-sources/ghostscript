@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -23,13 +23,12 @@
 
 /* Enter a name and value into systemdict. */
 int i_initial_enter_name(i_ctx_t *, const char *, const ref *);
-#define initial_enter_name(nstr, pvalue)\
-  i_initial_enter_name(i_ctx_p, nstr, pvalue)
+
+/* Enter a (transient) name and value into systemdict. */
+int i_initial_enter_name_copy(i_ctx_t *, const char *, const ref *);
 
 /* Remove a name from systemdict. */
 void i_initial_remove_name(i_ctx_t *, const char *);
-#define initial_remove_name(nstr)\
-  i_initial_remove_name(i_ctx_p, nstr)
 
 /* ------ interp.c ------ */
 

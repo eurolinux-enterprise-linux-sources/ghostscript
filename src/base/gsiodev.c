@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -48,8 +48,8 @@ static iodev_proc_get_params(os_get_params);
 const gx_io_device gs_iodev_os =
 {
     "%os%", "FileSystem",
-    {iodev_no_init, iodev_no_open_device,
-     NULL /*iodev_os_open_file */ , iodev_os_fopen, iodev_os_fclose,
+    {iodev_no_init, iodev_no_finit, iodev_no_open_device,
+     NULL /*iodev_os_open_file */ , iodev_os_gp_fopen, iodev_os_fclose,
      os_delete, os_rename, os_status,
      os_enumerate, gp_enumerate_files_next, gp_enumerate_files_close,
      os_get_params, iodev_no_put_params
@@ -58,12 +58,11 @@ const gx_io_device gs_iodev_os =
 
 /* ------ Initialization ------ */
 
-init_proc(gs_iodev_init);	/* check prototype */
 int
 gs_iodev_init(gs_memory_t * mem)
 {				/* Make writable copies of all IODevices. */
     gx_io_device **table =
-        gs_alloc_struct_array(mem, gx_io_device_table_count,
+        gs_alloc_struct_array_immovable(mem, gx_io_device_table_count + NUM_RUNTIME_IODEVS,
                               gx_io_device *, &st_io_device_ptr_element,
                               "gs_iodev_init(table)");
     gs_lib_ctx_t *libctx = gs_lib_ctx_get_interp_instance(mem);
@@ -73,18 +72,26 @@ gs_iodev_init(gs_memory_t * mem)
     if ((table == NULL) || (libctx == NULL))
         return_error(gs_error_VMerror);
 
+    libctx->io_device_table_size = gx_io_device_table_count + NUM_RUNTIME_IODEVS;
+    libctx->io_device_table_count = 0;
+    libctx->io_device_table = table;
+
     for (i = 0; i < gx_io_device_table_count; ++i) {
         gx_io_device *iodev =
-            gs_alloc_struct(mem, gx_io_device, &st_io_device,
+            gs_alloc_struct_immovable(mem, gx_io_device, &st_io_device,
                             "gs_iodev_init(iodev)");
 
         if (iodev == 0)
             goto fail;
         table[i] = iodev;
         memcpy(table[i], gx_io_device_table[i], sizeof(gx_io_device));
+        libctx->io_device_table_count++;
     }
-    libctx->io_device_table = table;
-    code = gs_register_struct_root(mem, NULL,
+    for (;i < gx_io_device_table_count + NUM_RUNTIME_IODEVS; i++) {
+        table[i] = NULL;
+    }
+
+    code = gs_register_struct_root(mem, mem->gs_lib_ctx->io_device_table_root,
                                    (void **)&libctx->io_device_table,
                                    "io_device_table");
     if (code < 0)
@@ -98,21 +105,97 @@ gs_iodev_init(gs_memory_t * mem)
     /****** CAN'T FIND THE ROOT ******/
     /*gs_unregister_root(mem, root, "io_device_table");*/
  fail:
-    for (; i > 0; --i)
+    return (code < 0 ? code : gs_note_error(gs_error_VMerror));
+}
+
+void
+gs_iodev_finit(gs_memory_t * mem)
+{
+    gs_lib_ctx_t *libctx = gs_lib_ctx_get_interp_instance(mem);
+    if (libctx && libctx->io_device_table) {
+        gs_free_object(mem, libctx->io_device_table, "gs_iodev_finit");
+        libctx->io_device_table = NULL;
+    }
+    return;
+}
+
+/*
+ * Register io devices *after* lib initialisation
+*/
+int
+gs_iodev_register_dev(gs_memory_t * mem, const gx_io_device *newiodev)
+{
+    gs_lib_ctx_t *libctx = gs_lib_ctx_get_interp_instance(mem);
+    gx_io_device **table = libctx->io_device_table;
+    int code = 0;
+    gx_io_device *iodev;
+    int i;
+
+    if (libctx->io_device_table_count >= libctx->io_device_table_size) {
+        /* FIXME: table size should be dynamic - deregistering the root node is a problem */
+        return_error(gs_error_limitcheck);
+    }
+
+    iodev = gs_alloc_struct(mem, gx_io_device, &st_io_device,
+                            "gs_iodev_register_dev(iodev)");
+
+    if (iodev == 0) {
+        code = gs_note_error(gs_error_VMerror);
+        goto fail;
+    }
+    table[libctx->io_device_table_count] = iodev;
+    memcpy(table[libctx->io_device_table_count], newiodev, sizeof(gx_io_device));
+
+    if ((code = (table[libctx->io_device_table_count]->procs.init)(table[libctx->io_device_table_count], mem)) < 0)
+        goto fail2;
+    libctx->io_device_table_count++;
+
+    return(code);
+  fail2:
+    for (i = libctx->io_device_table_count; i > 0; --i)
         gs_free_object(mem, table[i - 1], "gs_iodev_init(iodev)");
     gs_free_object(mem, table, "gs_iodev_init(table)");
     libctx->io_device_table = NULL;
-    return (code < 0 ? code : gs_note_error(gs_error_VMerror));
+
+  fail:
+    return(code);
 }
 
 static void
 gs_iodev_finalize(const gs_memory_t *cmem, void *vptr)
 {
-    if (cmem->gs_lib_ctx->io_device_table == vptr) {
-        cmem->gs_lib_ctx->io_device_table = NULL;
+    /* discard const for gs_free_object */
+    gs_memory_t *mem = (gs_memory_t *)cmem;
+    if (mem->gs_lib_ctx->io_device_table == vptr) {
+        gx_io_device **table = mem->gs_lib_ctx->io_device_table;
+        while (mem->gs_lib_ctx->io_device_table_count-- > 0) {
+            gs_free_object(mem,
+              table[mem->gs_lib_ctx->io_device_table_count],
+              "gs_iodev_finalize");
+            table[mem->gs_lib_ctx->io_device_table_count] = NULL;
+        }
+        mem->gs_lib_ctx->io_device_table = NULL;
+        mem->gs_lib_ctx->io_device_table_size =
+            mem->gs_lib_ctx->io_device_table_count = 0;
     }
 }
 
+void
+io_device_finalize(const gs_memory_t *cmem, void *vptr)
+{
+    /* discard const for gs_free_object */
+    gs_memory_t *mem = (gs_memory_t *)cmem;
+    if (mem->gs_lib_ctx->io_device_table_count > 0) {
+        int i;
+        for (i = 0; i < mem->gs_lib_ctx->io_device_table_count
+           && mem->gs_lib_ctx->io_device_table[i] != vptr; i++)
+        ;
+
+        (mem->gs_lib_ctx->io_device_table[i]->procs.finit)(mem->gs_lib_ctx->io_device_table[i], mem);
+        mem->gs_lib_ctx->io_device_table[i] = NULL;
+    }
+    return;
+}
 
 /* ------ Default (unimplemented) IODevice procedures ------ */
 
@@ -120,6 +203,12 @@ int
 iodev_no_init(gx_io_device * iodev, gs_memory_t * mem)
 {
     return 0;
+}
+
+void
+iodev_no_finit(gx_io_device * iodev, gs_memory_t * mem)
+{
+    return;
 }
 
 int
@@ -190,7 +279,7 @@ iodev_no_put_params(gx_io_device * iodev, gs_param_list * plist)
 
 /* The fopen routine is exported for %null. */
 int
-iodev_os_fopen(gx_io_device * iodev, const char *fname, const char *access,
+iodev_os_gp_fopen(gx_io_device * iodev, const char *fname, const char *access,
                FILE ** pfile, char *rfname, uint rnamelen)
 {
     errno = 0;
@@ -226,7 +315,7 @@ static int
 os_status(gx_io_device * iodev, const char *fname, struct stat *pstat)
 {				/* The RS/6000 prototype for stat doesn't include const, */
     /* so we have to explicitly remove the const modifier. */
-    return (stat((char *)fname, pstat) < 0 ? gs_error_undefinedfilename : 0);
+    return (gp_stat((char *)fname, pstat) < 0 ? gs_error_undefinedfilename : 0);
 }
 
 static file_enum *
@@ -278,7 +367,7 @@ gs_getiodevice(const gs_memory_t *mem, int index)
     gs_lib_ctx_t *libctx = gs_lib_ctx_get_interp_instance(mem);
 
     if (libctx == NULL || libctx->io_device_table == NULL ||
-        index < 0      || index >= gx_io_device_table_count)
+        index < 0      || index >= libctx->io_device_table_count)
         return 0;		/* index out of range */
     return libctx->io_device_table[index];
 }
@@ -295,7 +384,7 @@ gs_findiodevice(const gs_memory_t *mem, const byte * str, uint len)
     	return 0;
     if (len > 1 && str[len - 1] == '%')
         len--;
-    for (i = 0; i < gx_io_device_table_count; ++i) {
+    for (i = 0; i < libctx->io_device_table_count; ++i) {
         gx_io_device *iodev = libctx->io_device_table[i];
         const char *dname = iodev->dname;
 
@@ -409,7 +498,10 @@ gs_enumerate_files_init(const char *pat, uint patlen, gs_memory_t * mem)
     pgs_file_enum = gs_alloc_struct(mem, gs_file_enum, &st_gs_file_enum,
                            "gs_enumerate_files_init");
     if (pgs_file_enum == 0)
+    {
+        iodev->procs.enumerate_close(pfen);
         return NULL;
+    }
     pgs_file_enum->memory = mem;
     pgs_file_enum->piodev = iodev;
     pgs_file_enum->pfile_enum = pfen;
@@ -421,9 +513,14 @@ uint
 gs_enumerate_files_next(file_enum * pfen, char *ptr, uint maxlen)
 {
     gs_file_enum *pgs_file_enum = (gs_file_enum *)pfen;
-    int iodev_name_len = pgs_file_enum->prepend_iodev_name ?
-                        strlen(pgs_file_enum->piodev->dname) : 0;
+    int iodev_name_len;
     uint return_len;
+
+    if (pgs_file_enum == NULL)
+        return ~0;
+
+    iodev_name_len = pgs_file_enum->prepend_iodev_name ?
+                        strlen(pgs_file_enum->piodev->dname) : 0;
 
     if (iodev_name_len > maxlen)
         return maxlen + 1;	/* signal overflow error */

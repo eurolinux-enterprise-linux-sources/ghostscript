@@ -33,12 +33,6 @@
 
 ******************************************************************************/
 
-/* Configuration management identification */
-#ifndef lint
-static const char
-  cm_id[] = "@(#)$Id: gdeveprn.c,v 1.25 2001/04/30 05:15:51 Martin Rel $";
-#endif
-
 /*****************************************************************************/
 
 #ifndef _XOPEN_SOURCE
@@ -107,6 +101,7 @@ static const char
 
 /* Prefix for error messages */
 #define ERRPREF "? eprn: "
+
 
 /******************************************************************************
 
@@ -661,9 +656,9 @@ int eprn_set_page_layout(eprn_Device *dev)
         best_cmatch->code: best_cdmatch->code);
 
     if (best_dmatch == NULL ||
-        best_cmatch != NULL &&
-          better_flag_match(desired, eprn->optional_flags, best_dmatch->code,
-            custom_code)) {
+        (best_cmatch != NULL &&
+         better_flag_match(desired, eprn->optional_flags, best_dmatch->code,
+                           custom_code))) {
       if (flag_match(desired, eprn->optional_flags, custom_code)) {
         if (eprn->media_overrides == NULL) {
           eprn->code = best_cmatch->code;
@@ -1035,6 +1030,13 @@ int eprn_open_device(gx_device *device)
   /* Open the "prn" device part */
   if ((rc = gdev_prn_open(device)) != 0) return rc;
 
+  /* if device has been subclassed (FirstPage/LastPage device) then make sure we use
+   * the subclassed device.
+   */
+  while (device->child)
+      device = device->child;
+  eprn = &((eprn_Device *)device)->eprn;
+
   /* Just in case a previous open call failed in a derived device (note that
      'octets_per_line' is still the same as then): */
   if (eprn->scan_line.str != NULL)
@@ -1107,14 +1109,11 @@ int eprn_close_device(gx_device *device)
 
 ******************************************************************************/
 
-static void eprn_forget_defaultmatrix(gs_memory_t *memory)
+static void eprn_forget_defaultmatrix(gx_device *device)
 {
-#if EPRN_USE_GSTATE
-  /* Old ghostscript versions */
-  gs_setdefaultmatrix(igs, NULL);
-#else
-  gs_setdefaultmatrix(get_minst_from_memory(memory)->i_ctx_p->pgs, NULL);
-#endif
+  eprn_Eprn *eprn = &((eprn_Device *)device)->eprn;
+
+  gs_setdefaultmatrix((gs_gstate *)eprn->pgs, NULL);
 
   return;
 }
@@ -1177,7 +1176,7 @@ int eprn_output_page(gx_device *dev, int num_copies, int flush)
 
   /* If soft tumble has been demanded, ensure the get_initial_matrix procedure
      is consulted for the next page */
-  if (eprn->soft_tumble) eprn_forget_defaultmatrix(dev->memory->non_gc_memory);
+  if (eprn->soft_tumble) eprn_forget_defaultmatrix(dev);
 
 #ifdef EPRN_TRACE
   if_debug1(EPRN_TRACE_CHAR, "! eprn_output_page() terminates after %f s.\n",

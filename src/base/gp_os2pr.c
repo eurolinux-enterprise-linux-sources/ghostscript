@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -59,11 +59,12 @@
  */
 
 static iodev_proc_init(os2_printer_init);
+static iodev_proc_finit(os2_printer_finit);
 static iodev_proc_fopen(os2_printer_fopen);
 static iodev_proc_fclose(os2_printer_fclose);
 const gx_io_device gs_iodev_printer = {
     "%printer%", "FileSystem",
-    {os2_printer_init, iodev_no_open_device,
+    {os2_printer_init, os2_printer_finit, iodev_no_open_device,
      NULL /*iodev_os_open_file */ , os2_printer_fopen, os2_printer_fclose,
      iodev_no_delete_file, iodev_no_rename_file, iodev_no_file_status,
      iodev_no_enumerate_files, NULL, NULL,
@@ -89,6 +90,14 @@ os2_printer_init(gx_io_device * iodev, gs_memory_t * mem)
     memset(iodev->state, 0, sizeof(os2_printer_t));
     iodev->state->memory = mem;
     return 0;
+}
+
+static void
+os2_printer_finit(gx_io_device * iodev, gs_memory_t * mem)
+{
+    gs_free_object(mem, iodev->state, "os2_printer_finit");
+    iodev->state = NULL;
+    return;
 }
 
 static int

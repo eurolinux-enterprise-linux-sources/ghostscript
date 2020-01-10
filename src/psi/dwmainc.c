@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,10 +9,12 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
+/* prevent gp.h redefining sprintf */
+#define sprintf sprintf
 
 /* dwmainc.c */
 
@@ -24,7 +26,6 @@
 #include <process.h>
 #include "ierrors.h"
 #include "iapi.h"
-#include "vdtrace.h"
 #include "gdevdsp.h"
 #include "dwdll.h"
 #include "dwimg.h"
@@ -49,6 +50,34 @@ HWND hwndforeground;    /* our best guess for our console window handle */
 
 char start_string[] = "systemdict /start get exec\n";
 
+#ifndef NDEBUG
+static void windows_debug_out(const char *str, int len)
+{
+    char buf[256];
+    int n;
+
+    /* Stupid windows only lets us have a way to print
+     * null terminated strings. This means we need to
+     * perform all sorts of operations on the data
+     * we get in. */
+    while (len)
+    {
+        /* Skip leading 0's */
+        while (len > 0 && *str == 0)
+            len--, str++;
+        /* Copy a run of as many non-zeros as we can into the buffer
+         * without overflowing it. */
+        for (n = 0; n < sizeof(buf)-1 && n < len && *str != 0; str++, n++)
+            buf[n] = *str;
+        /* NULL terminate the buffer */
+        buf[n] = 0;
+        /* And output it */
+        len -= n;
+        OutputDebugStringA(buf);
+    }
+}
+#endif
+
 /*********************************************************************/
 /* stdio functions */
 
@@ -61,6 +90,9 @@ gsdll_stdin(void *instance, char *buf, int len)
 static int GSDLLCALL
 gsdll_stdout(void *instance, const char *str, int len)
 {
+#ifndef NDEBUG
+    windows_debug_out(str, len);
+#endif
     fwrite(str, 1, len, stdout);
     fflush(stdout);
     return len;
@@ -69,12 +101,14 @@ gsdll_stdout(void *instance, const char *str, int len)
 static int GSDLLCALL
 gsdll_stderr(void *instance, const char *str, int len)
 {
+#ifndef NDEBUG
+    windows_debug_out(str, len);
+#endif
     fwrite(str, 1, len, stderr);
     fflush(stderr);
     return len;
 }
 
-#ifndef WINDOWS_NO_UNICODE
 /* stdio functions - versions that translate to/from utf-8 */
 static int GSDLLCALL
 gsdll_stdin_utf8(void *instance, char *buf, int len)
@@ -85,14 +119,30 @@ gsdll_stdin_utf8(void *instance, char *buf, int len)
     int nret = 0;               /* number of bytes returned to caller */
     int i;
 
-    while (len) {
+    /* protect against caller passing invalid len */
+    while (len > 0) {
         while (len && nmore) {
             nmore--;
             *buf++ = 0x80 | ((thiswchar >> (6 * nmore)) & 0x3F), nret++;
             len--;
         }
         while (len) {
-            if (0 >= _read(fileno(stdin), buf, 1))
+            /* Previously the code here has always just checked for whether
+             * _read returns <= 0 to see whether we should exit. According
+             * to the docs -1 means error, 0 means EOF. Unfortunately,
+             * building using VS2015 there appears to be a bug in the 
+             * runtime, whereby a line with a single return on it (on an
+             * ANSI encoded Text file at least) causes a 0 return value.
+             * We hack around this by second guessing the code. We clear
+             * the buffer to start with, and (if we get a zero return
+             * value) we check to see if we have a '\n' in the buffer. If
+             * we do, then we disbelieve the return value. */
+            int num_read;
+            buf[0] = 0; /* Clear buffer */
+            num_read = _read(fileno(stdin), buf, 1);
+            if (num_read == 0 && buf[0] == 0x0a)
+                num_read = 1; /* Stupid VS2015 */
+            if (0 >= num_read)
                 return nret;
             nret++, buf++, len--;
             if (buf[-1] == '\n')
@@ -142,7 +192,8 @@ gsdll_utf8write(FILE *stdwr, const char *str, int len, WCHAR *thiswchar, int *nm
 {
     UINT consolecp = 0;
 
-    while (len) {
+    /* protect against caller passing invalid len */
+    while (len > 0) {
         const char *str0;
 
         /* write ASCII chars without translation */
@@ -218,6 +269,10 @@ gsdll_stdout_utf8(void *instance, const char *utf8str, int bytelen)
     static WCHAR thiswchar = 0; /* accumulates the bits from multiple encoding bytes */
     static int nmore = 0;       /* expected number of additional encoding bytes */
 
+#ifndef NDEBUG
+    windows_debug_out(utf8str, bytelen);
+#endif
+
     gsdll_utf8write(stdout, utf8str, bytelen, &thiswchar, &nmore);
     return bytelen;
 }
@@ -228,10 +283,13 @@ gsdll_stderr_utf8(void *instance, const char *utf8str, int bytelen)
     static WCHAR thiswchar = 0; /* accumulates the bits from multiple encoding bytes */
     static int nmore = 0;       /* expected number of additional encoding bytes */
 
+#ifndef NDEBUG
+    windows_debug_out(utf8str, bytelen);
+#endif
+
     gsdll_utf8write(stderr, utf8str, bytelen, &thiswchar, &nmore);
     return bytelen;
 }
-#endif
 
 /*********************************************************************/
 /* dll device */
@@ -348,7 +406,7 @@ int display_presize(void *handle, void *device, int width, int height,
 {
     IMAGE *img;
 #ifdef DISPLAY_DEBUG
-    fprintf(stdout, "display_presize(0x%x 0x%x, %d, %d, %d, %d, %ld)\n",
+    fprintf(stdout, "display_presize(0x%x 0x%x, %d, %d, %d, %ld)\n",
         handle, device, width, height, raster, format);
 #endif
     img = image_find(handle, device);
@@ -364,7 +422,7 @@ int display_size(void *handle, void *device, int width, int height,
 {
     IMAGE *img;
 #ifdef DISPLAY_DEBUG
-    fprintf(stdout, "display_size(0x%x 0x%x, %d, %d, %d, %d, %ld, 0x%x)\n",
+    fprintf(stdout, "display_size(0x%x 0x%x, %d, %d, %d, %ld, 0x%x)\n",
         handle, device, width, height, raster, format, pimage);
 #endif
     img = image_find(handle, device);
@@ -487,11 +545,23 @@ display_callback display = {
 
 /*********************************************************************/
 
-#ifdef WINDOWS_NO_UNICODE
-int main(int argc, char *argv[])
-#else
+typedef BOOL (SetProcessDPIAwareFn)(void);
+
+static void
+avoid_windows_scale(void)
+{
+    /* Fetch the function address and only call it if it is there; this keeps
+     * compatability with Windows < 8.1 */
+    HMODULE hUser32 = LoadLibrary(TEXT("user32.dll"));
+    SetProcessDPIAwareFn *ptr;
+
+    ptr = (SetProcessDPIAwareFn *)GetProcAddress(hUser32, "SetProcessDPIAware");
+    if (ptr != NULL)
+        ptr();
+    FreeLibrary(hUser32);
+}
+
 static int main_utf8(int argc, char *argv[])
-#endif
 {
     int code, code1;
     int exit_code;
@@ -501,6 +571,9 @@ static int main_utf8(int argc, char *argv[])
     char buf[256];
     char dformat[64];
     char ddpi[64];
+
+    /* Mark us as being 'system dpi aware' to avoid horrid scaling */
+    avoid_windows_scale();
 
     if (!_isatty(fileno(stdin)))
         _setmode(fileno(stdin), _O_BINARY);
@@ -523,11 +596,6 @@ static int main_utf8(int argc, char *argv[])
     }
 
 #ifndef METRO
-#ifdef DEBUG
-    visual_tracer_init();
-    gsdll.set_visual_tracer(&visual_tracer);
-#endif
-
     if (_beginthread(winthread, 65535, NULL) == -1) {
         fprintf(stderr, "GUI thread creation failed\n");
     }
@@ -548,14 +616,10 @@ static int main_utf8(int argc, char *argv[])
     }
 #endif
 
-#ifdef WINDOWS_NO_UNICODE
-    gsdll.set_stdio(instance, gsdll_stdin, gsdll_stdout, gsdll_stderr);
-#else
     gsdll.set_stdio(instance,
         _isatty(fileno(stdin)) ?  gsdll_stdin_utf8 : gsdll_stdin,
         _isatty(fileno(stdout)) ?  gsdll_stdout_utf8 : gsdll_stdout,
         _isatty(fileno(stderr)) ?  gsdll_stderr_utf8 : gsdll_stderr);
-#endif
 #ifdef METRO
     /* For metro, no insertion of display device args */
     nargc = argc;
@@ -589,39 +653,35 @@ static int main_utf8(int argc, char *argv[])
         sprintf(dformat, "-dDisplayFormat=%d", format);
     }
     nargc = argc + 2;
-    nargv = (char **)malloc((nargc + 1) * sizeof(char *));
+    nargv = (char **)malloc(nargc * sizeof(char *));
     if (nargv == NULL) {
         fprintf(stderr, "Malloc failure!\n");
     } else {
         nargv[0] = argv[0];
         nargv[1] = dformat;
         nargv[2] = ddpi;
-        memcpy(&nargv[3], &argv[1], argc * sizeof(char *));
+        memcpy(&nargv[3], &argv[1], (argc-1) * sizeof(char *));
 #endif
 
 #if defined(_MSC_VER) || defined(__BORLANDC__)
         __try {
 #endif
+            code = gsdll.set_arg_encoding(instance, GS_ARG_ENCODING_UTF8);
+            if (code == 0)
             code = gsdll.init_with_args(instance, nargc, nargv);
             if (code == 0)
                 code = gsdll.run_string(instance, start_string, 0, &exit_code);
             code1 = gsdll.exit(instance);
-            if (code == 0 || (code == e_Quit && code1 != 0))
+            if (code == 0 || (code == gs_error_Quit && code1 != 0))
                 code = code1;
 #if defined(_MSC_VER) || defined(__BORLANDC__)
         } __except(exception_code() == EXCEPTION_STACK_OVERFLOW) {
-            code = e_Fatal;
+            code = gs_error_Fatal;
             fprintf(stderr, "*** C stack overflow. Quiting...\n");
         }
 #endif
 
         gsdll.delete_instance(instance);
-
-#ifndef METRO
-#ifdef DEBUG
-        visual_tracer_close();
-#endif
-#endif
 
         unload_dll(&gsdll);
 
@@ -639,10 +699,10 @@ static int main_utf8(int argc, char *argv[])
     exit_status = 0;
     switch (code) {
         case 0:
-        case e_Info:
-        case e_Quit:
+        case gs_error_Info:
+        case gs_error_Quit:
             break;
-        case e_Fatal:
+        case gs_error_Fatal:
             exit_status = 1;
             break;
         default:
@@ -652,7 +712,6 @@ static int main_utf8(int argc, char *argv[])
     return exit_status;
 }
 
-#ifndef WINDOWS_NO_UNICODE
 int wmain(int argc, wchar_t *argv[], wchar_t *envp[]) {
     /* Duplicate args as utf8 */
     char **nargv;
@@ -685,4 +744,3 @@ err:
 
     return code;
 }
-#endif

@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -40,8 +40,8 @@ glyph_show_setup(i_ctx_t *i_ctx_p, gs_glyph *pglyph)
         case ft_CID_user_defined:
         case ft_CID_TrueType:
         case ft_CID_bitmap:
-            check_int_leu(*op, gs_max_glyph - gs_min_cid_glyph);
-            *pglyph = (gs_glyph) op->value.intval + gs_min_cid_glyph;
+            check_int_leu(*op, GS_MAX_GLYPH - GS_MIN_CID_GLYPH);
+            *pglyph = (gs_glyph) op->value.intval + GS_MIN_CID_GLYPH;
             break;
         default:
             check_type(*op, t_name);
@@ -109,7 +109,7 @@ moveshow(i_ctx_t *i_ctx_p, bool have_x, bool have_y)
     size = num_array_size(op, format);
     values = (float *)ialloc_byte_array(size, sizeof(float), "moveshow");
     if (values == 0)
-        return_error(e_VMerror);
+        return_error(gs_error_VMerror);
     if (CPSI_mode)
         memset(values, 0, size * sizeof(values[0])); /* Safety. */
     if ((code = gs_xyshow_begin(igs, op[-1].value.bytes, r_size(op - 1),
@@ -143,7 +143,7 @@ moveshow(i_ctx_t *i_ctx_p, bool have_x, bool have_y)
         case t_real:
             values[i] = value.value.realval; break;
         case t_null:
-            code = gs_note_error(e_rangecheck);
+            code = gs_note_error(gs_error_rangecheck);
             /* falls through */
         default:
             ifree_object(values, "moveshow");

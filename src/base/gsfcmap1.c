@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -77,6 +77,7 @@ public_st_cmap_lookup_range_element();
  */
 
 #ifndef GS_THREADSAFE
+#ifdef DEBUG
 static void
 print_msg_str_in_range(const byte *str,
                        const byte *key_lo, const byte *key_hi,
@@ -89,6 +90,7 @@ print_msg_str_in_range(const byte *str,
     debug_print_string_hex_nomem(key_hi, key_size);
     dlprintf("\n");
 }
+#endif
 #endif
 
 static int
@@ -149,7 +151,7 @@ gs_multidim_CID_offset(const byte *key_str,
  * Decode a character from a string using a code map, updating the index.
  * Return 0 for a CID or name, N > 0 for a character code where N is the
  * number of bytes in the code, or an error.  Store the decoded bytes in
- * *pchr.  For undefined characters, set *pglyph = gs_no_glyph and return 0.
+ * *pchr.  For undefined characters, set *pglyph = GS_NO_GLYPH and return 0.
  */
 static int
 code_map_decode_next_multidim_regime(const gx_code_map_t * pcmap,
@@ -311,13 +313,13 @@ code_map_decode_next_multidim_regime(const gx_code_map_t * pcmap,
 
             switch (pclr->value_type) {
             case CODE_VALUE_CID:
-                *pglyph = gs_min_cid_glyph +
+                *pglyph = GS_MIN_CID_GLYPH +
                     bytes2int(pvalue, pclr->value_size) +
                     gs_multidim_CID_offset(str + pre_size,
                         key, key + step - key_size, key_size);
                 return 0;
             case CODE_VALUE_NOTDEF:
-                *pglyph = gs_min_cid_glyph +
+                *pglyph = GS_MIN_CID_GLYPH +
                     bytes2int(pvalue, pclr->value_size);
                 return 0;
             case CODE_VALUE_GLYPH:
@@ -338,7 +340,7 @@ code_map_decode_next_multidim_regime(const gx_code_map_t * pcmap,
     *pchr = pm_chr;
     *pindex = pm_index;
     *pfidx = pm_fidx;
-    *pglyph = gs_no_glyph;
+    *pglyph = GS_NO_GLYPH;
 
 #ifndef GS_THREADSAFE
 #ifdef DEBUG
@@ -373,7 +375,6 @@ gs_cmap_adobe1_decode_next(const gs_cmap_t * pcmap_in,
 
     uint pm_index;
     uint pm_fidx;
-    gs_char pm_chr;
 
     /* For first, check defined map */
     if_debug0('J', "[J]GCDN() check def CMap\n");
@@ -381,14 +382,13 @@ gs_cmap_adobe1_decode_next(const gs_cmap_t * pcmap_in,
         code_map_decode_next_multidim_regime(&pcmap->def, pstr, pindex, pfidx, pchr, pglyph);
 
     /* This is defined character */
-    if (code != 0 || *pglyph != gs_no_glyph)
+    if (code != 0 || *pglyph != GS_NO_GLYPH)
         return code;
 
     /* In here, this is NOT defined character */
     /* save partially matched results */
     pm_index = *pindex;
     pm_fidx = *pfidx;
-    pm_chr = *pchr;
 
     /* check notdef map. */
     if_debug0('J', "[J]GCDN() check notdef CMap\n");
@@ -397,7 +397,7 @@ gs_cmap_adobe1_decode_next(const gs_cmap_t * pcmap_in,
         code_map_decode_next_multidim_regime(&pcmap->notdef, pstr, pindex, pfidx, pchr, pglyph);
 
     /* This is defined "notdef" character. */
-    if (code != 0 || *pglyph != gs_no_glyph)
+    if (code != 0 || *pglyph != GS_NO_GLYPH)
         return code;
 
     /*
@@ -408,7 +408,7 @@ gs_cmap_adobe1_decode_next(const gs_cmap_t * pcmap_in,
 
         /* there was some partially matched */
 
-        *pglyph = gs_min_cid_glyph;	/* CID = 0 */
+        *pglyph = GS_MIN_CID_GLYPH;	/* CID = 0 */
         *pindex = pm_index;
         *pfidx = pm_fidx;
         *pchr = '\0';
@@ -425,18 +425,18 @@ gs_cmap_adobe1_decode_next(const gs_cmap_t * pcmap_in,
          * at the end of Fonts chapter.
          */
 
-        const byte *str = pstr->data + save_index;
         uint ssize = pstr->size - save_index;
         int chr_size_shortest =
                 gs_cmap_get_shortest_chr(&pcmap->def, pfidx);
 
         if (chr_size_shortest <= ssize) {
-            *pglyph = gs_min_cid_glyph;	/* CID = 0, this is CMap fallback */
+            *pglyph = GS_MIN_CID_GLYPH;	/* CID = 0, this is CMap fallback */
             *pindex = save_index + chr_size_shortest;
             *pchr = '\0';
 #ifndef GS_THREADSAFE
 #ifdef DEBUG
             if (gs_debug_c('J')) {
+                const byte *str = pstr->data + save_index;
                 dlprintf1("[J]GCDN() no partial match, skip %d byte (",
                                                chr_size_shortest);
                 debug_print_string_hex_nomem(str, chr_size_shortest);
@@ -448,7 +448,7 @@ gs_cmap_adobe1_decode_next(const gs_cmap_t * pcmap_in,
         }
         else {
             /* Undecodable string is shorter than the shortest character,
-             * return 'gs_no_glyph' and update index to end-of-string
+             * return 'GS_NO_GLYPH' and update index to end-of-string
              */
 #ifndef GS_THREADSAFE
 #ifdef DEBUG
@@ -458,7 +458,7 @@ gs_cmap_adobe1_decode_next(const gs_cmap_t * pcmap_in,
             }
 #endif
 #endif
-	    *pglyph = gs_no_glyph;
+            *pglyph = GS_NO_GLYPH;
             *pindex += ssize;
             return 0;			/* fixme: should return a code != 0 if caller needs to know */
         }
@@ -496,6 +496,7 @@ adobe1_next_lookup(gs_cmap_lookups_enum_t *penum, const gx_code_map_t *pcm)
 {
     const gx_cmap_lookup_range_t *lookup = &pcm->lookup[penum->index[0]];
 
+    penum->entry.value.data = 0L;
     if (penum->index[0] >= pcm->num_lookup)
         return 1;
     penum->entry.key_size = lookup->key_prefix_size + lookup->key_size;
@@ -508,13 +509,13 @@ adobe1_next_lookup(gs_cmap_lookups_enum_t *penum, const gx_code_map_t *pcm)
     return 0;
 }
 static int
-adobe1_next_lookup_def(gs_cmap_lookups_enum_t *penum)
+adobe1_next_lookup_def(gs_memory_t *mem, gs_cmap_lookups_enum_t *penum)
 {
     return adobe1_next_lookup(penum,
                         &((const gs_cmap_adobe1_t *)penum->cmap)->def);
 }
 static int
-adobe1_next_lookup_notdef(gs_cmap_lookups_enum_t *penum)
+adobe1_next_lookup_notdef(gs_memory_t *mem, gs_cmap_lookups_enum_t *penum)
 {
     return adobe1_next_lookup(penum,
                         &((const gs_cmap_adobe1_t *)penum->cmap)->notdef);

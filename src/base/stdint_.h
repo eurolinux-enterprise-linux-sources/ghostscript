@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -138,37 +138,36 @@ typedef unsigned long long uint64_t;
 #  define PRIu32 "I32u"
 #  define PRIu64 "I64u"
 #  define PRIx64 "I64x"
-# else
-
-#  ifndef PRId32
-#   define PRId32 "d"
-#  endif
-
-#  ifndef PRId64
-#   define PRId64 "lld"
-#  endif
-
-#  ifndef PRIi32
-#   define PRIi32 "i"
-#  endif
-
-#  ifndef PRIi64
-#   define PRIi64 "lli"
-#  endif
-
-#  ifndef PRIu32
-#   define PRIu32 "u"
-#  endif
-
-#  ifndef PRIu64
-#   define PRIu64 "llu"
-#  endif
-
-#  ifndef PRIx64
-#   define PRIx64 "llx"
-#  endif
-
 # endif
 #endif
+
+/* Even if we have inttypes.h, these may not be defined */
+# ifndef PRId32
+#  define PRId32 "d"
+# endif
+
+# ifndef PRId64
+#  define PRId64 "lld"
+# endif
+
+# ifndef PRIi32
+#  define PRIi32 "i"
+# endif
+
+# ifndef PRIi64
+#  define PRIi64 "lli"
+# endif
+
+# ifndef PRIu32
+#  define PRIu32 "u"
+# endif
+
+# ifndef PRIu64
+#  define PRIu64 "llu"
+# endif
+
+# ifndef PRIx64
+#  define PRIx64 "llx"
+# endif
 
 #endif /* stdint__INCLUDED */

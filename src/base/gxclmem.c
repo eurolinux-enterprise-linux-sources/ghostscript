@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -19,9 +19,10 @@
 #include "gx.h"
 #include "gserrors.h"
 #include "gxclmem.h"
+#include "gssprintf.h"
 
 #ifdef PACIFY_VALGRIND
-#include <valgrind/helgrind.h>
+#include "valgrind.h"
 #endif
 
 /*
@@ -158,8 +159,8 @@ static const int64_t COMPRESSION_THRESHOLD =
 #define MALLOC(f, siz, cname)\
   (void *)gs_alloc_bytes((f)->data_memory, siz, cname)
 #define FREE(f, obj, cname)\
-  (gs_free_object((f)->data_memory, obj, cname),\
-   (f)->total_space -= sizeof(*(obj)))
+  do {gs_free_object((f)->data_memory, obj, cname);\
+    (f)->total_space -= sizeof(*(obj));} while (0)
 
 /* Structure descriptor for GC */
 private_st_MEMFILE();
@@ -401,7 +402,7 @@ memfile_fopen(char fname[gp_file_name_sizeof], const char *fmode,
 
     /* Return the address of this memfile as a string for use in future clist_fopen calls */
     fname[0] = 0xff;        /* a flag that this is a memfile name */
-    sprintf(fname+1, "%p", f);
+    gs_sprintf(fname+1, "%p", f);
 
 #ifdef DEBUG
         tot_compressed = 0;

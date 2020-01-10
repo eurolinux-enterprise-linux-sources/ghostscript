@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -23,37 +23,142 @@
 #include "gsargs.h"
 #include "gserrors.h"
 
+int codepoint_to_utf8(char *cstr, int rune)
+{
+    int idx = 0;
+
+    if (rune < 0x80) {
+        cstr[idx++] = rune;
+    } else {
+        if (rune < 0x800) {
+            cstr[idx++] = 0xc0 | (rune>>6);
+        } else {
+            if (rune < 0x10000) {
+                cstr[idx++] = 0xe0 | (rune>>12);
+            } else {
+                if (rune < 0x200000) {
+                    cstr[idx++] = 0xf0 | (rune>>18);
+                } else {
+                    /* Shouldn't ever be required, but included for completeness */
+                    if (rune < 0x4000000) {
+                        cstr[idx++] = 0xf8 | (rune>>24);
+                    } else {
+                        cstr[idx++] = 0xfc | (rune>>30);
+                        cstr[idx++] = 0x80 | ((rune>>24) & 0x3f);
+                    }
+                    cstr[idx++] = 0x80 | ((rune>>18) & 0x3f);
+                }
+                cstr[idx++] = 0x80 | ((rune>>12) & 0x3f);
+            }
+            cstr[idx++] = 0x80 | ((rune>>6) & 0x3f);
+        }
+        cstr[idx++] = 0x80 | (rune & 0x3f);
+    }
+
+    return idx;
+}
+
+static int get_codepoint_utf8(FILE *file, const char **astr)
+{
+    int c;
+    int rune;
+    int len;
+
+    /* This code spots the BOM for utf8 and ignores it. Strictly speaking
+     * this may be wrong, as we are only supposed to ignore it at the beginning
+     * of the string, but if anyone is stupid enough to use ZWNBSP (zero width
+     * non breaking space) in the middle of their strings, then they deserve
+     * what they get. */
+
+    do {
+        c = (file ? fgetc(file) : (**astr ? (int)(unsigned char)*(*astr)++ : EOF));
+        if (c == EOF)
+            return EOF;
+        if (c < 0x80)
+            return c;
+lead: /* We've just read a byte >= 0x80, presumably a leading byte */
+        if (c < 0xc0)
+            continue; /* Illegal - skip it */
+        else if (c < 0xe0)
+            len = 1, rune = c & 0x1f;
+        else if (c < 0xf0)
+            len = 2, rune = c & 0xf;
+        else if (c < 0xf8)
+            len = 3, rune = c & 7;
+        else if (c < 0xfc)
+            len = 4, rune = c & 3;
+        else if (c < 0xfe)
+            len = 5, rune = c & 1;
+        else
+            continue; /* Illegal - skip it */
+        do {
+            c = (file ? fgetc(file) : (**astr ? (int)(unsigned char)*(*astr)++ : EOF));
+            if (c == EOF)
+                return EOF;
+            rune = (rune<<6) | (c & 0x3f);
+        } while (((c & 0xC0) == 0x80) && --len);
+        if (len) {
+            /* The rune we are collecting is improperly formed. */
+            if (c < 0x80) {
+                /* Just return the simple char we've ended on. */
+                return c;
+            }
+            /* Start collecting again */
+            goto lead;
+        }
+        if (rune == 0xFEFF)
+            continue; /* BOM. Skip it */
+        break;
+    } while (1);
+
+    return rune;
+}
+
 /* Initialize an arg list. */
 void
 arg_init(arg_list * pal, const char **argv, int argc,
-         FILE * (*arg_fopen) (const char *fname, void *fopen_data),
-         void *fopen_data)
+         FILE         *(*arg_fopen)(const char *fname, void *fopen_data),
+         void         *fopen_data,
+         int           (*get_codepoint)(FILE *file, const char **astr),
+         gs_memory_t  *memory)
 {
     pal->expand_ats = true;
     pal->arg_fopen = arg_fopen;
     pal->fopen_data = fopen_data;
+    pal->get_codepoint = (get_codepoint ? get_codepoint : get_codepoint_utf8);
+    pal->memory = memory;
     pal->argp = argv + 1;
     pal->argn = argc - 1;
     pal->depth = 0;
+    pal->sources[0].is_file = 0;
+    pal->sources[0].u.s.memory = NULL;
+    pal->sources[0].u.s.decoded = 0;
+    pal->sources[0].u.s.parsed = 0;
 }
 
 /* Push a string onto an arg list. */
 int
 arg_push_memory_string(arg_list * pal, char *str, bool parsed, gs_memory_t * mem)
 {
+    return arg_push_decoded_memory_string(pal, str, parsed, parsed, mem);
+}
+
+int
+arg_push_decoded_memory_string(arg_list * pal, char *str, bool parsed, bool decoded, gs_memory_t * mem)
+{
     arg_source *pas;
 
-    if (pal->depth == arg_depth_max) {
+    if (pal->depth+1 == arg_depth_max) {
         lprintf("Too much nesting of @-files.\n");
         return 1;
     }
-    pas = &pal->sources[pal->depth];
+    pas = &pal->sources[++pal->depth];
     pas->is_file = false;
     pas->u.s.parsed = parsed;
+    pas->u.s.decoded = decoded;
     pas->u.s.chars = str;
     pas->u.s.memory = mem;
     pas->u.s.str = str;
-    pal->depth++;
     return 0;
 }
 
@@ -61,8 +166,9 @@ arg_push_memory_string(arg_list * pal, char *str, bool parsed, gs_memory_t * mem
 void
 arg_finit(arg_list * pal)
 {
+    /* No cleanup is required for level 0 */
     while (pal->depth) {
-        arg_source *pas = &pal->sources[--(pal->depth)];
+        arg_source *pas = &pal->sources[pal->depth--];
 
         if (pas->is_file)
             fclose(pas->u.file);
@@ -71,159 +177,188 @@ arg_finit(arg_list * pal)
     }
 }
 
+static int get_codepoint(arg_list *pal, arg_source *pas)
+{
+    int (*fn)(FILE *file, const char **str);
+
+    fn = (!pas->is_file && pas->u.s.decoded ? get_codepoint_utf8 : pal->get_codepoint);
+    return fn(pas->is_file ? pas->u.file : NULL, &pas->u.s.str);
+}
+
 /* Get the next arg from a list. */
 /* Note that these are not copied to the heap. */
-const char *
-arg_next(arg_list * pal, int *code, const gs_memory_t *errmem)
+/* returns:
+ * >0 - valid argument
+ *  0 - arguments exhausted
+ * <0 - error condition
+ * *argstr is *always* set: to the arg string if it is valid,
+ * or to NULL otherwise
+ */
+int
+arg_next(arg_list * pal, const char **argstr, const gs_memory_t *errmem)
 {
     arg_source *pas;
-    FILE *f;
-    const char *astr = 0;	/* initialized only to pacify gcc */
     char *cstr;
-    const char *result;
-    int endc;
-    int c, i;
+    int c;
+    int i;
     bool in_quote, eol;
 
-  top:pas = &pal->sources[pal->depth - 1];
-    if (pal->depth == 0) {
-        if (pal->argn <= 0)	/* all done */
-            return 0;
-        pal->argn--;
-        result = *(pal->argp++);
-        goto at;
-    }
-    if (pas->is_file)
-        f = pas->u.file, endc = EOF;
-    else if (pas->u.s.parsed)
-        /* this	string is a "pushed-back" argument		     */
-        /* (retrieved by a precedeing arg_next(), but not processed) */
-        if (strlen(pas->u.s.str) >= arg_str_max) {
-            errprintf(errmem, "Command too long: %s\n", pas->u.s.str);
-            *code = gs_error_Fatal;
-            return NULL;
-        } else {
-            strcpy(pal->cstr, pas->u.s.str);
-            result = pal->cstr;
-            if (pas->u.s.memory)
-                gs_free_object(pas->u.s.memory,	pas->u.s.chars,	"arg_next");
-            pal->depth--;
-            pas--;
-            goto at;
-        }
-    else
-        astr = pas->u.s.str, f = NULL, endc = 0;
-    result = cstr = pal->cstr;
-#define cfsgetc() (f == NULL ? (int)(unsigned char)(*astr ? *astr++ : 0) : fgetc(f))
-#define is_eol(c) (c == '\r' || c == '\n')
-    i = 0;
-    in_quote = false;
-    eol = true;
-    c = cfsgetc();
-    for (i = 0;;) {
-        if (c == endc) {
-            if (in_quote) {
-                cstr[i] = 0;
-                errprintf(errmem,
-                          "Unterminated quote in @-file: %s\n", cstr);
-                *code = gs_error_Fatal;
-                return NULL;
+    *argstr = NULL;
+
+    /* Loop over arguments, finding one to return. */
+    do {
+        pas = &pal->sources[pal->depth];
+        if (!pas->is_file && pas->u.s.parsed) {
+            /* This string is a "pushed-back" argument (retrieved
+             * by a preceding arg_next(), but not processed). No
+             * decoding is required. */
+            /* assert(pas->u.s.decoded); */
+            if (strlen(pas->u.s.str) >= arg_str_max) {
+                errprintf(errmem, "Command too long: %s\n", pas->u.s.str);
+                return_error(gs_error_Fatal);
             }
-            if (i == 0) {
+            strcpy(pal->cstr, pas->u.s.str);
+            *argstr = pal->cstr;
+            if (pas->u.s.memory)
+                gs_free_object(pas->u.s.memory, pas->u.s.chars, "arg_next");
+            pal->depth--;
+        } else {
+            /* We need to decode the next argument */
+            if (pal->depth == 0) {
+                if (pal->argn <= 0)
+                    return 0; /* all done */
+                /* Move onto the next argument from the string. */
+                pal->argn--;
+                pas->u.s.str = *(pal->argp++);
+            }
+            /* Skip a prefix of whitespace. */
+            do {
+                c = get_codepoint(pal, pas);
+            } while (c > 0 && c < 256 && isspace(c));
+            if (c == EOF) {
                 /* EOF before any argument characters. */
-                if (f != NULL)
-                    fclose(f);
+                if (pas->is_file)
+                    fclose(pas->u.file);
                 else if (pas->u.s.memory)
                     gs_free_object(pas->u.s.memory, pas->u.s.chars,
                                    "arg_next");
+                /* If depth is 0, then we are reading from the simple
+                 * argument list and we just hit an "empty" argument
+                 * (such as -o ""). Return this. */
+                if (pal->depth == 0)
+                {
+                    *argstr = pal->cstr;
+                    pal->cstr[0] = 0;
+                    break;
+                }
+                /* If depth > 0, then we're reading from a response
+                 * file, and we've hit the end of the response file.
+                 * Pop up one level and continue. */
                 pal->depth--;
-                goto top;
+                continue; /* Next argument */
             }
-            break;
-        }
-        /* c != endc */
-        if (isspace(c)) {
-            if (i == 0) {
-                c = cfsgetc();
-                continue;
+    #define is_eol(c) (c == '\r' || c == '\n')
+            /* Convert from astr into pal->cstr, and return it as *argstr. */
+            *argstr = cstr = pal->cstr;
+            in_quote = false;
+            /* We keep track of whether we have just read an "eol" or not,
+             * in order to skip # characters at the start of a line
+             * (possibly preceeded by whitespace). We do NOT want this to
+             * apply to the start of arguments in the arg list, so only
+             * set eol to be true, if we are in a file. */
+            eol = pal->depth > 0;
+            for (i = 0;;) {
+                if (c == EOF) {
+                    if (in_quote) {
+                        cstr[i] = 0;
+                        errprintf(errmem,
+                                  "Unterminated quote in @-file: %s\n", cstr);
+                        return_error(gs_error_Fatal);
+                    }
+                    break; /* End of arg */
+                }
+                /* c != 0 */
+                /* If we aren't parsing from the arglist (i.e. depth > 0)
+                 * then we break on whitespace (unless we're in quotes). */
+                if (pal->depth > 0 && !in_quote && c > 0 && c < 256 && isspace(c))
+                    break; /* End of arg */
+                /* c isn't leading or terminating whitespace. */
+                if (c == '#' && eol) {
+                    /* Skip a comment. */
+                    do {
+                        c = get_codepoint(pal, pas);
+                    } while (c != 0 && !is_eol(c) && c != EOF);
+                    if (c == '\r')
+                        c = get_codepoint(pal, pas);
+                    if (c == '\n')
+                        c = get_codepoint(pal, pas);
+                    continue; /* Next char */
+                }
+                if (c == '\\') {
+                    /* Check for \ followed by newline. */
+                    c = get_codepoint(pal, pas);
+                    if (is_eol(c)) {
+                        if (c == '\r')
+                            c = get_codepoint(pal, pas);
+                        if (c == '\n')
+                            c = get_codepoint(pal, pas);
+                        eol = true;
+                        continue; /* Next char */
+                    }
+                    /* \ anywhere else is treated as a printing character. */
+                    /* This is different from the Unix shells. */
+                    if (i >= arg_str_max - 1) {
+                        cstr[i] = 0;
+                        errprintf(errmem, "Command too long: %s\n", cstr);
+                        return_error(gs_error_Fatal);
+                    }
+                    cstr[i++] = '\\';
+                    eol = false;
+                    continue; /* Next char */
+                }
+                /* c will become part of the argument */
+                if (i >= arg_str_max - 1) {
+                    cstr[i] = 0;
+                    errprintf(errmem, "Command too long: %s\n", cstr);
+                    return_error(gs_error_Fatal);
+                }
+                /* Allow quotes to protect whitespace. */
+                /* (special cases have already been handled and don't reach this point) */
+                if (c == '"')
+                    in_quote = !in_quote;
+                else
+                    i += codepoint_to_utf8(&cstr[i], c);
+                eol = is_eol(c);
+                c = get_codepoint(pal, pas);
             }
-            if (!in_quote)
-                break;
-        }
-        /* c isn't leading or terminating whitespace. */
-        if (c == '#' && eol) {
-            /* Skip a comment. */
-            do {
-                c = cfsgetc();
-            } while (!(c == endc || is_eol(c)));
-            if (c == '\r')
-                c = cfsgetc();
-            if (c == '\n')
-                c = cfsgetc();
-            continue;
-        }
-        if (c == '\\') {
-            /* Check for \ followed by newline. */
-            c = cfsgetc();
-            if (is_eol(c)) {
-                if (c == '\r')
-                    c = cfsgetc();
-                if (c == '\n')
-                    c = cfsgetc();
-                eol = true;
-                continue;
-            }
-            /* \ anywhere else is treated as a printing character. */
-            /* This is different from the Unix shells. */
-            if (i == arg_str_max - 1) {
-                cstr[i] = 0;
-                errprintf(errmem, "Command too long: %s\n", cstr);
-                *code = gs_error_Fatal;
-                return NULL;
-            }
-            cstr[i++] = '\\';
-            eol = false;
-            continue;
-        }
-        /* c will become part of the argument */
-        if (i == arg_str_max - 1) {
             cstr[i] = 0;
-            errprintf(errmem, "Command too long: %s\n", cstr);
-            *code = gs_error_Fatal;
-            return NULL;
         }
-        /* Allow quotes to protect whitespace. */
-        /* (special cases have already been handled and don't reach this point) */
-        if (c == '"')
-            in_quote = !in_quote;
-        else
-            cstr[i++] = c;
-        eol = is_eol(c);
-        c = cfsgetc();
-    }
-    cstr[i] = 0;
-    if (f == NULL)
-        pas->u.s.str = astr;
-  at:if (pal->expand_ats && result[0] == '@') {
-        if (pal->depth == arg_depth_max) {
-            errprintf(errmem, "Too much nesting of @-files.\n");
-            *code = gs_error_Fatal;
-            return NULL;
+
+        /* At this point *argstr is full of utf8 encoded argument. */
+        /* If it's an @filename argument, then deal with it, and never return
+         * it to the caller. */
+        if (pal->expand_ats && **argstr == '@') {
+            char *fname;
+            FILE *f;
+            if (pal->depth+1 == arg_depth_max) {
+                errprintf(errmem, "Too much nesting of @-files.\n");
+                return_error(gs_error_Fatal);
+            }
+            fname = (char *)*argstr + 1; /* skip @ */
+            f = (*pal->arg_fopen) (fname, pal->fopen_data);
+            if (f == NULL) {
+                errprintf(errmem, "Unable to open command line file %s\n", *argstr);
+                return_error(gs_error_Fatal);
+            }
+            pas = &pal->sources[++pal->depth];
+            pas->is_file = true;
+            pas->u.file = f;
+            *argstr = NULL; /* Empty the argument string so we don't return it. */
+            continue; /* Loop back to parse the first arg from the file. */
         }
-        result++;		/* skip @ */
-        f = (*pal->arg_fopen) (result, pal->fopen_data);
-        if (f == NULL) {
-            errprintf(errmem, "Unable to open command line file %s\n", result);
-            *code = gs_error_Fatal;
-            return NULL;
-        }
-        pal->depth++;
-        pas++;
-        pas->is_file = true;
-        pas->u.file = f;
-        goto top;
-    }
-    return result;
+    } while (*argstr == NULL || **argstr == 0); /* Until we get a non-empty arg */
+
+    return 1;
 }
 
 /* Copy an argument string to the heap. */
@@ -245,4 +380,21 @@ void
 arg_free(char *str, gs_memory_t * mem)
 {
     gs_free_object(mem, str, "arg_copy");
+}
+
+int arg_strcmp(arg_list *pal, const char *arg, const char *match)
+{
+    int rune, c;
+
+    if (!arg || !match)
+        return 1;
+    do {
+        rune = pal->get_codepoint(NULL, &arg);
+        if (rune == -1)
+            rune = 0;
+        c = *match++;
+        if (rune != c)
+            return rune - c;
+    } while (rune && c);
+    return 0;
 }

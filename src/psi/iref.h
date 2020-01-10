@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -41,8 +41,8 @@ typedef struct ref_s ref;
  */
 typedef ushort ref_packed;
 
-#define log2_sizeof_ref_packed arch_log2_sizeof_short
-#define sizeof_ref_packed (1 << log2_sizeof_ref_packed)
+#define ARCH_LOG2_SIZEOF_REF_PACKED ARCH_LOG2_SIZEOF_SHORT
+#define ARCH_SIZEOF_REF_PACKED (1 << ARCH_LOG2_SIZEOF_REF_PACKED)
 
 /* PS integer objects default to 64 bit, and the relevant operator
  * C functions have code to allow the QL tests to pass when
@@ -421,9 +421,14 @@ typedef int (*op_proc_t)(i_ctx_t *i_ctx_p);
  * Note that because of the way packed arrays are represented,
  * the type_attrs member must be the first one in the ref structure.
  */
+ /* The _pad entry ensures that the struct ref_s is the required size
+  * (16 bytes) even with compilers that tightly pack structures - the
+  * size requirement is imposed by the garbarge collector
+  */
 struct tas_s {
 /* type_attrs is a single element for fast dispatching in the interpreter */
     ushort type_attrs;
+    ushort _pad;
     uint32_t rsize;
 };
 struct ref_s {
@@ -493,7 +498,7 @@ struct ref_s {
  * faster dispatch in the interpreter -- see interp.h for more information).
  */
 #if r_type_shift == 8
-#  if arch_is_big_endian
+#  if ARCH_IS_BIG_ENDIAN
 #    define r_type(rp) (((const byte *)&((rp)->tas.type_attrs))[sizeof(ushort)-2])
 #  else
 #    define r_type(rp) (((const byte *)&((rp)->tas.type_attrs))[1])
@@ -601,7 +606,7 @@ struct ref_s {
               /*rsize*/ 0 } }
 
 /* Define the size of a ref. */
-#define arch_sizeof_ref sizeof(ref)
+#define ARCH_SIZEOF_REF sizeof(ref)
 /* Define the required alignment for refs. */
 /* We assume all alignment values are powers of 2. */
 #define ARCH_ALIGN_REF_MOD\
@@ -609,7 +614,7 @@ struct ref_s {
    (ARCH_ALIGN_PTR_MOD - 1)) + 1)
 
 /* Select reasonable values for PDF interpreter */
-/* The maximum array size cannot exceed max_uint/arch_sizeof_ref */
+/* The maximum array size cannot exceed max_uint/ARCH_SIZEOF_REF */
 /* because the allocator cannot allocate a block larger than max_uint. */
 #define max_array_size  (16*1024*1024)
 #define max_string_size (16*1024*1024)

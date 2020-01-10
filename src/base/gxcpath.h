@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -75,6 +75,7 @@ struct gx_clip_list_s {
     int xmin, xmax;		/* min and max X over all but head/tail */
     int count;			/* # of rectangles not counting */
                                 /* head or tail */
+    bool transpose;		/* Transpose x / y */
 };
 
 #define public_st_clip_list()	/* in gxcpath.c */\
@@ -104,6 +105,7 @@ struct gx_device_clip_s {
     gs_int_point translation;
     gs_fixed_rect clipping_box;
     bool clipping_box_set;
+    const gx_clip_path *cpath;
 };
 
 extern_st(st_device_clip);
@@ -112,6 +114,7 @@ extern_st(st_device_clip);
     "gx_device_clip", device_clip_enum_ptrs, device_clip_reloc_ptrs,\
     gx_device_finalize)
 void gx_make_clip_device_on_stack(gx_device_clip * dev, const gx_clip_path *pcpath, gx_device *target);
+void gx_destroy_clip_device_on_stack(gx_device_clip * dev);
 gx_device *gx_make_clip_device_on_stack_if_needed(gx_device_clip * dev, const gx_clip_path *pcpath, gx_device *target, gs_fixed_rect *rect);
 void gx_make_clip_device_in_heap(gx_device_clip * dev, const gx_clip_path *pcpath, gx_device *target,
                               gs_memory_t *mem);

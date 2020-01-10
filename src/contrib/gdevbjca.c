@@ -46,7 +46,7 @@
 #include <math.h>
 #include <time.h>
 
-static void bjc_put_bytes(FILE *file, const char *data, int count);
+static void bjc_put_bytes(FILE *file, const byte *data, int count);
 static void bjc_put_hi_lo(FILE *file, int value);
 static void bjc_put_lo_hi(FILE *file, int value);
 static void bjc_put_command(FILE *file, char command, int count);
@@ -54,9 +54,8 @@ static void bjc_put_command(FILE *file, char command, int count);
 /* ---------------- Utilities ---------------- */
 
 static void
-bjc_put_bytes(FILE *file, const char *data, int count)
+bjc_put_bytes(FILE *file, const byte *data, int count)
 {
-
     fwrite(data, count, 1, file);
 }
 
@@ -109,14 +108,14 @@ bjc_put_CR(FILE *file)
 void
 bjc_put_initialize(FILE *file)
 {
-    bjc_put_bytes(file, "\033@", 2);
+    bjc_put_bytes(file, (const byte *)"\033@", 2);
 }
 
 /* Set initial condition (ESC [ K <count> <init> <id> <parm1> <parm2>) */
 void
 bjc_put_set_initial(FILE *file)
 {
-    bjc_put_bytes(file, "\033[K\002\000\000\017", 7);
+    bjc_put_bytes(file, (const byte *)"\033[K\002\000\000\017", 7);
 }
 
 /* Set data compression (ESC [ b <count> <state>) */
@@ -170,10 +169,10 @@ bjc_put_raster_skip(FILE *file, int skip)
 void
 bjc_put_page_margins(FILE *file, int length, int lm, int rm, int top)
 {
-    char parms[4];
+    byte parms[4];
 
     parms[0] = length, parms[1] = lm, parms[2] = rm, parms[3] = top;
-/*    count = 4;       */ 	/* could be 1..3 */
+/*    count = 4;       */ /* could be 1..3 */
     bjc_put_command(file, 'g', 4);
     bjc_put_bytes(file, parms, 4);
 }
@@ -199,7 +198,7 @@ bjc_put_identify_cartridge(FILE *file,
 /* CMYK raster image (ESC ( A <count> <color>) */
 void
 bjc_put_cmyk_image(FILE *file, char component,
-                   const char *data, int count)
+                   const byte *data, int count)
 {
     bjc_put_command(file, 'A', count + 1);
     fputc(component, file);
@@ -254,7 +253,7 @@ bjc_put_page_id(FILE *file, int id)
 
 /* Continue raster image (ESC ( F <count> <data>) */
 void
-bjc_put_continue_image(FILE *file, const char *data, int count)
+bjc_put_continue_image(FILE *file, const byte *data, int count)
 {
     bjc_put_command(file, 'F', count);
     bjc_put_bytes(file, data, count);
@@ -266,7 +265,7 @@ void
 bjc_put_indexed_image(FILE *file, int dot_rows, int dot_cols, int layers)
 {
     bjc_put_command(file, 'f', 5);
-    fputc('R', file);			/* per spec */
+    fputc('R', file); /* per spec */
     fputc(dot_rows, file);
     fputc(dot_cols, file);
     fputc(layers, file);
@@ -283,8 +282,8 @@ bjc_invert_bytes(byte *row, uint raster, bool inverse, byte lastmask)
         if(!(inverse)) *row = ~(*row);
         if(*row) ret = true;
     }
-        if(!(inverse)) *row ^= 0xff;
-                       *row &= lastmask;
+    if(!(inverse)) *row ^= 0xff;
+    *row &= lastmask;
     return ret;
 }
 
@@ -364,7 +363,7 @@ bjc_compress(const byte *row, uint raster, byte *compressed)
     /* and [end_dis..next) should be encoded as similar. */
     /* Note that either of these ranges may be empty. */
 
-    for ( ; ; ) {	/* Encode up to 128 dissimilar bytes */
+    for ( ; ; ) { /* Encode up to 128 dissimilar bytes */
       uint count = end_dis - compr; /* uint for faster switch */
       switch ( count ) { /* Use memcpy only if it's worthwhile. */
       case 6: cptr[6] = compr[5];
@@ -387,7 +386,7 @@ bjc_compress(const byte *row, uint raster, byte *compressed)
       break;
     }
 
-    {	/* Encode up to 128 similar bytes. */
+    { /* Encode up to 128 similar bytes. */
       /* Note that count may be <0 at end of row. */
       int count = next - end_dis;
       if (next < end_row || test != 0)
@@ -477,8 +476,8 @@ void bjc_init_tresh(gx_device_bjc_printer *dev, int rnd)
  * Errors are accumulated into the array fserrors[], at a resolution of
  * 1/16th of a pixel count.  The error at a given pixel is propagated
  * to its not-yet-processed neighbors using the standard F-S fractions,
- *		...	(here)	7/16
- *		3/16	5/16	1/16
+ *               ... (here) 7/16
+ *              3/16 5/16  1/16
  * We work left-to-right on even rows, right-to-left on odd rows.
  *
  * We can get away with a single array (holding one row's worth of errors)

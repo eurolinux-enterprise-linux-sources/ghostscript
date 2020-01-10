@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -128,7 +128,7 @@ sread_fileno(register stream * s, FILE * file, byte * buf, uint len)
     s->file = file;
     s->file_modes = s->modes;
     s->file_offset = 0;
-    s->file_limit = max_long;
+    s->file_limit = S_FILE_LIMIT_MAX;
 }
 
 /* Confine reading to a subfile.  This is primarily for reusable streams. */
@@ -141,7 +141,7 @@ int
 sread_subfile(stream *s, gs_offset_t start, gs_offset_t length)
 {
     if (s->file == 0 || s->modes != s_mode_read + s_mode_seek ||
-        s->file_offset != 0 || s->file_limit != max_long ||
+        s->file_offset != 0 || s->file_limit != S_FILE_LIMIT_MAX ||
         ((s->position < start || s->position > start + length) &&
          sseek(s, start) < 0)
         )
@@ -226,7 +226,7 @@ s_fileno_read_process(stream_state * st, stream_cursor_read * ignore_pr,
 again:
     max_count = pw->limit - pw->ptr;
     status = 1;
-    if (s->file_limit < max_long) {
+    if (s->file_limit < S_FILE_LIMIT_MAX) {
         gs_offset_t limit_count = s->file_offset + s->file_limit - ltell(fd);
 
         if (max_count > limit_count)
@@ -269,7 +269,7 @@ swrite_fileno(register stream * s, FILE * file, byte * buf, uint len)
     s->file = file;
     s->file_modes = s->modes;
     s->file_offset = 0;		/* in case we switch to reading later */
-    s->file_limit = max_long;	/* ibid. */
+    s->file_limit = S_FILE_LIMIT_MAX;
 }
 /* Initialize for appending to an OS file. */
 void

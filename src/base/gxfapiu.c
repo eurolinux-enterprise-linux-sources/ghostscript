@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -22,6 +22,8 @@
 #include "stream.h"
 #include "strmio.h"
 #include "gsmalloc.h"
+#include "gxfixed.h" /* required by gxchar.h */
+#include "gxchar.h"  /* for MAX_CCACHE_TEMP_BITMAP_BITS */
 
 /* UFST includes : */
 #undef frac_bits
@@ -221,14 +223,18 @@ FAPIU_close(void *s)
 GLOBAL VOID
 MEMinit(FSP0)
 {
-    if_state.pserver->mem_avail[CACHE_POOL] = 16 * 1024 * 1024;
-    if_state.pserver->mem_fund[CACHE_POOL] = 16 * 1024 * 1024;
+    uint cache_pool = MAX_CCACHE_TEMP_BITMAP_BITS << 1;
+    uint buffer_pool = (uint)(4 * 1024 * 1024);
+    uint chargen_pool = (uint)(16 * 1024 * 1024);
 
-    if_state.pserver->mem_avail[BUFFER_POOL] = 4 * 1024 * 1024;
-    if_state.pserver->mem_fund[BUFFER_POOL] = 4 * 1024 * 1024;
+    if_state.pserver->mem_avail[CACHE_POOL] =
+        if_state.pserver->mem_fund[CACHE_POOL] = cache_pool;
 
-    if_state.pserver->mem_avail[CHARGEN_POOL] = 16 * 1024 * 1024;
-    if_state.pserver->mem_fund[CHARGEN_POOL] = 16 * 1024 * 1024;
+    if_state.pserver->mem_avail[BUFFER_POOL] =
+        if_state.pserver->mem_fund[BUFFER_POOL] = buffer_pool;
+
+    if_state.pserver->mem_avail[CHARGEN_POOL] =
+        if_state.pserver->mem_fund[CHARGEN_POOL] = chargen_pool;
 
 }
 #ifndef UFST_MEMORY_CHECKING
@@ -245,6 +251,9 @@ MEMalloc(FSP UW16 pool, SL32 size)
 {
 
     char *ptr;
+
+    if(if_state.pserver->mem_avail[pool] < size)
+        return (MEM_HANDLE)0;
 
 #if UFST_MEMORY_CHECKING
     char *ptr2;

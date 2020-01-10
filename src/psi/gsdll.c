@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 /* Dynamic Link Library interface for OS/2 and MS-Windows Ghostscript */
@@ -71,7 +71,7 @@ static int GSDLLCALL gsdll_old_poll(void *caller_handle);
  * 4. argv
  */
 int GSDLLEXPORT GSDLLAPI
-gsdll_init(GSDLL_CALLBACK callback, HWND hwnd, int argc, char * argv[])
+gsdll_init_with_encoding(GSDLL_CALLBACK callback, HWND hwnd, int argc, char * argv[], int encoding)
 {
     int code;
 
@@ -92,13 +92,34 @@ gsdll_init(GSDLL_CALLBACK callback, HWND hwnd, int argc, char * argv[])
     pgsdll_callback = callback;
 /****** SINGLE-INSTANCE HACK ******/
 
-    code = gsapi_init_with_args(pgs_minst, argc, argv);
-    if (code == e_Quit) {
+    code = gsapi_set_arg_encoding(pgs_minst, encoding);
+    if (code >= 0)
+        code = gsapi_init_with_args(pgs_minst, argc, argv);
+    if (code == gs_error_Quit) {
         gsapi_exit(pgs_minst);
         return GSDLL_INIT_QUIT;
     }
     return code;
 }
+
+int GSDLLEXPORT GSDLLAPI
+gsdll_init(GSDLL_CALLBACK callback, HWND hwnd, int argc, char * argv[])
+{
+    return gsdll_init_with_encoding(callback, hwnd, argc, argv, GS_ARG_ENCODING_LOCAL);
+}
+
+#ifdef __WIN32__
+int GSDLLEXPORT GSDLLAPI
+gsdll_initW(GSDLL_CALLBACK callback, HWND hwnd, int argc, wchar_t * argv[])
+{
+    return gsdll_init_with_encoding(callback, hwnd, argc, (char **)argv, GS_ARG_ENCODING_UTF16LE);
+}
+int GSDLLEXPORT GSDLLAPI
+gsdll_initA(GSDLL_CALLBACK callback, HWND hwnd, int argc, char * argv[])
+{
+    return gsdll_init_with_encoding(callback, hwnd, argc, argv, GS_ARG_ENCODING_LOCAL);
+}
+#endif
 
 /* if return value < 0, then error occured and caller should call */
 /* gsdll_exit, then unload library */
@@ -117,7 +138,7 @@ gsdll_execute_cont(const char * str, int len)
     int exit_code;
     int code = gsapi_run_string_continue(pgs_minst, str, len,
         0, &exit_code);
-    if (code == e_NeedInput)
+    if (code == gs_error_NeedInput)
         code = 0;		/* this is not an error */
     return code;
 }

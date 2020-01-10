@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -232,7 +232,7 @@ refs_set_reloc(obj_header_t * hdr, uint reloc, uint size)
              */
 #define all_marked (align_packed_per_ref * lp_mark)
 # if align_packed_per_ref == 2
-#  if arch_sizeof_int == arch_sizeof_short * 2
+#  if ARCH_SIZEOF_INT == ARCH_SIZEOF_SHORT * 2
 #    undef all_marked
 #    define all_marked ( (lp_mark << (sizeof(short) * 8)) + lp_mark )
 #    define marked (*(int *)rp & all_marked)
@@ -326,10 +326,10 @@ refs_set_reloc(obj_header_t * hdr, uint reloc, uint size)
               (ulong) (hdr + 1), size, freed);
     if (freed == size)
         return false;
-#if arch_sizeof_int > arch_sizeof_short
+#if ARCH_SIZEOF_INT > ARCH_SIZEOF_SHORT
     /*
      * If the final relocation can't fit in the r_size field
-     * (which can't happen if the object shares a chunk with
+     * (which can't happen if the object shares a clump with
      * any other objects, so we know reloc = 0 in this case),
      * we have to keep the entire object unless there are no
      * references to any ref in it.
@@ -736,7 +736,7 @@ refs_compact(const gs_memory_t *mem, obj_header_t * pre, obj_header_t * dpre, ui
     new_size = (byte *) dest - (byte *) (dpre + 1) + sizeof(ref);
 #ifdef DEBUG
     /* Check that the relocation came out OK. */
-    /* NOTE: this check only works within a single chunk. */
+    /* NOTE: this check only works within a single clump. */
     if ((byte *) src - (byte *) dest != r_size((ref *) src - 1) + sizeof(ref)) {
         mlprintf3(mem, "Reloc error for refs 0x%lx: reloc = %lu, stored = %u\n",
                  (ulong) dpre, (ulong) ((byte *) src - (byte *) dest),
@@ -757,6 +757,7 @@ refs_compact(const gs_memory_t *mem, obj_header_t * pre, obj_header_t * dpre, ui
     } else {
         obj_header_t *pfree = (obj_header_t *) ((ref *) dest + 1);
 
+        pfree->o_pad = 0;
         pfree->o_alone = 0;
         pfree->o_size = size - new_size - sizeof(obj_header_t);
         pfree->o_type = &st_bytes;

@@ -1,4 +1,4 @@
-# Copyright (C) 2001-2012 Artifex Software, Inc.
+# Copyright (C) 2001-2018 Artifex Software, Inc.
 # All Rights Reserved.
 #
 # This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
 # of the license contained in the file LICENSE in this distribution.
 #
 # Refer to licensing information at http://www.artifex.com or contact
-# Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-# CA  94903, U.S.A., +1(415)492-9861, for further information.
+# Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+# CA 94945, U.S.A., +1(415)492-9861, for further information.
 #
 # makefile for expat, the XML stream parsig library
 #
@@ -23,7 +23,7 @@
 #	EXPATOBJDIR - directory for object files.
 
 # Define the name of this makefile
-EXPAT_MAK=$(GLSRC)expat.mak
+EXPAT_MAK=$(GLSRC)expat.mak $(TOP_MAKEFILES)
 
 # local aliases
 EXPATSRC=$(EXPATSRCDIR)$(D)lib$(D)
@@ -31,7 +31,8 @@ EXPATGEN=$(EXPATGENDIR)$(D)
 EXPATOBJ=$(EXPATOBJDIR)$(D)
 EXPATO_=$(O_)$(EXPATOBJ)
 
-EXPATCC=$(CC_) $(I_)$(EXPATSRC)lib$(_I) $(EXPAT_CFLAGS)
+EXPATCC=$(CC) $(CFLAGS) $(I_)$(EXPATSRC)lib$(_I) \
+$(D_)XML_POOR_ENTROPY$(_D) $(EXPAT_CFLAGS)
 
 expat.clean : expat.config-clean expat.clean-not-config-clean
 
@@ -46,7 +47,8 @@ expat.config-clean :
 
 expat_=$(EXPATOBJ)xmlparse.$(OBJ) \
 	$(EXPATOBJ)xmltok.$(OBJ) \
-	$(EXPATOBJ)xmlrole.$(OBJ)
+	$(EXPATOBJ)xmlrole.$(OBJ) \
+        $(EXPATOBJ)loadlibrary.$(OBJ)
 
 expat_xmlparse_hdrs=$(EXPATSRC)expat.h \
 	$(EXPATSRC)xmlrole.h \
@@ -70,25 +72,28 @@ expat_xmltok_hdrs=$(EXPATSRC)xmltok_impl.c \
 	$(EXPATSRC)expat_external.h \
 	$(EXPATSRC)internal.h
 
-$(EXPATOBJ)xmlparse.$(OBJ) : $(EXPATSRC)xmlparse.c $(expat_xmlparse_hdrs)
+$(EXPATOBJ)xmlparse.$(OBJ) : $(EXPATSRC)xmlparse.c $(expat_xmlparse_hdrs) $(EXPAT_MAK) $(MAKEDIRS)
 	$(EXPATCC) $(EXPATO_)xmlparse.$(OBJ) $(C_) $(EXPATSRC)xmlparse.c
 
-$(EXPATOBJ)xmlrole.$(OBJ) : $(EXPATSRC)xmlrole.c $(expat_xmlrole_hdrs)
+$(EXPATOBJ)xmlrole.$(OBJ) : $(EXPATSRC)xmlrole.c $(expat_xmlrole_hdrs) $(EXPAT_MAK) $(MAKEDIRS)
 	$(EXPATCC) $(EXPATO_)xmlrole.$(OBJ) $(C_) $(EXPATSRC)xmlrole.c
 
-$(EXPATOBJ)xmltok.$(OBJ) : $(EXPATSRC)xmltok.c $(expat_xmltok_hdrs)
+$(EXPATOBJ)xmltok.$(OBJ) : $(EXPATSRC)xmltok.c $(expat_xmltok_hdrs) $(EXPAT_MAK) $(MAKEDIRS)
 	$(EXPATCC) $(EXPATO_)xmltok.$(OBJ) $(C_) $(EXPATSRC)xmltok.c
 
+$(EXPATOBJ)loadlibrary.$(OBJ) : $(EXPATSRC)loadlibrary.c $(expat_xmltok_hdrs) $(EXPAT_MAK) $(MAKEDIRS)
+	$(EXPATCC) $(EXPATO_)loadlibrary.$(OBJ) $(C_) $(EXPATSRC)loadlibrary.c
+
 # Copy the target definition we want
-$(EXPATGEN)expat.dev : $(TOP_MAKEFILES) $(EXPAT_MAK) \
- $(EXPATGEN)expat_$(SHARE_EXPAT).dev
+$(EXPATGEN)expat.dev : $(EXPAT_MAK) \
+ $(EXPATGEN)expat_$(SHARE_EXPAT).dev $(MAKEDIRS)
 	$(CP_) $(EXPATGEN)expat_$(SHARE_EXPAT).dev $(EXPATGEN)expat.dev
 
 # Define the compiled in target
-$(EXPATGEN)expat_0.dev : $(EXPAT_MAK) $(ECHOGS_XE) $(expat_)
+$(EXPATGEN)expat_0.dev : $(EXPAT_MAK) $(ECHOGS_XE) $(expat_) $(MAKEDIRS)
 	$(SETMOD) $(EXPATGEN)expat_0 $(expat_)
 
 # Define the external link target
-$(EXPATGEN)expat_1.dev : $(EXPAT_MAK) $(ECHOGS_XE)
+$(EXPATGEN)expat_1.dev : $(EXPAT_MAK) $(ECHOGS_XE) $(MAKEDIRS)
 	$(SETMOD) $(EXPATGEN)expat_1 -lib expat
 

@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -55,7 +55,7 @@ struct gx_image_type_s {
      * structure, but ImageType 2 images must compute it.
      */
 #define image_proc_source_size(proc)\
-  int proc(const gs_imager_state *pis, const gs_image_common_t *pic,\
+  int proc(const gs_gstate *pgs, const gs_image_common_t *pic,\
     gs_int_point *psize)
 
     image_proc_source_size((*source_size));
@@ -257,5 +257,8 @@ image_enum_proc_flush(gx_image1_flush);
 
 /* Free the image enumerator. */
 void gx_image_free_enum(gx_image_enum_common_t **ppenum);
+
+/* Needed in clist image (high level) color monitoring set up */
+void image_init_map(byte * map, int map_size, const float *decode);
 
 #endif /* gxiparam_INCLUDED */

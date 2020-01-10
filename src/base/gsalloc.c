@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -25,13 +25,27 @@
 #include "stream.h"		/* for clearing stream list */
 #include "malloc_.h" /* For MEMENTO */
 
+#if GS_USE_MEMORY_HEADER_ID
+gs_id hdr_id = 0;
+#ifdef DEBUG
+/**** BIG WARNING: Calling this could be catastrophic if "ptr" does not point
+ **** to a GS "struct" allocation.
+ ****/
+gs_id get_mem_hdr_id (void *ptr)
+{
+    return (*((hdr_id_t *)((byte *)ptr) - HDR_ID_OFFSET));
+}
+#endif
+#endif
+
+
 /*
- * Define whether to try consolidating space before adding a new chunk.
+ * Define whether to try consolidating space before adding a new clump.
  * The default is not to do this, because it is computationally
  * expensive and doesn't seem to help much.  However, this is done for
  * "controlled" spaces whether or not the #define is in effect.
  */
-/*#define CONSOLIDATE_BEFORE_ADDING_CHUNK */
+/*#define CONSOLIDATE_BEFORE_ADDING_CLUMP */
 
 /*
  * This allocator produces tracing messages of the form
@@ -42,7 +56,7 @@
  *   O is {alloc = +, free = -, grow = >, shrink = <},
  *   T is {bytes = b, object = <, ref = $, string = >}, and
  *   S is {small freelist = f, large freelist = F, LIFO = space,
- *      own chunk = L, lost = #, lost own chunk = ~, other = .}.
+ *      own clump = L, lost = #, lost own clump = ~, other = .}.
  */
 #ifdef DEBUG
 static int
@@ -115,11 +129,11 @@ static obj_header_t *large_freelist_alloc(gs_ref_memory_t *mem, uint size);
 static obj_header_t *scavenge_low_free(gs_ref_memory_t *mem, unsigned request_size);
 static ulong compute_free_objects(gs_ref_memory_t *);
 static obj_header_t *alloc_obj(gs_ref_memory_t *, ulong, gs_memory_type_ptr_t, alloc_flags_t, client_name_t);
-static void consolidate_chunk_free(chunk_t *cp, gs_ref_memory_t *mem);
-static void trim_obj(gs_ref_memory_t *mem, obj_header_t *obj, uint size, chunk_t *cp);
-static chunk_t *alloc_acquire_chunk(gs_ref_memory_t *, ulong, bool, client_name_t);
-static chunk_t *alloc_add_chunk(gs_ref_memory_t *, ulong, client_name_t);
-void alloc_close_chunk(gs_ref_memory_t *);
+static void consolidate_clump_free(clump_t *cp, gs_ref_memory_t *mem);
+static void trim_obj(gs_ref_memory_t *mem, obj_header_t *obj, uint size, clump_t *cp);
+static clump_t *alloc_acquire_clump(gs_ref_memory_t *, ulong, bool, client_name_t);
+static clump_t *alloc_add_clump(gs_ref_memory_t *, ulong, client_name_t);
+void alloc_close_clump(gs_ref_memory_t *);
 
 /*
  * Define the standard implementation (with garbage collection)
@@ -151,6 +165,8 @@ static gs_memory_proc_free_string(i_free_string);
 static gs_memory_proc_register_root(i_register_root);
 static gs_memory_proc_unregister_root(i_unregister_root);
 static gs_memory_proc_enable_free(i_enable_free);
+static gs_memory_proc_set_object_type(i_set_object_type);
+static gs_memory_proc_defer_frees(i_defer_frees);
 
 /* We export the procedures for subclasses. */
 const gs_memory_procs_t gs_ref_memory_procs =
@@ -179,19 +195,572 @@ const gs_memory_procs_t gs_ref_memory_procs =
     i_free_string,
     i_register_root,
     i_unregister_root,
-    i_enable_free
+    i_enable_free,
+    i_set_object_type,
+    i_defer_frees
 };
+
+/*
+ * Previous versions of this code used a simple linked list of
+ * clumps. We change here to use a splay tree of clumps.
+ * Splay Trees can be found documented in "Algorithms and Data
+ * Structures" by Jeffrey H Kingston.
+ *
+ * Essentially they are binary trees, ordered by address of the
+ * 'cbase' pointer. The 'cunning' feature with them is that
+ * when a node in the tree is accessed, we do a 'move to root'
+ * operation. This involves performing various 'rotations' as
+ * we move up the tree, the net effect of which tends to
+ * lead to more balanced trees (see Kingston for analysis).
+ * It also leads to better locality of reference in that
+ * recently accessed nodes stay near the root.
+ */
+
+/* #define DEBUG_CLUMPS */
+#ifdef DEBUG_CLUMPS
+#define SANITY_CHECK(cp) sanity_check(cp)
+#define SANITY_CHECK_MID(cp) sanity_check_mid(cp)
+
+static void
+broken_splay()
+{
+    dlprintf("Broken splay tree!\n");
+}
+
+void sanity_check_rec(clump_t *cp)
+{
+    splay_dir_t from = SPLAY_FROM_ABOVE;
+
+    while (cp)
+    {
+        if (from == SPLAY_FROM_ABOVE)
+        {
+            /* We have arrived from above. Step left. */
+            if (cp->left)
+            {
+                if (cp->left->cbase > cp->cbase || cp->left->parent != cp)
+                    broken_splay();
+                cp = cp->left;
+                from = SPLAY_FROM_ABOVE;
+                continue;
+            }
+            /* No left to step to, so imagine we have just arrived from there */
+            from = SPLAY_FROM_LEFT;
+        }
+        if (from == SPLAY_FROM_LEFT)
+        {
+            /* We have arrived from the left. Step right. */
+            if (cp->right)
+            {
+                if (cp->right->cbase < cp->cbase || cp->right->parent != cp)
+                    broken_splay();
+                cp = cp->right;
+                from = SPLAY_FROM_ABOVE;
+                continue;
+            }
+            /* No right to step to, so imagine we have just arrived from there. */
+            from = SPLAY_FROM_RIGHT;
+        }
+        if (from == SPLAY_FROM_RIGHT)
+        {
+            /* We have arrived from the right. Step up. */
+            if (cp->parent == NULL)
+                break;
+            if (cp->parent->left != cp && cp->parent->right != cp)
+                broken_splay();
+            from = (cp->parent->left == cp ? SPLAY_FROM_LEFT : SPLAY_FROM_RIGHT);
+            cp = cp->parent;
+        }
+    }
+}
+
+void sanity_check(clump_t *cp)
+{
+    sanity_check_rec(cp);
+}
+
+void sanity_check_mid(clump_t *cp)
+{
+    clump_t *parent;
+
+    while ((parent = cp->parent) != NULL)
+    {
+        if (parent->left == cp)
+        {
+            if (parent->right == cp)
+                broken_splay();
+        }
+        else if (parent->right != cp)
+            broken_splay();
+        cp = parent;
+    }
+
+    sanity_check_rec(cp);
+}
+
+#else
+#define SANITY_CHECK(cp) while (0) {}
+#define SANITY_CHECK_MID(cp) while (0) {}
+#endif
+
+/* When initing with the root, we want to pass the smallest inorder one
+ * back immediately, and set it up so that we step right for the next
+ * one. */
+clump_t *
+clump_splay_walk_init(clump_splay_walker *sw, const gs_ref_memory_t *mem)
+{
+    clump_t *cp = mem->root;
+
+    if (cp)
+    {
+        SANITY_CHECK(cp);
+
+        sw->from = SPLAY_FROM_LEFT;
+        while (cp->left)
+        {
+            cp = cp->left;
+        }
+    }
+    sw->cp = cp;
+    sw->end = NULL;
+    return cp;
+}
+
+clump_t *
+clump_splay_walk_bwd_init(clump_splay_walker *sw, const gs_ref_memory_t *mem)
+{
+    clump_t *cp = mem->root;
+
+    if (cp)
+    {
+        SANITY_CHECK(cp);
+
+        sw->from = SPLAY_FROM_RIGHT;
+        while (cp->right)
+        {
+            cp = cp->right;
+        }
+    }
+    sw->cp = cp;
+    sw->end = NULL;
+    return cp;
+}
+
+/* When initing 'mid walk' (i.e. with a non-root node), we want to
+ * return the node we are given as the first one, and continue
+ * onwards in an in order fashion.
+ */
+clump_t *
+clump_splay_walk_init_mid(clump_splay_walker *sw, clump_t *cp)
+{
+    sw->from = SPLAY_FROM_LEFT;
+    sw->cp = cp;
+    sw->end = cp;
+    if (cp)
+    {
+        SANITY_CHECK_MID(cp);
+    }
+    return cp;
+}
+
+clump_t *
+clump_splay_walk_fwd(clump_splay_walker *sw)
+{
+    clump_t *cp = sw->cp;
+    int from = sw->from;
+
+    if (cp == NULL)
+        return NULL;
+
+    /* We step through the tree, and stop when we arrive
+     * at sw->end in an in order manner (i.e. by moving from
+     * the left). */
+    while (1)
+    {
+        if (from == SPLAY_FROM_ABOVE)
+        {
+            /* We have arrived from above. Step left. */
+            if (cp->left)
+            {
+                cp = cp->left;
+                from = SPLAY_FROM_ABOVE;
+                continue;
+            }
+            /* No left to step to, so imagine we have just arrived from there */
+            from = SPLAY_FROM_LEFT;
+            /* Have we reached the stopping point? */
+            if (cp == sw->end)
+                cp = NULL;
+            /* We want to stop here, for inorder operation. So break out of the loop. */
+            break;
+        }
+        if (from == SPLAY_FROM_LEFT)
+        {
+            /* We have arrived from the left. Step right. */
+            if (cp->right)
+            {
+                cp = cp->right;
+                from = SPLAY_FROM_ABOVE;
+                continue;
+            }
+            /* No right to step to, so imagine we have just arrived from there. */
+            from = SPLAY_FROM_RIGHT;
+        }
+        if (from == SPLAY_FROM_RIGHT)
+        {
+            /* We have arrived from the right. Step up. */
+            clump_t *old = cp;
+            cp = cp->parent;
+            if (cp == NULL)
+            {
+                /* We've reached the root of the tree. Is this our stopping point? */
+                if (sw->end == NULL)
+                    break;
+                /* If not, step on. */
+                cp = old;
+                from = SPLAY_FROM_ABOVE;
+            }
+            else
+            {
+                from = (cp->left == old ? SPLAY_FROM_LEFT : SPLAY_FROM_RIGHT);
+                if (from == SPLAY_FROM_LEFT)
+                {
+                    /* Have we reached the stopping point? */
+                    if (cp == sw->end)
+                        cp = NULL;
+                    break;
+                }
+            }
+        }
+    }
+    sw->cp = cp;
+    sw->from = from;
+    return cp;
+}
+
+clump_t *
+clump_splay_walk_bwd(clump_splay_walker *sw)
+{
+    clump_t *cp = sw->cp;
+    int from = sw->from;
+
+    if (cp == NULL)
+        return NULL;
+
+    /* We step backwards through the tree, and stop when we arrive
+     * at sw->end in a reverse in order manner (i.e. by moving from
+     * the right). */
+    while (1)
+    {
+        if (from == SPLAY_FROM_ABOVE)
+        {
+            /* We have arrived from above. Step right. */
+            if (cp->right)
+            {
+                cp = cp->right;
+                from = SPLAY_FROM_ABOVE;
+                continue;
+            }
+            /* No right to step to, so imagine we have just arrived from there. */
+            from = SPLAY_FROM_RIGHT;
+            /* Have we reached our end? */
+            if (cp == sw->end)
+                cp = NULL;
+            /* Stop to run inorder operation */
+            break;
+        }
+        if (from == SPLAY_FROM_RIGHT)
+        {
+            /* We have arrived from the right. Step left. */
+            if (cp->left)
+            {
+                cp = cp->left;
+                from = SPLAY_FROM_ABOVE;
+                continue;
+            }
+            /* No left to step to, so imagine we have just arrived from there. */
+            from = SPLAY_FROM_LEFT;
+        }
+        if (from == SPLAY_FROM_LEFT)
+        {
+            /* We have arrived from the left. Step up. */
+            clump_t *old = cp;
+            cp = cp->parent;
+            from = (cp == NULL || cp->left != old ? SPLAY_FROM_RIGHT : SPLAY_FROM_LEFT);
+            if (from == SPLAY_FROM_RIGHT)
+            {
+                if (cp == sw->end)
+                    cp = NULL;
+                break;
+            }
+        }
+    }
+    sw->cp = cp;
+    sw->from = from;
+    return cp;
+}
+
+static clump_t *
+clump_splay_remove(clump_t *cp, gs_ref_memory_t *imem)
+{
+    clump_t *replacement;
+
+    if (cp->left == NULL)
+    {
+        /* At most one child - easy */
+        replacement = cp->right;
+    }
+    else if (cp->right == NULL)
+    {
+        /* Strictly one child - easy */
+        replacement = cp->left;
+    }
+    else
+    {
+        /* 2 Children - tricky */
+        /* Find in-order predecessor to f */
+        replacement = cp->left;
+        while (replacement->right)
+            replacement = replacement->right;
+        /* Remove replacement - easy as just one child */
+        (void)clump_splay_remove(replacement, imem);
+        /* Replace cp with replacement */
+        if (cp->left)
+            cp->left->parent = replacement;
+        cp->right->parent = replacement;
+        replacement->left = cp->left;
+        replacement->right = cp->right;
+    }
+    if (cp->parent)
+    {
+        if (cp->parent->left == cp)
+            cp->parent->left = replacement;
+        else
+            cp->parent->right = replacement;
+    }
+    else
+        imem->root = replacement;
+    if (replacement)
+        replacement->parent = cp->parent;
+    return replacement;
+}
+
+/* Here we apply a function to all the nodes in a tree in
+ * depth first order. This means that the given function
+ * can safely alter: 1) the clump, 2) it's children,
+ * 3) it's parents child pointer that points to it
+ * without fear of corruption. Specifically this means
+ * that the function can free (and unlink) the node
+ * if it wants.
+ */
+clump_t *
+clump_splay_app(clump_t *root, gs_ref_memory_t *imem, splay_app_result_t (*fn)(clump_t *, void *), void *arg)
+{
+    clump_t *step_to;
+    clump_t *cp = root;
+    int from = SPLAY_FROM_ABOVE;
+    splay_app_result_t res;
+
+    SANITY_CHECK(cp);
+
+    while (cp)
+    {
+        if (from == SPLAY_FROM_ABOVE)
+        {
+            /* We have arrived from above. Step left. */
+            step_to = cp->left;
+            if (step_to)
+            {
+                from = SPLAY_FROM_ABOVE;
+                cp = step_to;
+            }
+            else
+            {
+                /* No left to step to, so imagine we have just arrived from the left */
+                from = SPLAY_FROM_LEFT;
+            }
+        }
+        if (from == SPLAY_FROM_LEFT)
+        {
+            /* We have arrived from the left. Step right. */
+            step_to = cp->right;
+            if (step_to)
+            {
+                from = SPLAY_FROM_ABOVE;
+                cp = step_to;
+            }
+            else
+            {
+                /* No right to step to, so imagine we have just arrived from the right. */
+                from = SPLAY_FROM_RIGHT;
+            }
+        }
+        if (from == SPLAY_FROM_RIGHT)
+        {
+            /* We have arrived from the right. Step up. */
+            step_to = cp->parent;
+            if (step_to)
+            {
+                from = (step_to->left == cp ? SPLAY_FROM_LEFT : SPLAY_FROM_RIGHT);
+            }
+            res = fn(cp, arg);
+            if (res & SPLAY_APP_STOP)
+                return cp;
+            cp = step_to;
+        }
+    }
+    return cp;
+}
+
+/* Move the given node to the root of the tree, by
+ * performing a series of the following rotations.
+ * The key observation here is that all these
+ * rotations preserve the ordering of the tree, and
+ * result in 'x' getting higher.
+ *
+ * Case 1:   z          x           Case 1b:   z                   x
+ *          # #        # #                    # #                 # #
+ *         y   D      A   y                  A   y               y   D
+ *        # #     =>     # #                    # #     =>      # #
+ *       x   C          B   z                  B   x           z   C
+ *      # #                # #                    # #         # #
+ *     A   B              C   D                  C   D       A   B
+ *
+ * Case 2:   z             x        Case 2b:   z                  x
+ *          # #          ## ##                # #               ## ##
+ *         y   D        y     z              A   y             z     y
+ *        # #     =>   # #   # #                # #     =>    # #   # #
+ *       A   x        A   B C   D              x   D         A   B C   D
+ *          # #                               # #
+ *         B   C                             B   C
+ *
+ * Case 3:   y          x           Case 3b:  y                  x
+ *          # #        # #                   # #                # #
+ *         x   C  =>  A   y                 A   x       =>     y   C
+ *        # #            # #                   # #            # #
+ *       A   B          B   C                 B   C          A   B
+ */
+static void
+splay_move_to_root(clump_t *x, gs_ref_memory_t *mem)
+{
+    clump_t *y, *z;
+
+    if (x == NULL)
+        return;
+
+    while ((y = x->parent) != NULL) {
+        if ((z = y->parent) != NULL) {
+            x->parent = z->parent;
+            if (x->parent) {
+                if (x->parent->left == z)
+                    x->parent->left = x;
+                else
+                    x->parent->right  = x;
+            }
+            y->parent = x;
+            /* Case 1, 1b, 2 or 2b */
+            if (y->left == x) {
+                /* Case 1 or 2b */
+                if (z->left == y) {
+                    /* Case 1 */
+                    y->left = x->right;
+                    if (y->left)
+                        y->left->parent = y;
+                    z->left = y->right;
+                    if (z->left)
+                        z->left->parent = z;
+                    y->right = z;
+                    z->parent = y;
+                } else {
+                    /* Case 2b */
+                    z->right = x->left;
+                    if (z->right)
+                        z->right->parent = z;
+                    y->left = x->right;
+                    if (y->left)
+                        y->left->parent = y;
+                    x->left = z;
+                    z->parent = x;
+                }
+                x->right      = y;
+            } else {
+                /* Case 2 or 1b */
+                if (z->left == y) {
+                    /* Case 2 */
+                    y->right = x->left;
+                    if (y->right)
+                        y->right->parent = y;
+                    z->left = x->right;
+                    if (z->left)
+                        z->left->parent = z;
+                    x->right = z;
+                    z->parent = x;
+                } else {
+                    /* Case 1b */
+                    z->right = y->left;
+                    if (z->right)
+                        z->right->parent = z;
+                    y->right = x->left;
+                    if (y->right)
+                        y->right->parent = y;
+                    y->left = z;
+                    z->parent = y;
+                }
+                x->left = y;
+            }
+        } else {
+            /* Case 3 or 3b */
+            x->parent = NULL;
+            y->parent = x;
+            if (y->left == x) {
+                /* Case 3 */
+                y->left = x->right;
+                if (y->left)
+                    y->left->parent = y;
+                x->right = y;
+            } else {
+                /* Case 3b */
+                y->right = x->left;
+                if (y->right)
+                    y->right->parent = y;
+                x->left = y;
+            }
+        }
+    }
+    mem->root = x;
+}
+
+static void
+splay_insert(clump_t *cp, gs_ref_memory_t *mem)
+{
+    clump_t *node = NULL;
+    clump_t **root = &mem->root;
+
+    while (*root) {
+        node = *root;
+        if (PTR_LT(cp->cbase, node->cbase)) {
+            root = &node->left;
+        } else {
+            root = &node->right;
+        }
+    }
+    *root = cp;
+    cp->left = NULL;
+    cp->right = NULL;
+    cp->parent = node;
+    splay_move_to_root(cp, mem);
+}
 
 /*
  * Allocate and mostly initialize the state of an allocator (system, global,
  * or local).  Does not initialize global or space.
  */
 static void *ialloc_solo(gs_memory_t *, gs_memory_type_ptr_t,
-                          chunk_t **);
+                          clump_t **);
 gs_ref_memory_t *
-ialloc_alloc_state(gs_memory_t * parent, uint chunk_size)
+ialloc_alloc_state(gs_memory_t * parent, uint clump_size)
 {
-    chunk_t *cp;
+    clump_t *cp;
     gs_ref_memory_t *iimem = ialloc_solo(parent, &st_ref_memory, &cp);
 
     if (iimem == 0)
@@ -201,16 +770,15 @@ ialloc_alloc_state(gs_memory_t * parent, uint chunk_size)
     iimem->gs_lib_ctx = parent->gs_lib_ctx;
     iimem->non_gc_memory = parent;
     iimem->thread_safe_memory = parent->thread_safe_memory;
-    iimem->chunk_size = chunk_size;
-#ifdef MEMENTO
+    iimem->clump_size = clump_size;
+#if defined(MEMENTO) || defined(SINGLE_OBJECT_MEMORY_BLOCKS_ONLY)
     iimem->large_size = 1;
 #else
-    iimem->large_size = ((chunk_size / 4) & -obj_align_mod) + 1;
+    iimem->large_size = ((clump_size / 4) & -obj_align_mod) + 1;
 #endif
     iimem->is_controlled = false;
-    iimem->gc_status.vm_threshold = chunk_size * 3L;
-    iimem->gc_status.max_vm = 0x7fffffff;
-    iimem->gc_status.psignal = NULL;
+    iimem->gc_status.vm_threshold = clump_size * 3L;
+    iimem->gc_status.max_vm = max_long;
     iimem->gc_status.signal_value = 0;
     iimem->gc_status.enabled = false;
     iimem->gc_status.requested = 0;
@@ -218,10 +786,9 @@ ialloc_alloc_state(gs_memory_t * parent, uint chunk_size)
     iimem->previous_status.allocated = 0;
     iimem->previous_status.used = 0;
     ialloc_reset(iimem);
-    iimem->cfirst = iimem->clast = cp;
+    iimem->root = cp;
     ialloc_set_limit(iimem);
-    iimem->cc.cbot = iimem->cc.ctop = 0;
-    iimem->pcc = 0;
+    iimem->cc = NULL;
     iimem->save_level = 0;
     iimem->new_mask = 0;
     iimem->test_mask = ~0;
@@ -233,31 +800,36 @@ ialloc_alloc_state(gs_memory_t * parent, uint chunk_size)
     return iimem;
 }
 
-/* Allocate a 'solo' object with its own chunk. */
+/* Allocate a 'solo' object with its own clump. */
 static void *
 ialloc_solo(gs_memory_t * parent, gs_memory_type_ptr_t pstype,
-            chunk_t ** pcp)
+            clump_t ** pcp)
 {	/*
          * We can't assume that the parent uses the same object header
          * that we do, but the GC requires that allocators have
          * such a header.  Therefore, we prepend one explicitly.
          */
-    chunk_t *cp =
-        gs_raw_alloc_struct_immovable(parent, &st_chunk,
-                                      "ialloc_solo(chunk)");
+    clump_t *cp =
+        gs_raw_alloc_struct_immovable(parent, &st_clump,
+                                      "ialloc_solo(clump)");
     uint csize =
-        ROUND_UP(sizeof(chunk_head_t) + sizeof(obj_header_t) +
+        ROUND_UP(sizeof(clump_head_t) + sizeof(obj_header_t) +
                  pstype->ssize,
                  obj_align_mod);
     byte *cdata = gs_alloc_bytes_immovable(parent, csize, "ialloc_solo");
-    obj_header_t *obj = (obj_header_t *) (cdata + sizeof(chunk_head_t));
+    obj_header_t *obj = (obj_header_t *) (cdata + sizeof(clump_head_t));
 
-    if (cp == 0 || cdata == 0)
+    if (cp == 0 || cdata == 0) {
+        gs_free_object(parent, cp, "ialloc_solo(allocation failure)");
+        gs_free_object(parent, cdata, "ialloc_solo(allocation failure)");
         return 0;
-    alloc_init_chunk(cp, cdata, cdata + csize, false, (chunk_t *) NULL);
+    }
+    alloc_init_clump(cp, cdata, cdata + csize, false, (clump_t *) NULL);
     cp->cbot = cp->ctop;
-    cp->cprev = cp->cnext = 0;
+    cp->parent = cp->left = cp->right = 0;
+    cp->c_alone = true;
     /* Construct the object header "by hand". */
+    obj->o_pad = 0;
     obj->o_alone = 1;
     obj->o_size = pstype->ssize;
     obj->o_type = pstype;
@@ -265,29 +837,44 @@ ialloc_solo(gs_memory_t * parent, gs_memory_type_ptr_t pstype,
     return (void *)(obj + 1);
 }
 
+void
+ialloc_free_state(gs_ref_memory_t *iimem)
+{
+    clump_t *cp;
+    gs_memory_t *mem;
+    if (iimem == NULL)
+        return;
+    cp = iimem->root;
+    mem = iimem->non_gc_memory;
+    if (cp == NULL)
+        return;
+    gs_free_object(mem, cp->chead, "ialloc_solo(allocation failure)");
+    gs_free_object(mem, cp, "ialloc_solo(allocation failure)");
+}
+
 /*
- * Add a chunk to an externally controlled allocator.  Such allocators
+ * Add a clump to an externally controlled allocator.  Such allocators
  * allocate all objects as immovable, are not garbage-collected, and
  * don't attempt to acquire additional memory on their own.
  */
 int
-ialloc_add_chunk(gs_ref_memory_t *imem, ulong space, client_name_t cname)
+ialloc_add_clump(gs_ref_memory_t *imem, ulong space, client_name_t cname)
 {
-    chunk_t *cp;
+    clump_t *cp;
 
-    /* Allow acquisition of this chunk. */
+    /* Allow acquisition of this clump. */
     imem->is_controlled = false;
-    imem->large_size = imem->chunk_size;
+    imem->large_size = imem->clump_size;
     imem->limit = max_long;
     imem->gc_status.max_vm = max_long;
 
-    /* Acquire the chunk. */
-    cp = alloc_add_chunk(imem, space, cname);
+    /* Acquire the clump. */
+    cp = alloc_add_clump(imem, space, cname);
 
     /*
      * Make all allocations immovable.  Since the "movable" allocators
-     * allocate within existing chunks, whereas the "immovable" ones
-     * allocate in new chunks, we equate the latter to the former, even
+     * allocate within existing clumps, whereas the "immovable" ones
+     * allocate in new clumps, we equate the latter to the former, even
      * though this seems backwards.
      */
     imem->procs.alloc_bytes_immovable = imem->procs.alloc_bytes;
@@ -296,7 +883,7 @@ ialloc_add_chunk(gs_ref_memory_t *imem, ulong space, client_name_t cname)
     imem->procs.alloc_struct_array_immovable = imem->procs.alloc_struct_array;
     imem->procs.alloc_string_immovable = imem->procs.alloc_string;
 
-    /* Disable acquisition of additional chunks. */
+    /* Disable acquisition of additional clumps. */
     imem->is_controlled = true;
     imem->limit = 0;
 
@@ -323,11 +910,8 @@ ialloc_gc_prepare(gs_ref_memory_t * mem)
 void
 ialloc_reset(gs_ref_memory_t * mem)
 {
-    mem->cfirst = 0;
-    mem->clast = 0;
-    mem->cc.rcur = 0;
-    mem->cc.rtop = 0;
-    mem->cc.has_refs = false;
+    mem->root = 0;
+    mem->cc = NULL;
     mem->allocated = 0;
     mem->changes = 0;
     mem->scan_limit = 0;
@@ -387,12 +971,44 @@ ialloc_set_limit(register gs_ref_memory_t * mem)
     } else
         mem->limit = min(max_allocated, mem->gc_allocated + FORCE_GC_LIMIT);
     if_debug7m('0', (const gs_memory_t *)mem,
-               "[0]space=%d, max_vm=%ld, prev.alloc=%ld, enabled=%d,\n"
-               "      gc_alloc=%ld, threshold=%ld => limit=%ld\n",
+               "[0]space=%d, max_vm=%ld, prev.alloc=%ld, enabled=%d, "
+               "gc_alloc=%ld, threshold=%ld => limit=%ld\n",
                mem->space, (long)mem->gc_status.max_vm,
                (long)mem->previous_status.allocated,
                mem->gc_status.enabled, (long)mem->gc_allocated,
                (long)mem->gc_status.vm_threshold, (long)mem->limit);
+}
+
+struct free_data
+{
+    gs_ref_memory_t *imem;
+    clump_t         *allocator;
+};
+
+static splay_app_result_t
+free_all_not_allocator(clump_t *cp, void *arg)
+{
+    struct free_data *fd = (struct free_data *)arg;
+
+    if (cp->cbase + sizeof(obj_header_t) != (byte *)fd->imem)
+        alloc_free_clump(cp, fd->imem);
+    else
+        fd->allocator = cp;
+
+    return SPLAY_APP_CONTINUE;
+}
+
+static splay_app_result_t
+free_all_allocator(clump_t *cp, void *arg)
+{
+    struct free_data *fd = (struct free_data *)arg;
+
+    if (cp->cbase + sizeof(obj_header_t) != (byte *)fd->imem)
+        return SPLAY_APP_CONTINUE;
+
+    fd->allocator = cp;
+    alloc_free_clump(cp, fd->imem);
+    return SPLAY_APP_STOP;
 }
 
 /*
@@ -403,29 +1019,24 @@ ialloc_set_limit(register gs_ref_memory_t * mem)
 static void
 i_free_all(gs_memory_t * mem, uint free_mask, client_name_t cname)
 {
-    gs_ref_memory_t * const imem = (gs_ref_memory_t *)mem;
-    chunk_t *cp;
+    gs_ref_memory_t * imem = (gs_ref_memory_t *)mem;
+    struct free_data fd;
 
-    if (free_mask & FREE_ALL_DATA) {
-        chunk_t *csucc;
+    fd.imem = imem;
+    fd.allocator = NULL;
 
-        /*
-         * Free the chunks in reverse order, to encourage LIFO behavior.
-         * Don't free the chunk holding the allocator itself.
-         */
-        for (cp = imem->clast; cp != 0; cp = csucc) {
-            csucc = cp->cprev;	/* save before freeing */
-            if (cp->cbase + sizeof(obj_header_t) != (byte *)mem)
-                alloc_free_chunk(cp, imem);
-        }
+    if (free_mask & FREE_ALL_DATA && imem->root != NULL) {
+        /* Free every clump except the allocator */
+        clump_splay_app(imem->root, imem, free_all_not_allocator, &fd);
+
+        /* Reinstate the allocator as the sole clump */
+        imem->root = fd.allocator;
+        if (fd.allocator)
+            fd.allocator->parent = fd.allocator->left = fd.allocator->right = NULL;
     }
     if (free_mask & FREE_ALL_ALLOCATOR) {
-        /* Free the chunk holding the allocator itself. */
-        for (cp = imem->clast; cp != 0; cp = cp->cprev)
-            if (cp->cbase + sizeof(obj_header_t) == (byte *)mem) {
-                alloc_free_chunk(cp, imem);
-                break;
-            }
+        /* Walk the tree to find the allocator. */
+        clump_splay_app(imem->root, imem, free_all_allocator, &fd);
     }
 }
 
@@ -504,6 +1115,7 @@ gs_memory_set_vm_reclaim(gs_ref_memory_t * mem, bool enabled)
                 *pfl = *(obj_header_t **)ptr;\
                 ptr[-1].o_size = size;\
                 ptr[-1].o_type = pstype;\
+                ASSIGN_HDR_ID(ptr);\
                 /* If debugging, clear the block in an attempt to */\
                 /* track down uninitialized data errors. */\
                 gs_alloc_fill(ptr, gs_alloc_fill_alloc, size);
@@ -512,20 +1124,24 @@ gs_memory_set_vm_reclaim(gs_ref_memory_t * mem, bool enabled)
         else if (size > max_freelist_size &&\
                  (ptr = large_freelist_alloc(imem, size)) != 0)\
         {	ptr[-1].o_type = pstype;\
+                ASSIGN_HDR_ID(ptr);\
                 /* If debugging, clear the block in an attempt to */\
                 /* track down uninitialized data errors. */\
                 gs_alloc_fill(ptr, gs_alloc_fill_alloc, size);
 #define ELSEIF_LIFO_ALLOC(ptr, imem, size, pstype)\
         }\
-        else if ( (imem->cc.ctop - (byte *)(ptr = (obj_header_t *)imem->cc.cbot))\
+        else if ( imem->cc && !imem->cc->c_alone && \
+                (imem->cc->ctop - (byte *)(ptr = (obj_header_t *)imem->cc->cbot))\
                 >= size + (obj_align_mod + sizeof(obj_header_t) * 2) &&\
              size < imem->large_size\
            )\
-        {	imem->cc.cbot = (byte *)ptr + obj_size_round(size);\
+        {	imem->cc->cbot = (byte *)ptr + obj_size_round(size);\
+                ptr->o_pad = 0;\
                 ptr->o_alone = 0;\
                 ptr->o_size = size;\
                 ptr->o_type = pstype;\
                 ptr++;\
+                ASSIGN_HDR_ID(ptr);\
                 /* If debugging, clear the block in an attempt to */\
                 /* track down uninitialized data errors. */\
                 gs_alloc_fill(ptr, gs_alloc_fill_alloc, size);
@@ -632,19 +1248,32 @@ i_alloc_struct_immovable(gs_memory_t * mem, gs_memory_type_ptr_t pstype,
     alloc_trace("|+<.", imem, cname, pstype, size, obj);
     return obj;
 }
+
+static inline bool
+alloc_array_check_size(ulong num_elements, ulong elt_size, ulong *lsize)
+{
+    int64_t s = (int64_t)num_elements * elt_size;
+    if (s > max_uint) {
+        return false;
+    }
+    *lsize = (ulong)s;
+    return true;
+}
+
 static byte *
 i_alloc_byte_array(gs_memory_t * mem, uint num_elements, uint elt_size,
                    client_name_t cname)
 {
     gs_ref_memory_t * const imem = (gs_ref_memory_t *)mem;
     obj_header_t *obj;
-
+    ulong lsize;
 #ifdef MEMENTO
     if (Memento_failThisEvent())
         return NULL;
 #endif
-
-    obj = alloc_obj(imem, (ulong) num_elements * elt_size,
+    if (alloc_array_check_size(num_elements, elt_size, &lsize) == false)
+        return NULL;
+    obj = alloc_obj(imem, lsize,
                     &st_bytes, ALLOC_DIRECT, cname);
 
     if_debug6m('A', mem, "[a%d:+b.]%s -bytes-*(%lu=%u*%u) = 0x%lx\n",
@@ -659,13 +1288,14 @@ i_alloc_byte_array_immovable(gs_memory_t * mem, uint num_elements,
 {
     gs_ref_memory_t * const imem = (gs_ref_memory_t *)mem;
     obj_header_t *obj;
-
+    ulong lsize;
 #ifdef MEMENTO
     if (Memento_failThisEvent())
         return NULL;
 #endif
-
-    obj = alloc_obj(imem, (ulong) num_elements * elt_size,
+    if (alloc_array_check_size(num_elements, elt_size, &lsize) == false)
+        return NULL;
+    obj = alloc_obj(imem, lsize,
                     &st_bytes, ALLOC_IMMOVABLE | ALLOC_DIRECT,
                     cname);
 
@@ -681,7 +1311,7 @@ i_alloc_struct_array(gs_memory_t * mem, uint num_elements,
 {
     gs_ref_memory_t * const imem = (gs_ref_memory_t *)mem;
     obj_header_t *obj;
-
+    ulong lsize;
 #ifdef MEMENTO
     if (Memento_failThisEvent())
         return NULL;
@@ -695,9 +1325,9 @@ i_alloc_struct_array(gs_memory_t * mem, uint num_elements,
         return NULL;		/* fail */
     }
 #endif
-    obj = alloc_obj(imem,
-                    (ulong) num_elements * pstype->ssize,
-                    pstype, ALLOC_DIRECT, cname);
+    if (alloc_array_check_size(num_elements, pstype->ssize, &lsize) == false)
+        return NULL;
+    obj = alloc_obj(imem, lsize, pstype, ALLOC_DIRECT, cname);
     if_debug7m('A', mem, "[a%d:+<.]%s %s*(%lu=%u*%u) = 0x%lx\n",
                alloc_trace_space(imem), client_name_string(cname),
                struct_type_name_string(pstype),
@@ -711,16 +1341,16 @@ i_alloc_struct_array_immovable(gs_memory_t * mem, uint num_elements,
 {
     gs_ref_memory_t * const imem = (gs_ref_memory_t *)mem;
     obj_header_t *obj;
-
+    ulong lsize;
 #ifdef MEMENTO
     if (Memento_failThisEvent())
         return NULL;
 #endif
 
     ALLOC_CHECK_SIZE(mem,pstype);
-    obj = alloc_obj(imem,
-                    (ulong) num_elements * pstype->ssize,
-                    pstype, ALLOC_IMMOVABLE | ALLOC_DIRECT, cname);
+    if (alloc_array_check_size(num_elements, pstype->ssize, &lsize) == false)
+        return NULL;
+    obj = alloc_obj(imem, lsize, pstype, ALLOC_IMMOVABLE | ALLOC_DIRECT, cname);
     if_debug7m('A', mem, "[a%d|+<.]%s %s*(%lu=%u*%u) = 0x%lx\n",
                alloc_trace_space(imem), client_name_string(cname),
                struct_type_name_string(pstype),
@@ -750,14 +1380,14 @@ i_resize_object(gs_memory_t * mem, void *obj, uint new_num_elements,
         pp->o_size = new_size;
         new_obj = obj;
     } else
-        if ((byte *)obj + old_size_rounded == imem->cc.cbot &&
-            imem->cc.ctop - (byte *)obj >= new_size_rounded ) {
-            imem->cc.cbot = (byte *)obj + new_size_rounded;
+        if (imem->cc && (byte *)obj + old_size_rounded == imem->cc->cbot &&
+            imem->cc->ctop - (byte *)obj >= new_size_rounded ) {
+            imem->cc->cbot = (byte *)obj + new_size_rounded;
             pp->o_size = new_size;
             new_obj = obj;
         } else /* try and trim the object -- but only if room for a dummy header */
             if (new_size_rounded + sizeof(obj_header_t) <= old_size_rounded) {
-                trim_obj(imem, obj, new_size, (chunk_t *)0);
+                trim_obj(imem, obj, new_size, (clump_t *)0);
                 new_obj = obj;
             }
     if (new_obj) {
@@ -796,7 +1426,7 @@ i_free_object(gs_memory_t * mem, void *ptr, client_name_t cname)
     pstype = pp->o_type;
 #ifdef DEBUG
     if (gs_debug_c('?')) {
-        chunk_locator_t cld;
+        clump_locator_t cld;
 
         if (pstype == &st_free) {
             mlprintf2(mem, "%s: object 0x%lx already free!\n",
@@ -805,8 +1435,8 @@ i_free_object(gs_memory_t * mem, void *ptr, client_name_t cname)
         }
         /* Check that this allocator owns the object being freed. */
         cld.memory = imem;
-        while ((cld.cp = cld.memory->clast),
-               !chunk_locate_ptr(ptr, &cld)
+        while ((cld.cp = cld.memory->root),
+               !clump_locate_ptr(ptr, &cld)
             ) {
             if (!cld.memory->saved) {
                 mlprintf3(mem, "%s: freeing 0x%lx, not owned by memory 0x%lx!\n",
@@ -819,12 +1449,10 @@ i_free_object(gs_memory_t * mem, void *ptr, client_name_t cname)
             cld.memory = (gs_ref_memory_t *) cld.memory->saved;
         }
         /* Check that the object is in the allocated region. */
-        if (cld.memory == imem && cld.cp == imem->pcc)
-            cld.cp = &imem->cc;
         if (!(PTR_BETWEEN((const byte *)pp, cld.cp->cbase,
                           cld.cp->cbot))
             ) {
-            mlprintf5(mem, "%s: freeing 0x%lx,\n\toutside chunk 0x%lx cbase=0x%lx, cbot=0x%lx!\n",
+            mlprintf5(mem, "%s: freeing 0x%lx,\n\toutside clump 0x%lx cbase=0x%lx, cbot=0x%lx!\n",
                       client_name_string(cname), (ulong) ptr,
                       (ulong) cld.cp, (ulong) cld.cp->cbase,
                       (ulong) cld.cp->cbot);
@@ -851,42 +1479,42 @@ i_free_object(gs_memory_t * mem, void *ptr, client_name_t cname)
         if (gs_debug['a'] || gs_debug['A'])
             pstype = &saved_stype;
     }
-    if ((byte *) ptr + rounded_size == imem->cc.cbot) {
+    if (imem->cc && (byte *) ptr + rounded_size == imem->cc->cbot) {
         alloc_trace(":-o ", imem, cname, pstype, size, ptr);
         gs_alloc_fill(ptr, gs_alloc_fill_free, size);
-        imem->cc.cbot = (byte *) pp;
+        imem->cc->cbot = (byte *) pp;
         /* IFF this object is adjacent to (or below) the byte after the
-         * highest free object, do the consolidation within this chunk. */
-        if ((byte *)pp <= imem->cc.int_freed_top) {
-            consolidate_chunk_free(&(imem->cc), imem);
+         * highest free object, do the consolidation within this clump. */
+        if ((byte *)pp <= imem->cc->int_freed_top) {
+            consolidate_clump_free(imem->cc, imem);
         }
         return;
     }
     if (pp->o_alone) {
                 /*
-                 * We gave this object its own chunk.  Free the entire chunk,
+                 * We gave this object its own clump.  Free the entire clump,
                  * unless it belongs to an older save level, in which case
                  * we mustn't overwrite it.
                  */
-        chunk_locator_t cl;
+        clump_locator_t cl;
 
 #ifdef DEBUG
         {
-            chunk_locator_t cld;
+            clump_locator_t cld;
 
             cld.memory = imem;
             cld.cp = 0;
             if (gs_debug_c('a'))
                 alloc_trace(
-                            (chunk_locate_ptr(ptr, &cld) ? ":-oL" : ":-o~"),
+                            (clump_locate_ptr(ptr, &cld) ? ":-oL" : ":-o~"),
                                imem, cname, pstype, size, ptr);
         }
 #endif
         cl.memory = imem;
         cl.cp = 0;
-        if (chunk_locate_ptr(ptr, &cl)) {
+        if (clump_locate_ptr(ptr, &cl)) {
             if (!imem->is_controlled)
-                alloc_free_chunk(cl.cp, imem);
+                alloc_free_clump(cl.cp, imem);
             return;
         }
         /* Don't overwrite even if gs_alloc_debug is set. */
@@ -898,7 +1526,7 @@ i_free_object(gs_memory_t * mem, void *ptr, client_name_t cname)
          * overwrite it.
          */
         imem->cfreed.memory = imem;
-        if (chunk_locate(ptr, &imem->cfreed)) {
+        if (clump_locate(ptr, &imem->cfreed)) {
             obj_header_t **pfl;
 
             if (size > max_freelist_size) {
@@ -910,13 +1538,13 @@ i_free_object(gs_memory_t * mem, void *ptr, client_name_t cname)
                                       log2_obj_align_mod];
             }
             /* keep track of highest object on a freelist */
-            /* If we're dealing with a block in the currently open chunk
-               (in imem->cc) update that, otherwise, update the chunk in
-               the chunk list (in imem->cfreed.cp)
+            /* If we're dealing with a block in the currently open clump
+               (in imem->cc) update that, otherwise, update the clump in
+               the clump list (in imem->cfreed.cp)
              */
-            if (imem->cfreed.cp->chead == imem->cc.chead) {
-                if ((byte *)pp >= imem->cc.int_freed_top) {
-                    imem->cc.int_freed_top = (byte *)ptr + rounded_size;
+            if (imem->cc && imem->cfreed.cp->chead == imem->cc->chead) {
+                if ((byte *)pp >= imem->cc->int_freed_top) {
+                    imem->cc->int_freed_top = (byte *)ptr + rounded_size;
                 }
             }
             else {
@@ -946,61 +1574,65 @@ i_alloc_string(gs_memory_t * mem, uint nbytes, client_name_t cname)
 {
     gs_ref_memory_t * const imem = (gs_ref_memory_t *)mem;
     byte *str;
+    clump_splay_walker sw;
 
     /*
-     * Cycle through the chunks at the current save level, starting
+     * Cycle through the clumps at the current save level, starting
      * with the currently open one.
      */
-    chunk_t *cp_orig = imem->pcc;
+    clump_t *cp = clump_splay_walk_init_mid(&sw, imem->cc);
+
+    if (nbytes + (uint)HDR_ID_OFFSET < nbytes)
+        return NULL;
+
+    nbytes += HDR_ID_OFFSET;
 
 #ifdef MEMENTO
     if (Memento_failThisEvent())
         return NULL;
 #endif
-    if (cp_orig == 0) {
-        /* Open an arbitrary chunk. */
-        cp_orig = imem->pcc = imem->cfirst;
-        alloc_open_chunk(imem);
+    if (cp == 0) {
+        /* Open an arbitrary clump. */
+        imem->cc = clump_splay_walk_init(&sw, imem);
+        alloc_open_clump(imem);
     }
 top:
-    if (imem->cc.ctop - imem->cc.cbot > nbytes) {
+    if (imem->cc && !imem->cc->c_alone && imem->cc->ctop - imem->cc->cbot > nbytes) {
         if_debug4m('A', mem, "[a%d:+> ]%s(%u) = 0x%lx\n",
                    alloc_trace_space(imem), client_name_string(cname), nbytes,
-                   (ulong) (imem->cc.ctop - nbytes));
-        str = imem->cc.ctop -= nbytes;
+                   (ulong) (imem->cc->ctop - nbytes));
+        str = imem->cc->ctop -= nbytes;
         gs_alloc_fill(str, gs_alloc_fill_alloc, nbytes);
+        str += HDR_ID_OFFSET;
+        ASSIGN_HDR_ID(str);
         return str;
     }
-    /* Try the next chunk. */
-    {
-        chunk_t *cp = imem->cc.cnext;
+    /* Try the next clump. */
+    cp = clump_splay_walk_fwd(&sw);
 
-        alloc_close_chunk(imem);
-        if (cp == 0)
-            cp = imem->cfirst;
-        imem->pcc = cp;
-        alloc_open_chunk(imem);
-        if (cp != cp_orig)
-            goto top;
+    if (cp != NULL)
+    {
+        alloc_close_clump(imem);
+        imem->cc = cp;
+        alloc_open_clump(imem);
+        goto top;
     }
-    if (nbytes > string_space_quanta(max_uint - sizeof(chunk_head_t)) *
+    if (nbytes > string_space_quanta(max_uint - sizeof(clump_head_t)) *
         string_data_quantum
         ) {			/* Can't represent the size in a uint! */
         return 0;
     }
-    if (nbytes >= imem->large_size) {	/* Give it a chunk all its own. */
+    if (nbytes >= imem->large_size) {	/* Give it a clump all its own. */
         return i_alloc_string_immovable(mem, nbytes, cname);
-    } else {			/* Add another chunk. */
-        chunk_t *cp =
-            alloc_acquire_chunk(imem, (ulong) imem->chunk_size, true, "chunk");
+    } else {			/* Add another clump. */
+        cp = alloc_acquire_clump(imem, (ulong) imem->clump_size, true, "clump");
 
         if (cp == 0)
             return 0;
-        alloc_close_chunk(imem);
-        imem->pcc = cp;
-        imem->cc = *imem->pcc;
-        gs_alloc_fill(imem->cc.cbase, gs_alloc_fill_free,
-                      imem->cc.climit - imem->cc.cbase);
+        alloc_close_clump(imem);
+        imem->cc = clump_splay_walk_init_mid(&sw, cp);
+        gs_alloc_fill(imem->cc->cbase, gs_alloc_fill_free,
+                      imem->cc->climit - imem->cc->cbase);
         goto top;
     }
 }
@@ -1010,26 +1642,34 @@ i_alloc_string_immovable(gs_memory_t * mem, uint nbytes, client_name_t cname)
     gs_ref_memory_t * const imem = (gs_ref_memory_t *)mem;
     byte *str;
     uint asize;
-    chunk_t *cp;
+    clump_t *cp;
+
+    nbytes += HDR_ID_OFFSET;
 
 #ifdef MEMENTO
     if (Memento_failThisEvent())
         return NULL;
 #endif
-    /* Give it a chunk all its own. */
-    asize = string_chunk_space(nbytes) + sizeof(chunk_head_t);
-    cp = alloc_acquire_chunk(imem, (ulong) asize, true,
-                                      "large string chunk");
+    /* Give it a clump all its own. */
+    asize = string_clump_space(nbytes) + sizeof(clump_head_t);
+    cp = alloc_acquire_clump(imem, (ulong) asize, true,
+                                      "large string clump");
 
     if (cp == 0)
         return 0;
+    cp->c_alone = true;
+
     str = cp->ctop = cp->climit - nbytes;
     if_debug4m('a', mem, "[a%d|+>L]%s(%u) = 0x%lx\n",
                alloc_trace_space(imem), client_name_string(cname), nbytes,
                (ulong) str);
     gs_alloc_fill(str, gs_alloc_fill_alloc, nbytes);
+    str += HDR_ID_OFFSET;
+    ASSIGN_HDR_ID(str);
+
     return str;
 }
+
 static byte *
 i_resize_string(gs_memory_t * mem, byte * data, uint old_num, uint new_num,
                 client_name_t cname)
@@ -1039,9 +1679,14 @@ i_resize_string(gs_memory_t * mem, byte * data, uint old_num, uint new_num,
 
     if (old_num == new_num)	/* same size returns the same string */
         return data;
-    if (data == imem->cc.ctop &&	/* bottom-most string */
+
+    data -= HDR_ID_OFFSET;
+    old_num += HDR_ID_OFFSET;
+    new_num += HDR_ID_OFFSET;
+
+    if ( imem->cc && data == imem->cc->ctop &&	/* bottom-most string */
         (new_num < old_num ||
-         imem->cc.ctop - imem->cc.cbot > new_num - old_num)
+         imem->cc->ctop - imem->cc->cbot > new_num - old_num)
         ) {			/* Resize in place. */
         ptr = data + old_num - new_num;
         if_debug6m('A', mem, "[a%d:%c> ]%s(%u->%u) 0x%lx\n",
@@ -1049,7 +1694,7 @@ i_resize_string(gs_memory_t * mem, byte * data, uint old_num, uint new_num,
                    (new_num > old_num ? '>' : '<'),
                    client_name_string(cname), old_num, new_num,
                    (ulong) ptr);
-        imem->cc.ctop = ptr;
+        imem->cc->ctop = ptr;
         memmove(ptr, data, min(old_num, new_num));
 #ifdef DEBUG
         if (new_num > old_num)
@@ -1058,6 +1703,8 @@ i_resize_string(gs_memory_t * mem, byte * data, uint old_num, uint new_num,
         else
             gs_alloc_fill(data, gs_alloc_fill_free, old_num - new_num);
 #endif
+        ptr += HDR_ID_OFFSET;
+        ASSIGN_HDR_ID(ptr);
     } else
         if (new_num < old_num) {
             /* trim the string and create a free space hole */
@@ -1068,13 +1715,20 @@ i_resize_string(gs_memory_t * mem, byte * data, uint old_num, uint new_num,
             if_debug5m('A', mem, "[a%d:<> ]%s(%u->%u) 0x%lx\n",
                        alloc_trace_space(imem), client_name_string(cname),
                        old_num, new_num, (ulong)ptr);
+            ptr += HDR_ID_OFFSET;
+            ASSIGN_HDR_ID(ptr);
         } else {			/* Punt. */
+            data += HDR_ID_OFFSET;
+            old_num -= HDR_ID_OFFSET;
+            new_num -= HDR_ID_OFFSET;
+
             ptr = gs_alloc_string(mem, new_num, cname);
             if (ptr == 0)
                 return 0;
             memcpy(ptr, data, min(old_num, new_num));
             gs_free_string(mem, data, old_num, cname);
         }
+
     return ptr;
 }
 
@@ -1083,18 +1737,23 @@ i_free_string(gs_memory_t * mem, byte * data, uint nbytes,
               client_name_t cname)
 {
     gs_ref_memory_t * const imem = (gs_ref_memory_t *)mem;
-    if (data == imem->cc.ctop) {
-        if_debug4m('A', mem, "[a%d:-> ]%s(%u) 0x%lx\n",
-                   alloc_trace_space(imem), client_name_string(cname), nbytes,
-                   (ulong) data);
-        imem->cc.ctop += nbytes;
-    } else {
-        if_debug4m('A', mem, "[a%d:->#]%s(%u) 0x%lx\n",
-                   alloc_trace_space(imem), client_name_string(cname), nbytes,
-                   (ulong) data);
-        imem->lost.strings += nbytes;
+
+    if (data) {
+        data -= HDR_ID_OFFSET;
+        nbytes += HDR_ID_OFFSET;
+        if (imem->cc && data == imem->cc->ctop) {
+            if_debug4m('A', mem, "[a%d:-> ]%s(%u) 0x%lx\n",
+                       alloc_trace_space(imem), client_name_string(cname), nbytes,
+                       (ulong) data);
+            imem->cc->ctop += nbytes;
+        } else {
+            if_debug4m('A', mem, "[a%d:->#]%s(%u) 0x%lx\n",
+                       alloc_trace_space(imem), client_name_string(cname), nbytes,
+                       (ulong) data);
+            imem->lost.strings += nbytes;
+        }
+        gs_alloc_fill(data, gs_alloc_fill_free, nbytes);
     }
-    gs_alloc_fill(data, gs_alloc_fill_free, nbytes);
 }
 
 static gs_memory_t *
@@ -1109,26 +1768,25 @@ i_status(gs_memory_t * mem, gs_memory_status_t * pstat)
     gs_ref_memory_t * const imem = (gs_ref_memory_t *)mem;
     ulong unused = imem->lost.refs + imem->lost.strings;
     ulong inner = 0;
+    clump_splay_walker sw;
+    clump_t *cp;
 
-    alloc_close_chunk(imem);
-    /* Add up unallocated space within each chunk. */
-    /* Also keep track of space allocated to inner chunks, */
+    alloc_close_clump(imem);
+    /* Add up unallocated space within each clump. */
+    /* Also keep track of space allocated to inner clumps, */
     /* which are included in previous_status.allocated. */
+    for (cp = clump_splay_walk_init(&sw, imem); cp != NULL; cp = clump_splay_walk_fwd(&sw))
     {
-        const chunk_t *cp = imem->cfirst;
-
-        while (cp != 0) {
-            unused += cp->ctop - cp->cbot;
-            if (cp->outer)
-                inner += cp->cend - (byte *) cp->chead;
-            cp = cp->cnext;
-        }
+        unused += cp->ctop - cp->cbot;
+        if (cp->outer)
+            inner += cp->cend - (byte *) cp->chead;
     }
     unused += compute_free_objects(imem);
     pstat->used = imem->allocated + inner - unused +
         imem->previous_status.used;
     pstat->allocated = imem->allocated +
         imem->previous_status.allocated;
+    pstat->max_used = 0;		/* unknown for this allocator */
     pstat->is_thread_safe = false;	/* this allocator is not thread safe */
 }
 
@@ -1141,6 +1799,20 @@ i_enable_free(gs_memory_t * mem, bool enable)
     else
         mem->procs.free_object = gs_ignore_free_object,
             mem->procs.free_string = gs_ignore_free_string;
+}
+
+static void i_set_object_type(gs_memory_t *mem, void *ptr, gs_memory_type_ptr_t type)
+{
+    obj_header_t *pp;
+
+    if (ptr == 0)
+        return;
+    pp = (obj_header_t *) ptr - 1;
+    pp->o_type = type;
+}
+
+static void i_defer_frees(gs_memory_t *mem, int defer)
+{
 }
 
 /* ------ Internal procedures ------ */
@@ -1202,7 +1874,7 @@ large_freelist_alloc(gs_ref_memory_t *mem, uint size)
     }
     if (best_fit == 0) {
         /*
-         * No single free chunk is large enough, but since we scanned the
+         * No single free clump is large enough, but since we scanned the
          * entire list, we now have an accurate updated value for
          * largest_free_size.
          */
@@ -1212,7 +1884,7 @@ large_freelist_alloc(gs_ref_memory_t *mem, uint size)
 
     /* Remove from freelist & return excess memory to free */
     *best_fit_prev = *(obj_header_t **)best_fit;
-    trim_obj(mem, best_fit, aligned_size, (chunk_t *)0);
+    trim_obj(mem, best_fit, aligned_size, (clump_t *)0);
 
     /* Pre-init block header; o_alone & o_type are already init'd */
     best_fit[-1].o_size = size;
@@ -1229,18 +1901,18 @@ alloc_obj(gs_ref_memory_t *mem, ulong lsize, gs_memory_type_ptr_t pstype,
 
     if (lsize >= mem->large_size || (flags & ALLOC_IMMOVABLE)) {
         /*
-         * Give the object a chunk all its own.  Note that this case does
+         * Give the object a clump all its own.  Note that this case does
          * not occur if is_controlled is true.
          */
         ulong asize =
             ((lsize + obj_align_mask) & -obj_align_mod) +
             sizeof(obj_header_t);
-        chunk_t *cp =
-            alloc_acquire_chunk(mem, asize + sizeof(chunk_head_t), false,
-                                "large object chunk");
+        clump_t *cp =
+            alloc_acquire_clump(mem, asize + sizeof(clump_head_t), false,
+                                "large object clump");
 
         if (
-#if arch_sizeof_long > arch_sizeof_int
+#if ARCH_SIZEOF_LONG > ARCH_SIZEOF_INT
             asize > max_uint
 #else
             asize < lsize
@@ -1249,16 +1921,19 @@ alloc_obj(gs_ref_memory_t *mem, ulong lsize, gs_memory_type_ptr_t pstype,
             return 0;
         if (cp == 0)
             return 0;
+        cp->c_alone = true;
         ptr = (obj_header_t *) cp->cbot;
         cp->cbot += asize;
+        ptr->o_pad = 0;
         ptr->o_alone = 1;
         ptr->o_size = lsize;
     } else {
         /*
-         * Cycle through the chunks at the current save level, starting
+         * Cycle through the clumps at the current save level, starting
          * with the currently open one.
          */
-        chunk_t *cp_orig = mem->pcc;
+        clump_splay_walker sw;
+        clump_t *cp = clump_splay_walk_init_mid(&sw, mem->cc);
         uint asize = obj_size_round((uint) lsize);
         bool allocate_success = false;
 
@@ -1270,41 +1945,40 @@ alloc_obj(gs_ref_memory_t *mem, ulong lsize, gs_memory_type_ptr_t pstype,
             }
         }
 
-        if (cp_orig == 0) {
-            /* Open an arbitrary chunk. */
-            cp_orig = mem->pcc = mem->cfirst;
-            alloc_open_chunk(mem);
+        if (cp == 0) {
+            /* Open an arbitrary clump. */
+            mem->cc = clump_splay_walk_init(&sw, mem);
+            alloc_open_clump(mem);
         }
 
 #define CAN_ALLOC_AT_END(cp)\
-  ((cp)->ctop - (byte *) (ptr = (obj_header_t *) (cp)->cbot)\
+  ((cp) && !((cp)->c_alone) && (cp)->ctop - (byte *) (ptr = (obj_header_t *) (cp)->cbot)\
    > asize + sizeof(obj_header_t))
 
         do {
-            if (CAN_ALLOC_AT_END(&mem->cc)) {
+            if (CAN_ALLOC_AT_END(mem->cc)) {
                 allocate_success = true;
                 break;
             } else if (mem->is_controlled) {
                 /* Try consolidating free space. */
                 gs_consolidate_free((gs_memory_t *)mem);
-                if (CAN_ALLOC_AT_END(&mem->cc)) {
+                if (CAN_ALLOC_AT_END(mem->cc)) {
                     allocate_success = true;
                     break;
                 }
             }
-            /* No luck, go on to the next chunk. */
-            {
-                chunk_t *cp = mem->cc.cnext;
+            /* No luck, go on to the next clump. */
+            cp = clump_splay_walk_fwd(&sw);
+            if (cp == NULL)
+                break;
 
-                alloc_close_chunk(mem);
-                if (cp == 0)
-                    cp = mem->cfirst;
-                mem->pcc = cp;
-                alloc_open_chunk(mem);
-            }
-        } while (mem->pcc != cp_orig);
+            alloc_close_clump(mem);
+            mem->cc = cp;
+            alloc_open_clump(mem);
+        }
+        while (1);
 
-#ifdef CONSOLIDATE_BEFORE_ADDING_CHUNK
+#ifdef CONSOLIDATE_BEFORE_ADDING_CLUMP
         if (!allocate_success) {
             /*
              * Try consolidating free space before giving up.
@@ -1312,20 +1986,19 @@ alloc_obj(gs_ref_memory_t *mem, ulong lsize, gs_memory_type_ptr_t pstype,
              * a lot of computation and doesn't seem to improve things much.
              */
             if (!mem->is_controlled) { /* already did this if controlled */
-                chunk_t *cp = cp_orig;
+                clump_t *cp;
 
-                alloc_close_chunk(mem);
-                do {
-                    consolidate_chunk_free(cp, mem);
+                alloc_close_clump(mem);
+                for (cp = clump_splay_walk_init_mid(&sw, cp_orig); cp != NULL; cp = clump_splay_walk_fwd(&sw))
+                {
+                    consolidate_clump_free(cp, mem);
                     if (CAN_ALLOC_AT_END(cp)) {
-                        mem->pcc = cp;
-                        alloc_open_chunk(mem);
+                        mem->cc = cp;
+                        alloc_open_clump(mem);
                         allocate_success = true;
                         break;
                     }
-                    if ((cp = cp->cnext) == 0)
-                        cp = mem->cfirst;
-                } while (cp != cp_orig);
+                }
             }
         }
 #endif
@@ -1333,12 +2006,12 @@ alloc_obj(gs_ref_memory_t *mem, ulong lsize, gs_memory_type_ptr_t pstype,
 #undef CAN_ALLOC_AT_END
 
         if (!allocate_success) {
-            /* Add another chunk. */
-            chunk_t *cp =
-                alloc_add_chunk(mem, (ulong)mem->chunk_size, "chunk");
+            /* Add another clump. */
+            clump_t *cp =
+                alloc_add_clump(mem, (ulong)mem->clump_size, "clump");
 
             if (cp) {
-                /* mem->pcc == cp, mem->cc == *mem->pcc. */
+                /* mem->cc == cp */
                 ptr = (obj_header_t *)cp->cbot;
                 allocate_success = true;
             }
@@ -1351,10 +2024,11 @@ alloc_obj(gs_ref_memory_t *mem, ulong lsize, gs_memory_type_ptr_t pstype,
          * examining outer save levels in the general case.
          */
         if (allocate_success)
-            mem->cc.cbot = (byte *) ptr + asize;
+            mem->cc->cbot = (byte *) ptr + asize;
         else if (!mem->is_controlled ||
                  (ptr = scavenge_low_free(mem, (uint)lsize)) == 0)
             return 0;	/* allocation failed */
+        ptr->o_pad = 0;
         ptr->o_alone = 0;
         ptr->o_size = (uint) lsize;
     }
@@ -1364,6 +2038,7 @@ done:
         ptr->d.o.space_id = mem->space_id;
 #   endif
     ptr++;
+    ASSIGN_HDR_ID(ptr);
     gs_alloc_fill(ptr, gs_alloc_fill_alloc, lsize);
     return ptr;
 }
@@ -1374,12 +2049,12 @@ done:
  * (int_freed_top).
  */
 static void
-consolidate_chunk_free(chunk_t *cp, gs_ref_memory_t *mem)
+consolidate_clump_free(clump_t *cp, gs_ref_memory_t *mem)
 {
     obj_header_t *begin_free = 0;
 
-    cp->int_freed_top = cp->cbase;	/* below all objects in chunk */
-    SCAN_CHUNK_OBJECTS(cp)
+    cp->int_freed_top = cp->cbase;	/* below all objects in clump */
+    SCAN_CLUMP_OBJECTS(cp)
     DO_ALL
         if (pre->o_type == &st_free) {
             if (begin_free == 0)
@@ -1395,42 +2070,49 @@ consolidate_chunk_free(chunk_t *cp, gs_ref_memory_t *mem)
         /* Remove the free objects from the freelists. */
         remove_range_from_freelist(mem, begin_free, cp->cbot);
         if_debug4m('a', (const gs_memory_t *)mem,
-                   "[a]resetting chunk 0x%lx cbot from 0x%lx to 0x%lx (%lu free)\n",
+                   "[a]resetting clump 0x%lx cbot from 0x%lx to 0x%lx (%lu free)\n",
                    (ulong) cp, (ulong) cp->cbot, (ulong) begin_free,
                    (ulong) ((byte *) cp->cbot - (byte *) begin_free));
         cp->cbot = (byte *) begin_free;
     }
 }
 
+static splay_app_result_t
+consolidate(clump_t *cp, void *arg)
+{
+    gs_ref_memory_t *mem = (gs_ref_memory_t *)arg;
+
+    consolidate_clump_free(cp, mem);
+    if (cp->cbot == cp->cbase && cp->ctop == cp->climit) {
+        /* The entire clump is free. */
+        if (!mem->is_controlled) {
+            alloc_free_clump(cp, mem);
+            if (mem->cc == cp)
+                mem->cc = NULL;
+        }
+    }
+
+    return SPLAY_APP_CONTINUE;
+}
+
 /* Consolidate free objects. */
 void
 ialloc_consolidate_free(gs_ref_memory_t *mem)
 {
-    chunk_t *cp;
-    chunk_t *cprev;
+    alloc_close_clump(mem);
 
-    alloc_close_chunk(mem);
+    /* We used to visit clumps in reverse order to encourage LIFO behavior,
+     * but with binary trees this is not possible (unless you want to
+     * either change the tree during the process, recurse, or otherwise
+     * hold the state). */
+    clump_splay_app(mem->root, mem, consolidate, mem);
 
-    /* Visit chunks in reverse order to encourage LIFO behavior. */
-    for (cp = mem->clast; cp != 0; cp = cprev) {
-        cprev = cp->cprev;
-        consolidate_chunk_free(cp, mem);
-        if (cp->cbot == cp->cbase && cp->ctop == cp->climit) {
-            /* The entire chunk is free. */
-            chunk_t *cnext = cp->cnext;
+    /* NOTE: Previously, if we freed the current clump, we'd move to whatever the
+     * bigger of it's children was. We now just move to the root. */
+    if (mem->cc == NULL)
+        mem->cc = mem->root;
 
-            if (!mem->is_controlled) {
-                alloc_free_chunk(cp, mem);
-                if (mem->pcc == cp)
-                    mem->pcc =
-                        (cnext == 0 ? cprev : cprev == 0 ? cnext :
-                         cprev->cbot - cprev->ctop >
-                         cnext->cbot - cnext->ctop ? cprev :
-                         cnext);
-            }
-        }
-    }
-    alloc_open_chunk(mem);
+    alloc_open_clump(mem);
 }
 static void
 i_consolidate_free(gs_memory_t *mem)
@@ -1438,54 +2120,70 @@ i_consolidate_free(gs_memory_t *mem)
     ialloc_consolidate_free((gs_ref_memory_t *)mem);
 }
 
-/* try to free-up given amount of space from freespace below chunk base */
+typedef struct
+{
+    uint need_free;
+    obj_header_t *found_pre;
+    gs_ref_memory_t *mem;
+    unsigned request_size;
+} scavenge_data;
+
+static splay_app_result_t
+scavenge(clump_t *cp, void *arg)
+{
+    scavenge_data *sd = (scavenge_data *)arg;
+    obj_header_t *begin_free = NULL;
+    uint found_free = 0;
+
+    sd->found_pre = NULL;
+
+    SCAN_CLUMP_OBJECTS(cp)
+    DO_ALL
+        if (pre->o_type == &st_free) {
+            if (begin_free == 0) {
+                found_free = 0;
+                begin_free = pre;
+            }
+            found_free += pre_obj_rounded_size(pre);
+            if (begin_free != 0 && found_free >= sd->need_free)
+                break;
+        } else
+            begin_free = 0;
+    END_OBJECTS_SCAN_NO_ABORT
+
+    if (begin_free != 0 && found_free >= sd->need_free) {
+        /* Fish found pieces out of various freelists */
+        remove_range_from_freelist(sd->mem, (char*)begin_free,
+                                   (char*)begin_free + found_free);
+
+        /* Prepare found object */
+        sd->found_pre = begin_free;
+        sd->found_pre->o_type = &st_free;  /* don't confuse GC if gets lost */
+        sd->found_pre->o_size = found_free - sizeof(obj_header_t);
+
+        /* Chop off excess tail piece & toss it back into free pool */
+        trim_obj(sd->mem, sd->found_pre + 1, sd->request_size, cp);
+        return SPLAY_APP_STOP;
+    }
+
+    return SPLAY_APP_CONTINUE;
+}
+
+/* try to free-up given amount of space from freespace below clump base */
 static obj_header_t *	/* returns uninitialized object hdr, NULL if none found */
 scavenge_low_free(gs_ref_memory_t *mem, unsigned request_size)
 {
     /* find 1st range of memory that can be glued back together to fill request */
-    obj_header_t *found_pre = 0;
-
-    /* Visit chunks in forward order */
-    obj_header_t *begin_free = 0;
-    uint found_free;
+    scavenge_data sd;
     uint request_size_rounded = obj_size_round(request_size);
-    uint need_free = request_size_rounded + sizeof(obj_header_t);    /* room for GC's dummy hdr */
-    chunk_t *cp;
 
-    for (cp = mem->cfirst; cp != 0; cp = cp->cnext) {
-        begin_free = 0;
-        found_free = 0;
-        SCAN_CHUNK_OBJECTS(cp)
-        DO_ALL
-            if (pre->o_type == &st_free) {
-                if (begin_free == 0) {
-                    found_free = 0;
-                    begin_free = pre;
-                }
-                found_free += pre_obj_rounded_size(pre);
-                if (begin_free != 0 && found_free >= need_free)
-                    break;
-            } else
-                begin_free = 0;
-        END_OBJECTS_SCAN_NO_ABORT
+    sd.found_pre = 0;
+    sd.need_free = request_size_rounded + sizeof(obj_header_t);    /* room for GC's dummy hdr */
+    sd.mem = mem;
+    sd.request_size = request_size;
 
-        /* Found sufficient range of empty memory */
-        if (begin_free != 0 && found_free >= need_free) {
-
-            /* Fish found pieces out of various freelists */
-            remove_range_from_freelist(mem, (char*)begin_free,
-                                       (char*)begin_free + found_free);
-
-            /* Prepare found object */
-            found_pre = begin_free;
-            found_pre->o_type = &st_free;  /* don't confuse GC if gets lost */
-            found_pre->o_size = found_free - sizeof(obj_header_t);
-
-            /* Chop off excess tail piece & toss it back into free pool */
-            trim_obj(mem, found_pre + 1, request_size, cp);
-        }
-    }
-    return found_pre;
+    clump_splay_app(mem->root, mem, scavenge, &sd);
+    return sd.found_pre;
 }
 
 /* Remove range of memory from a mem's freelists */
@@ -1563,7 +2261,7 @@ remove_range_from_freelist(gs_ref_memory_t *mem, void* bottom, void* top)
 
 /* Trim a memory object down to a given size */
 static void
-trim_obj(gs_ref_memory_t *mem, obj_header_t *obj, uint size, chunk_t *cp)
+trim_obj(gs_ref_memory_t *mem, obj_header_t *obj, uint size, clump_t *cp)
 /* Obj must have rounded size == req'd size, or have enough room for */
 /* trailing dummy obj_header */
 {
@@ -1578,13 +2276,13 @@ trim_obj(gs_ref_memory_t *mem, obj_header_t *obj, uint size, chunk_t *cp)
     if (old_rounded_size == rounded_size)
         return;	/* nothing more to do here */
     /*
-     * If the object is alone in its chunk, move cbot to point to the end
+     * If the object is alone in its clump, move cbot to point to the end
      * of the object.
      */
     if (pre_obj->o_alone) {
         if (!cp) {
             mem->cfreed.memory = mem;
-            if (chunk_locate(obj, &mem->cfreed)) {
+            if (clump_locate(obj, &mem->cfreed)) {
                 cp = mem->cfreed.cp;
             }
         }
@@ -1605,18 +2303,20 @@ trim_obj(gs_ref_memory_t *mem, obj_header_t *obj, uint size, chunk_t *cp)
          * Something very weird is going on.  This probably shouldn't
          * ever happen, but if it does....
          */
+        pre_obj->o_pad = 0;
         pre_obj->o_alone = 0;
     }
     /* make excess into free obj */
     excess_pre->o_type = &st_free;  /* don't confuse GC */
     excess_pre->o_size = excess_size;
+    excess_pre->o_pad = 0;
     excess_pre->o_alone = 0;
     if (excess_size >= obj_align_mod) {
         /* Put excess object on a freelist */
         obj_header_t **pfl;
 
-        if ((byte *)excess_pre >= mem->cc.int_freed_top)
-            mem->cc.int_freed_top = (byte *)excess_pre + excess_size;
+        if (mem->cc && (byte *)excess_pre >= mem->cc->int_freed_top)
+            mem->cc->int_freed_top = (byte *)excess_pre + excess_size;
         if (excess_size <= max_freelist_size)
             pfl = &mem->freelists[(excess_size + obj_align_mask) >>
                                  log2_obj_align_mod];
@@ -1678,85 +2378,59 @@ i_unregister_root(gs_memory_t * mem, gs_gc_root_t * rp, client_name_t cname)
         gs_free_object(imem->non_gc_memory, rp, "i_unregister_root");
 }
 
-/* ================ Chunks ================ */
+/* ================ clumps ================ */
 
-public_st_chunk();
+public_st_clump();
 
-/* Insert a chunk in the chain.  This is exported for the GC and for */
+/* Insert a clump in the chain.  This is exported for the GC and for */
 /* the forget_save operation. */
 void
-alloc_link_chunk(chunk_t * cp, gs_ref_memory_t * imem)
+alloc_link_clump(clump_t * cp, gs_ref_memory_t * imem)
 {
-    byte *cdata = cp->cbase;
-    chunk_t *icp;
-    chunk_t *prev;
-
-    /*
-     * Allocators tend to allocate in either ascending or descending
-     * address order.  The loop will handle the latter well; check for
-     * the former first.
-     */
-    if (imem->clast && PTR_GE(cdata, imem->clast->ctop))
-        icp = 0;
-    else
-        for (icp = imem->cfirst; icp != 0 && PTR_GE(cdata, icp->ctop);
-             icp = icp->cnext
-            );
-    cp->cnext = icp;
-    if (icp == 0) {		/* add at end of chain */
-        prev = imem->clast;
-        imem->clast = cp;
-    } else {			/* insert before icp */
-        prev = icp->cprev;
-        icp->cprev = cp;
-    }
-    cp->cprev = prev;
-    if (prev == 0)
-        imem->cfirst = cp;
-    else
-        prev->cnext = cp;
-    if (imem->pcc != 0) {
-        imem->cc.cnext = imem->pcc->cnext;
-        imem->cc.cprev = imem->pcc->cprev;
-    }
+    splay_insert(cp, imem);
+    SANITY_CHECK(cp);
 }
 
-/* Add a chunk for ordinary allocation. */
-static chunk_t *
-alloc_add_chunk(gs_ref_memory_t * mem, ulong csize, client_name_t cname)
+/* Add a clump for ordinary allocation. */
+static clump_t *
+alloc_add_clump(gs_ref_memory_t * mem, ulong csize, client_name_t cname)
 {
-    chunk_t *cp = alloc_acquire_chunk(mem, csize, true, cname);
+    clump_t *cp = alloc_acquire_clump(mem, csize, true, cname);
 
     if (cp) {
-        alloc_close_chunk(mem);
-        mem->pcc = cp;
-        mem->cc = *mem->pcc;
-        gs_alloc_fill(mem->cc.cbase, gs_alloc_fill_free,
-                      mem->cc.climit - mem->cc.cbase);
+        alloc_close_clump(mem);
+        mem->cc = cp;
+        gs_alloc_fill(mem->cc->cbase, gs_alloc_fill_free,
+                      mem->cc->climit - mem->cc->cbase);
     }
     return cp;
 }
 
-/* Acquire a chunk.  If we would exceed MaxLocalVM (if relevant), */
+/* Acquire a clump.  If we would exceed MaxLocalVM (if relevant), */
 /* or if we would exceed the VMThreshold and psignal is NULL, */
 /* return 0; if we would exceed the VMThreshold but psignal is valid, */
 /* just set the signal and return successfully. */
-static chunk_t *
-alloc_acquire_chunk(gs_ref_memory_t * mem, ulong csize, bool has_strings,
+static clump_t *
+alloc_acquire_clump(gs_ref_memory_t * mem, ulong csize, bool has_strings,
                     client_name_t cname)
 {
     gs_memory_t *parent = mem->non_gc_memory;
-    chunk_t *cp;
+    clump_t *cp;
     byte *cdata;
 
-#if arch_sizeof_long > arch_sizeof_int
+#if ARCH_SIZEOF_LONG > ARCH_SIZEOF_INT
     /* If csize is larger than max_uint, punt. */
     if (csize != (uint) csize)
         return 0;
 #endif
-    cp = gs_raw_alloc_struct_immovable(parent, &st_chunk, cname);
+    cp = gs_raw_alloc_struct_immovable(parent, &st_clump, cname);
 
-    if( mem->gc_status.psignal != 0) {
+    /* gc_status.signal_value is initialised to zero when the
+     * allocator is created, only the Postscript interpreter
+     * (which implement garbage collection) takes the action to set
+     * it to anything other than zero
+     */
+    if( mem->gc_status.signal_value != 0) {
         /* we have a garbage collector */
         if ((ulong) (mem->allocated) >= mem->limit) {
             mem->gc_status.requested += csize;
@@ -1768,7 +2442,7 @@ alloc_acquire_chunk(gs_ref_memory_t * mem, ulong csize, bool has_strings,
                        "[0]signaling space=%d, allocated=%ld, limit=%ld, requested=%ld\n",
                        mem->space, (long)mem->allocated,
                        (long)mem->limit, (long)mem->gc_status.requested);
-            *mem->gc_status.psignal = mem->gc_status.signal_value;
+            mem->gs_lib_ctx->gcsignal = mem->gc_status.signal_value;
         }
     }
     cdata = gs_alloc_bytes_immovable(parent, csize, cname);
@@ -1778,25 +2452,26 @@ alloc_acquire_chunk(gs_ref_memory_t * mem, ulong csize, bool has_strings,
         mem->gc_status.requested = csize;
         return 0;
     }
-    alloc_init_chunk(cp, cdata, cdata + csize, has_strings, (chunk_t *) 0);
-    alloc_link_chunk(cp, mem);
-    mem->allocated += st_chunk.ssize + csize;
+    alloc_init_clump(cp, cdata, cdata + csize, has_strings, (clump_t *) 0);
+    alloc_link_clump(cp, mem);
+    mem->allocated += st_clump.ssize + csize;
+    SANITY_CHECK(cp);
     return cp;
 }
 
-/* Initialize the pointers in a chunk.  This is exported for save/restore. */
+/* Initialize the pointers in a clump.  This is exported for save/restore. */
 /* The bottom pointer must be aligned, but the top pointer need not */
 /* be aligned. */
 void
-alloc_init_chunk(chunk_t * cp, byte * bot, byte * top, bool has_strings,
-                 chunk_t * outer)
+alloc_init_clump(clump_t * cp, byte * bot, byte * top, bool has_strings,
+                 clump_t * outer)
 {
     byte *cdata = bot;
 
     if (outer != 0)
         outer->inner_count++;
-    cp->chead = (chunk_head_t *) cdata;
-    cdata += sizeof(chunk_head_t);
+    cp->chead = (clump_head_t *) cdata;
+    cdata += sizeof(clump_head_t);
     cp->cbot = cp->cbase = cp->int_freed_top = cdata;
     cp->cend = top;
     cp->rcur = 0;
@@ -1805,10 +2480,11 @@ alloc_init_chunk(chunk_t * cp, byte * bot, byte * top, bool has_strings,
     cp->inner_count = 0;
     cp->has_refs = false;
     cp->sbase = cdata;
+    cp->c_alone = false; /* should be set correctly by caller */
     if (has_strings && top - cdata >= string_space_quantum + sizeof(long) - 1) {
         /*
          * We allocate a large enough string marking and reloc table
-         * to cover the entire chunk.
+         * to cover the entire clump.
          */
         uint nquanta = string_space_quanta(top - cdata);
 
@@ -1830,146 +2506,155 @@ alloc_init_chunk(chunk_t * cp, byte * bot, byte * top, bool has_strings,
     alloc_init_free_strings(cp);
 }
 
-/* Initialize the string freelists in a chunk. */
+/* Initialize the string freelists in a clump. */
 void
-alloc_init_free_strings(chunk_t * cp)
+alloc_init_free_strings(clump_t * cp)
 {
     if (cp->sfree1)
         memset(cp->sfree1, 0, STRING_FREELIST_SPACE(cp));
     cp->sfree = 0;
 }
 
-/* Close up the current chunk. */
+/* Close up the current clump. */
 /* This is exported for save/restore and the GC. */
 void
-alloc_close_chunk(gs_ref_memory_t * mem)
+alloc_close_clump(gs_ref_memory_t * mem)
 {
-    if (mem->pcc != 0) {
-        *mem->pcc = mem->cc;
 #ifdef DEBUG
-        if (gs_debug_c('a')) {
-            dmlprintf1((const gs_memory_t *)mem, "[a%d]", alloc_trace_space(mem));
-            dmprintf_chunk((const gs_memory_t *)mem, "closing chunk", mem->pcc);
-        }
-#endif
+    if (gs_debug_c('A')) {
+        dmlprintf1((const gs_memory_t *)mem, "[a%d]", alloc_trace_space(mem));
+        dmprintf_clump((const gs_memory_t *)mem, "closing clump", mem->cc);
     }
+#endif
 }
 
-/* Reopen the current chunk after a GC or restore. */
+/* Reopen the current clump after a GC or restore. */
 void
-alloc_open_chunk(gs_ref_memory_t * mem)
+alloc_open_clump(gs_ref_memory_t * mem)
 {
-    if (mem->pcc != 0) {
-        mem->cc = *mem->pcc;
 #ifdef DEBUG
-        if (gs_debug_c('a')) {
-            dmlprintf1((const gs_memory_t *)mem, "[a%d]", alloc_trace_space(mem));
-            dmprintf_chunk((const gs_memory_t *)mem, "opening chunk", mem->pcc);
-        }
-#endif
+    if (gs_debug_c('A')) {
+        dmlprintf1((const gs_memory_t *)mem, "[a%d]", alloc_trace_space(mem));
+        dmprintf_clump((const gs_memory_t *)mem, "opening clump", mem->cc);
     }
+#endif
 }
 
-/* Remove a chunk from the chain.  This is exported for the GC. */
-void
-alloc_unlink_chunk(chunk_t * cp, gs_ref_memory_t * mem)
-{
 #ifdef DEBUG
-    if (gs_alloc_debug) {	/* Check to make sure this chunk belongs to this allocator. */
-        const chunk_t *ap = mem->cfirst;
+static splay_app_result_t
+check_in_clump(clump_t *cp, void *arg)
+{
+    clump_t **cpp = (clump_t **)arg;
 
-        while (ap != 0 && ap != cp)
-            ap = ap->cnext;
-        if (ap != cp) {
-            mlprintf2((const gs_memory_t *)mem, "unlink_chunk 0x%lx not owned by memory 0x%lx!\n",
+    if (*cpp != cp)
+        return SPLAY_APP_CONTINUE;
+    *cpp = NULL;
+
+    return SPLAY_APP_STOP;
+}
+#endif
+
+/* Remove a clump from the chain.  This is exported for the GC. */
+void
+alloc_unlink_clump(clump_t * cp, gs_ref_memory_t * mem)
+{
+    SANITY_CHECK_MID(cp);
+#ifdef DEBUG
+    if (gs_alloc_debug) {	/* Check to make sure this clump belongs to this allocator. */
+        clump_t *found = cp;
+        clump_splay_app(mem->root, mem, check_in_clump, &found);
+
+        if (found != NULL) {
+            mlprintf2((const gs_memory_t *)mem, "unlink_clump 0x%lx not owned by memory 0x%lx!\n",
                       (ulong) cp, (ulong) mem);
             return;		/*gs_abort(); */
         }
     }
 #endif
-    if (cp->cprev == 0)
-        mem->cfirst = cp->cnext;
-    else
-        cp->cprev->cnext = cp->cnext;
-    if (cp->cnext == 0)
-        mem->clast = cp->cprev;
-    else
-        cp->cnext->cprev = cp->cprev;
-    if (mem->pcc != 0) {
-        mem->cc.cnext = mem->pcc->cnext;
-        mem->cc.cprev = mem->pcc->cprev;
-        if (mem->pcc == cp) {
-            mem->pcc = 0;
-            mem->cc.cbot = mem->cc.ctop = 0;
-        }
+    (void)clump_splay_remove(cp, mem);
+    if (mem->cc == cp) {
+        mem->cc = NULL;
     }
 }
 
 /*
- * Free a chunk.  This is exported for the GC.  Since we eventually use
- * this to free the chunk containing the allocator itself, we must be
+ * Free a clump.  This is exported for the GC.  Since we eventually use
+ * this to free the clump containing the allocator itself, we must be
  * careful not to reference anything in the allocator after freeing the
- * chunk data.
+ * clump data.
  */
 void
-alloc_free_chunk(chunk_t * cp, gs_ref_memory_t * mem)
+alloc_free_clump(clump_t * cp, gs_ref_memory_t * mem)
 {
     gs_memory_t *parent = mem->non_gc_memory;
     byte *cdata = (byte *)cp->chead;
     ulong csize = (byte *)cp->cend - cdata;
 
-    alloc_unlink_chunk(cp, mem);
-    mem->allocated -= st_chunk.ssize;
+    alloc_unlink_clump(cp, mem);
+    mem->allocated -= st_clump.ssize;
     if (mem->cfreed.cp == cp)
         mem->cfreed.cp = 0;
     if (cp->outer == 0) {
         mem->allocated -= csize;
-        gs_free_object(parent, cdata, "alloc_free_chunk(data)");
+        gs_free_object(parent, cdata, "alloc_free_clump(data)");
     } else {
         cp->outer->inner_count--;
         gs_alloc_fill(cdata, gs_alloc_fill_free, csize);
     }
-    gs_free_object(parent, cp, "alloc_free_chunk(chunk struct)");
+    gs_free_object(parent, cp, "alloc_free_clump(clump struct)");
 }
 
-/* Find the chunk for a pointer. */
+/* Find the clump for a pointer. */
 /* Note that this only searches the current save level. */
-/* Since a given save level can't contain both a chunk and an inner chunk */
-/* of that chunk, we can stop when is_within_chunk succeeds, and just test */
-/* is_in_inner_chunk then. */
+/* Since a given save level can't contain both a clump and an inner clump */
+/* of that clump, we can stop when is_within_clump succeeds, and just test */
+/* is_in_inner_clump then. */
 bool
-chunk_locate_ptr(const void *ptr, chunk_locator_t * clp)
+clump_locate_ptr(const void *ptr, clump_locator_t * clp)
 {
-    register chunk_t *cp = clp->cp;
+    clump_t *cp = clp->memory->root;
 
-    if (cp == 0) {
-        cp = clp->memory->cfirst;
-        if (cp == 0)
-            return false;
-        /* ptr is in the last chunk often enough to be worth checking for. */
-        if (PTR_GE(ptr, clp->memory->clast->cbase))
-            cp = clp->memory->clast;
-    }
-    if (PTR_LT(ptr, cp->cbase)) {
-        do {
-            cp = cp->cprev;
-            if (cp == 0)
-                return false;
-        }
-        while (PTR_LT(ptr, cp->cbase));
-        if (PTR_GE(ptr, cp->cend))
-            return false;
-    } else {
-        while (PTR_GE(ptr, cp->cend)) {
-            cp = cp->cnext;
-            if (cp == 0)
-                return false;
-        }
+    while (cp)
+    {
         if (PTR_LT(ptr, cp->cbase))
-            return false;
+        {
+            cp = cp->left;
+            continue;
+        }
+        if (PTR_GE(ptr, cp->cend))
+        {
+            cp = cp->right;
+            continue;
+        }
+        /* Found it! */
+        splay_move_to_root(cp, clp->memory);
+        clp->cp = cp;
+        return !ptr_is_in_inner_clump(ptr, cp);
     }
-    clp->cp = cp;
-    return !ptr_is_in_inner_chunk(ptr, cp);
+    return false;
+}
+
+bool ptr_is_within_mem_clumps(const void *ptr, gs_ref_memory_t *mem)
+{
+    clump_t *cp = mem->root;
+
+    while (cp)
+    {
+        if (PTR_LT(ptr, cp->cbase))
+        {
+            cp = cp->left;
+            continue;
+        }
+        if (PTR_GE(ptr, cp->cend))
+        {
+            cp = cp->right;
+            continue;
+        }
+        /* Found it! */
+        splay_move_to_root(cp, mem);
+        return true;
+    }
+    return false;
 }
 
 /* ------ Debugging ------ */
@@ -2045,7 +2730,7 @@ debug_dump_contents(const gs_memory_t *mem, const byte * bot,
             }
             continue;
         }
-        sprintf(label, "0x%lx:", (ulong) block);
+        gs_sprintf(label, "0x%lx:", (ulong) block);
         debug_indent(mem, indent);
         dmputs(mem, label);
         for (i = 0; i < block_size; ++i) {
@@ -2156,12 +2841,12 @@ debug_print_object(const gs_memory_t *mem, const void *obj, const dump_control_t
     }
 }
 
-/* Print the contents of a chunk with the given options. */
+/* Print the contents of a clump with the given options. */
 /* Relevant options: all. */
 void
-debug_dump_chunk(const gs_memory_t *mem, const chunk_t * cp, const dump_control_t * control)
+debug_dump_clump(const gs_memory_t *mem, const clump_t * cp, const dump_control_t * control)
 {
-    dmprintf1(mem, "chunk at 0x%lx:\n", (ulong) cp);
+    dmprintf1(mem, "clump at 0x%lx:\n", (ulong) cp);
     dmprintf3(mem, "   chead=0x%lx  cbase=0x%lx sbase=0x%lx\n",
               (ulong) cp->chead, (ulong) cp->cbase, (ulong) cp->sbase);
     dmprintf3(mem, "    rcur=0x%lx   rtop=0x%lx  cbot=0x%lx\n",
@@ -2171,8 +2856,8 @@ debug_dump_chunk(const gs_memory_t *mem, const chunk_t * cp, const dump_control_
               cp->smark_size);
     dmprintf2(mem, "  sreloc=0x%lx   cend=0x%lx\n",
               (ulong) cp->sreloc, (ulong) cp->cend);
-    dmprintf5(mem, "cprev=0x%lx cnext=0x%lx outer=0x%lx inner_count=%u has_refs=%s\n",
-              (ulong) cp->cprev, (ulong) cp->cnext, (ulong) cp->outer,
+    dmprintf6(mem, "left=0x%lx right=0x%lx parent=0x%lx outer=0x%lx inner_count=%u has_refs=%s\n",
+              (ulong) cp->left, (ulong) cp->right, (ulong) cp->parent, (ulong) cp->outer,
               cp->inner_count, (cp->has_refs ? "true" : "false"));
 
     dmprintf2(mem, "  sfree1=0x%lx   sfree=0x%x\n",
@@ -2184,7 +2869,7 @@ debug_dump_chunk(const gs_memory_t *mem, const chunk_t * cp, const dump_control_
                              min(control->top, cp->climit)),
                             0, true);
     }
-    SCAN_CHUNK_OBJECTS(cp)
+    SCAN_CLUMP_OBJECTS(cp)
         DO_ALL
         if (obj_in_control_region(pre + 1,
                                   (const byte *)(pre + 1) + size,
@@ -2194,26 +2879,26 @@ debug_dump_chunk(const gs_memory_t *mem, const chunk_t * cp, const dump_control_
     END_OBJECTS_SCAN_NO_ABORT
 }
 void
-debug_print_chunk(const gs_memory_t *mem, const chunk_t * cp)
+debug_print_clump(const gs_memory_t *mem, const clump_t * cp)
 {
     dump_control_t control;
 
     control = dump_control_default;
-    debug_dump_chunk(mem, cp, &control);
+    debug_dump_clump(mem, cp, &control);
 }
 
-/* Print the contents of all chunks managed by an allocator. */
+/* Print the contents of all clumps managed by an allocator. */
 /* Relevant options: all. */
 void
 debug_dump_memory(const gs_ref_memory_t * mem, const dump_control_t * control)
 {
-    const chunk_t *mcp;
+    const clump_t *cp;
+    clump_splay_walker sw;
 
-    for (mcp = mem->cfirst; mcp != 0; mcp = mcp->cnext) {
-        const chunk_t *cp = (mcp == mem->pcc ? &mem->cc : mcp);
-
+    for (cp = clump_splay_walk_init(&sw, mem); cp != NULL; cp = clump_splay_walk_fwd(&sw))
+    {
         if (obj_in_control_region(cp->cbase, cp->cend, control))
-            debug_dump_chunk((const gs_memory_t *)mem, cp, control);
+            debug_dump_clump((const gs_memory_t *)mem, cp, control);
     }
 }
 
@@ -2227,14 +2912,14 @@ debug_dump_allocator(const gs_ref_memory_t *mem)
 void
 debug_find_pointers(const gs_ref_memory_t *mem, const void *target)
 {
+    clump_splay_walker sw;
     dump_control_t control;
-    const chunk_t *mcp;
+    const clump_t *cp;
 
     control.options = 0;
-    for (mcp = mem->cfirst; mcp != 0; mcp = mcp->cnext) {
-        const chunk_t *cp = (mcp == mem->pcc ? &mem->cc : mcp);
-
-        SCAN_CHUNK_OBJECTS(cp);
+    for (cp = clump_splay_walk_init(&sw, mem); cp; cp = clump_splay_walk_fwd(&sw))
+    {
+        SCAN_CLUMP_OBJECTS(cp);
         DO_ALL
             struct_proc_enum_ptrs((*proc)) = pre->o_type->enum_ptrs;
             uint index = 0;
@@ -2250,6 +2935,29 @@ debug_find_pointers(const gs_ref_memory_t *mem, const void *target)
                     }
         END_OBJECTS_SCAN_NO_ABORT
     }
+}
+static void ddct(const gs_memory_t *mem, clump_t *cp, clump_t *parent, int depth)
+{
+    int i;
+
+    if (cp == NULL)
+        return;
+    for (i = 0; i < depth; i++)
+        dmlprintf(mem, " ");
+
+    dmlprintf7(mem, "Clump %p:%p parent=%p left=%p:%p right=%p:%p\n",
+        cp, cp->cbase, cp->parent,
+        cp->left, cp->left ? cp->left->cbase : NULL,
+        cp->right, cp->right ? cp->right->cbase : NULL);
+    if (cp->parent != parent)
+        dmlprintf(mem, "Parent pointer mismatch!\n");
+    ddct(mem, cp->left, cp, depth+1);
+    ddct(mem, cp->right, cp, depth+1);
+}
+void
+debug_dump_clump_tree(const gs_ref_memory_t *mem)
+{
+    ddct((const gs_memory_t *)mem, mem->root, NULL, 0);
 }
 
 #endif /* DEBUG */

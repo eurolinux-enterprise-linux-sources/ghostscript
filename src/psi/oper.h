@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -40,8 +40,8 @@
  * we must make an additional check to determine which error
  * should be reported.  In order not to have to make this check in-line
  * in every type check in every operator, we define a procedure that takes
- * an o-stack pointer and returns e_stackunderflow if it points to
- * a guard entry, e_typecheck otherwise.
+ * an o-stack pointer and returns gs_error_stackunderflow if it points to
+ * a guard entry, gs_error_typecheck otherwise.
  *
  * Note that we only need to do this for typecheck, not for any other
  * kind of error such as invalidaccess, since any operator that can
@@ -72,7 +72,7 @@ int check_type_failed(const ref *);
 #define check_type_access(orf,typ,acc1)\
   if ( !r_has_type_attrs(&orf,typ,acc1) )\
     return_error((!r_has_type(&orf,typ) ? check_type_failed(&orf) :\
-                  e_invalidaccess))
+                  gs_error_invalidaccess))
 #define check_read_type(orf,typ)\
   check_type_access(orf,typ,a_read)
 #define check_write_type(orf,typ)\
@@ -81,7 +81,7 @@ int check_type_failed(const ref *);
 /* Macro for as yet unimplemented operators. */
 /* The if ( 1 ) is to prevent the compiler from complaining about */
 /* unreachable code. */
-#define NYI(msg) if ( 1 ) return_error(e_undefined)
+#define NYI(msg) if ( 1 ) return_error(gs_error_undefined)
 
 /*
  * If an operator has popped or pushed something on the control stack,

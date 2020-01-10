@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,19 +9,21 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
 /* Type 42 (TrueType) font library routines */
+#include <stdlib.h>		/* for qsort */
+
 #include "memory_.h"
 #include "stdint_.h"
 #include "gx.h"
 #include "gserrors.h"
 #include "gsstruct.h"
 #include "gsccode.h"
-#include "gsline.h"		/* for gs_imager_setflat */
+#include "gsline.h"		/* for gs_gstate_setflat */
 #include "gsmatrix.h"
 #include "gsutil.h"
 #include "gxchrout.h"
@@ -34,10 +36,15 @@
 #include "gxtext.h"
 #include "gxchar.h"
 #include "gxfcache.h"
-#include "gxistate.h"
+#include "gxgstate.h"
 #include "gzstate.h"
 #include "stream.h"
-#include <stdlib.h>		/* for qsort */
+
+/* For WOFF Support */
+#include "strimpl.h"
+#include "stream.h"
+#include "strmio.h"
+#include "szlibx.h"
 
 /* Structure descriptor */
 public_st_gs_font_type42();
@@ -58,6 +65,9 @@ font_proc_font_info(gs_truetype_font_info); /* Type check. */
 #define U16(p) (((uint)((p)[0]) << 8) + (p)[1])
 #define S16(p) (int)((U16(p) ^ 0x8000) - 0x8000)
 #define u32(p) get_u32_msb(p)
+
+#define PUTU16(p, n, offs) {(p + offs)[0] = n >> 8  & 255; (p + offs)[1] = n & 255;}
+
 
 /* ---------------- Font level ---------------- */
 
@@ -145,7 +155,7 @@ gs_type42_font_init(gs_font_type42 * pfont, int subfontID)
     byte TableDirectory[MAX_NUM_TT_TABLES * 16];
     uint i;
     int code;
-    byte head_box[8];
+    byte head_box[8] = {0};
     ulong loca_size = 0;
     ulong glyph_start, glyph_offset, glyph_length, glyph_size = 0;
     uint numFonts, version;
@@ -200,6 +210,8 @@ gs_type42_font_init(gs_font_type42 * pfont, int subfontID)
             pfont->data.glyf = offset;
             glyph_size = (uint)u32(tab + 12);
         } else if (!memcmp(tab, "GSUB", 4)) {
+            if (pfont->data.gsub_size != 0)
+                return_error(gs_error_invalidfont);
             pfont->data.gsub_size = u32(tab + 12);
             pfont->data.gsub = gs_alloc_byte_array(pfont->memory, pfont->data.gsub_size, 1,
                                                         "gs_type42_font_init(GSUB)");
@@ -236,6 +248,10 @@ gs_type42_font_init(gs_font_type42 * pfont, int subfontID)
 
             READ_SFNTS(pfont, offset, 30, maxp);
             pfont->data.trueNumGlyphs = U16(maxp + 4);
+            pfont->data.maxPoints = U16(maxp + 6);
+            pfont->data.maxContours = U16(maxp + 8);
+            pfont->data.maxCPoints = U16(maxp + 10);
+            pfont->data.maxCContours = U16(maxp + 12);
         } else if (!memcmp(tab, "name", 4)) {
             pfont->data.name_offset = offset;
         } else if (!memcmp(tab, "vhea", 4)) {
@@ -253,19 +269,6 @@ gs_type42_font_init(gs_font_type42 * pfont, int subfontID)
     loca_size >>= pfont->data.indexToLocFormat + 1;
     pfont->data.numGlyphs = (loca_size == 0 ? 0 : loca_size - 1);
     if (pfont->data.numGlyphs > pfont->data.trueNumGlyphs) {
-        /* Some fonts have excessive data at end of 'loca' table -
-           see bug 688467.
-           We're not sure why old versions of Ghostscript maintain
-           two different fileds - numGlyphs and trueNumGlyphs.
-           (A related comment in gxfont42.h isn't explanatory about important cases.)
-           Our reading of TrueType specification and FreeType experience
-           is that only trueNumGlyphs should be used.
-           Maybe (I guess) sometimes somebody observed a font,
-           in which trueNumGlyphs counts real glyphs,
-           and numGlyphs counts all subglyphs ?
-           Continue using trueNumGlyphs since the document of
-           the bug 688467 fails otherwise.
-         */
         /* pfont->key_name.chars is ASCIIZ due to copy_font_name. */
         char buf[gs_font_name_max + 2];
 
@@ -293,13 +296,12 @@ gs_type42_font_init(gs_font_type42 * pfont, int subfontID)
                 if (glyph_offset < glyph_size)
                     break;
             }
-            if (i > pfont->data.trueNumGlyphs) {
-                /* loca contains more good offsets, fix maxp.numGlyphs.
+            if (i > pfont->data.numGlyphs) {
+                /* loca contains more good offsets .
                    Note a code below will fix bad offsets if any. */
-                 pfont->data.numGlyphs = pfont->data.trueNumGlyphs = loca_size - 1;
+                 pfont->data.numGlyphs = loca_size - 1;
             }
         }
-        pfont->data.numGlyphs = pfont->data.trueNumGlyphs;
         loca_size = pfont->data.numGlyphs + 1;
     }
 
@@ -329,83 +331,90 @@ gs_type42_font_init(gs_font_type42 * pfont, int subfontID)
         */
         pfont->data.len_glyphs = NULL;
     } else {
-        /* Now build the len_glyphs array since 'loca' may not be properly sorted */
-        pfont->data.len_glyphs = (uint *)gs_alloc_byte_array(pfont->memory, loca_size, sizeof(uint),
-                                                        "gs_type42_font_init");
-        if (pfont->data.len_glyphs == 0)
-            return_error(gs_error_VMerror);
-        code = gs_font_notify_register((gs_font *)pfont, gs_len_glyphs_release, (void *)pfont);
-        if (code < 0)
-            return code;
-
-        /* The 'loca' may not be in order, so we construct a glyph length array */
-        /* Since 'loca' is usually sorted, first try the simple linear scan to  */
-        /* avoid the need to perform the more expensive process. */
-        glyph_start = get_glyph_offset(pfont, 0);
-        for (i = 1; i < loca_size; i++) {
-            glyph_offset = get_glyph_offset(pfont, i);
-            glyph_length = glyph_offset - glyph_start;
-            if (glyph_length > 0x80000000)
-                break;
-            if (glyph_offset > glyph_size)
-                break;
-            /* out of order loca */
-            pfont->data.len_glyphs[i - 1] = glyph_length;
-            glyph_start = glyph_offset;
+        if (loca_size == 0) {
+            pfont->data.len_glyphs = NULL;
         }
-        if (i < loca_size) {
-            /*
-             * loca was out of order, build the len_glyphs the hard way.
-             * For each glyph, we use the next higher or equal
-             * glyph offset to compute the glyph length.
-             * It assumes no overlapping and no duplicate glyphs.
-             */
-            ulong last_glyph_offset = glyph_size;
-            ulong num_valid_loca_elm = loca_size;
-            long last_offset = 0;
-            gs_type42_font_init_sort_t *psort;
-            gs_type42_font_init_sort_t *psortary =
-                (gs_type42_font_init_sort_t *)gs_alloc_byte_array(pfont->memory,
-                    loca_size, sizeof(gs_type42_font_init_sort_t), "gs_type42_font_init(sort loca)");
-
-            if (psortary == 0)
+        else {
+            /* Now build the len_glyphs array since 'loca' may not be properly sorted */
+            pfont->data.len_glyphs = (uint *)gs_alloc_byte_array(pfont->memory, loca_size, sizeof(uint),
+                                                            "gs_type42_font_init");
+            if (pfont->data.len_glyphs == 0)
                 return_error(gs_error_VMerror);
-            /* loca_size > 0 due to condition above, so we always have the 0th element. */
-            psortary->glyph_num = 0;
-            psortary->glyph_offset = get_glyph_offset(pfont, 0);
-            for (i = 1, psort = psortary + 1; i < loca_size; i++, psort++) {
-                psort->glyph_num = i;
-                psort->glyph_offset = get_glyph_offset(pfont, i);
-                psort[-1].glyph_length = psort->glyph_offset - last_offset;
-                last_offset = psort->glyph_offset;
+            code = gs_font_notify_register((gs_font *)pfont, gs_len_glyphs_release, (void *)pfont);
+            if (code < 0) {
+                gs_free_object(pfont->memory, pfont->data.len_glyphs, "gs_len_glyphs_release");
+                return code;
             }
-            psort[-1].glyph_length = 0; /* Dummy element. */
-            qsort(psortary, loca_size, sizeof(gs_type42_font_init_sort_t), gs_type42_font_init_compare);
-            while (num_valid_loca_elm > 0 && psortary[num_valid_loca_elm - 1].glyph_offset > glyph_size)
-                num_valid_loca_elm --;
-            if (0 == num_valid_loca_elm)
-                return_error(gs_error_invalidfont);
-            for (i = num_valid_loca_elm; i--;) {
-                long old_length;
-
-                psort = psortary + i;
-                old_length = psort->glyph_length;
-                if (old_length < 0 || old_length > 2000 /*  arbitrary */) {
-                    pfont->data.len_glyphs[psort->glyph_num] = last_glyph_offset - psort->glyph_offset;
-                    /* Note the new length may be so big as old_length. */
-                } else
-                    pfont->data.len_glyphs[psort->glyph_num] = old_length;
-                last_glyph_offset = psort->glyph_offset;
+            
+            /* The 'loca' may not be in order, so we construct a glyph length array */
+            /* Since 'loca' is usually sorted, first try the simple linear scan to  */
+            /* avoid the need to perform the more expensive process. */
+            glyph_start = get_glyph_offset(pfont, 0);
+            for (i = 1; i < loca_size; i++) {
+                glyph_offset = get_glyph_offset(pfont, i);
+                glyph_length = glyph_offset - glyph_start;
+                if (glyph_length > 0x80000000)
+                    break;
+                if (glyph_offset > glyph_size)
+                    break;
+                /* out of order loca */
+                pfont->data.len_glyphs[i - 1] = glyph_length;
+                glyph_start = glyph_offset;
             }
-            for (i = num_valid_loca_elm; i < loca_size; i++) {
-                psort = psortary + i;
-                pfont->data.len_glyphs[psort->glyph_num] = 0;
+            if (i < loca_size) {
+                /*
+                 * loca was out of order, build the len_glyphs the hard way.
+                 * For each glyph, we use the next higher or equal
+                 * glyph offset to compute the glyph length.
+                 * It assumes no overlapping and no duplicate glyphs.
+                 */
+                ulong last_glyph_offset = glyph_size;
+                ulong num_valid_loca_elm = loca_size;
+                long last_offset = 0;
+                gs_type42_font_init_sort_t *psort;
+                gs_type42_font_init_sort_t *psortary =
+                    (gs_type42_font_init_sort_t *)gs_alloc_byte_array(pfont->memory,
+                        loca_size, sizeof(gs_type42_font_init_sort_t), "gs_type42_font_init(sort loca)");
+            
+                if (psortary == 0)
+                    return_error(gs_error_VMerror);
+                /* loca_size > 0 due to condition above, so we always have the 0th element. */
+                psortary->glyph_num = 0;
+                psortary->glyph_offset = get_glyph_offset(pfont, 0);
+                for (i = 1, psort = psortary + 1; i < loca_size; i++, psort++) {
+                    psort->glyph_num = i;
+                    psort->glyph_offset = get_glyph_offset(pfont, i);
+                    psort[-1].glyph_length = psort->glyph_offset - last_offset;
+                    last_offset = psort->glyph_offset;
+                }
+                psort[-1].glyph_length = 0; /* Dummy element. */
+                qsort(psortary, loca_size, sizeof(gs_type42_font_init_sort_t), gs_type42_font_init_compare);
+                while (num_valid_loca_elm > 0 && psortary[num_valid_loca_elm - 1].glyph_offset > glyph_size)
+                    num_valid_loca_elm --;
+                if (0 == num_valid_loca_elm)
+                    return_error(gs_error_invalidfont);
+                for (i = num_valid_loca_elm; i--;) {
+                    long old_length;
+            
+                    psort = psortary + i;
+                    old_length = psort->glyph_length;
+                    if (old_length < 0 || old_length > 2000 /*  arbitrary */) {
+                        pfont->data.len_glyphs[psort->glyph_num] = last_glyph_offset - psort->glyph_offset;
+                        /* Note the new length may be so big as old_length. */
+                    } else
+                        pfont->data.len_glyphs[psort->glyph_num] = old_length;
+                    last_glyph_offset = psort->glyph_offset;
+                }
+                for (i = num_valid_loca_elm; i < loca_size; i++) {
+                    psort = psortary + i;
+                    pfont->data.len_glyphs[psort->glyph_num] = 0;
+                }
+                /* Well the last element of len_glyphs is never used.
+                   We compute it because we're interesting whether it is not zero sometimes.
+                   To know that, set a conditional breakpoint at the next statement.
+                 */
+                gs_free_object(pfont->memory, psortary, "gs_type42_font_init(sort loca)");
             }
-            /* Well the last element of len_glyphs is never used.
-               We compute it because we're interesting whether it is not zero sometimes.
-               To know that, set a conditional breakpoint at the next statement.
-             */
-            gs_free_object(pfont->memory, psortary, "gs_type42_font_init(sort loca)");
         }
     }
     /*
@@ -539,6 +548,7 @@ no_scale:
     *psmat = mat;
 }
 
+#if 0 /* not called */
 /* Compute the total number of points in a (possibly composite) glyph. */
 static int
 total_points(gs_font_type42 *pfont, uint glyph_index)
@@ -583,6 +593,7 @@ total_points(gs_font_type42 *pfont, uint glyph_index)
     gs_glyph_data_free(&glyph_data, "total_points");
     return total;
 }
+#endif /* not called */
 
 /*
  * Define the default implementation for getting the glyph index from a
@@ -609,10 +620,13 @@ default_get_outline(gs_font_type42 * pfont, uint glyph_index,
     uint glyph_length;
     int code;
 
-     if (glyph_index >= pfont->data.trueNumGlyphs)
+     if (glyph_index >= pfont->data.numGlyphs)
         return_error(gs_error_invalidfont);
     glyph_start = get_glyph_offset(pfont, glyph_index);
-    glyph_length = pfont->data.len_glyphs[glyph_index];
+    if (pfont->data.len_glyphs)
+        glyph_length = pfont->data.len_glyphs[glyph_index];
+    else
+        glyph_length = 0;
     if (glyph_length == 0)
         gs_glyph_data_from_null(pgd);
     else {
@@ -778,7 +792,7 @@ gs_type42_substitute_glyph_index_vertical(gs_font_type42 *pfont, uint glyph_inde
     LookupListTable lookup_list_table;
     byte *lookup_list_ptr;
 
-    if (WMode == 0)
+    if (WMode == 0 || gsub_ptr == NULL)
         return glyph_index;
 
     /* GSUB header */
@@ -815,6 +829,7 @@ gs_type42_substitute_glyph_index_vertical(gs_font_type42 *pfont, uint glyph_inde
                     subst.SubstFormat = format; /* Debug purpose. */
                     subst.Coverage = U16(subtable_ptr + offset_of(SingleSubstFormat1, Coverage));
                     subst.DeltaGlyphId = U16(subtable_ptr + offset_of(SingleSubstFormat1, DeltaGlyphId));
+                    format = subst.SubstFormat; /* Stops gcc warning */
                 } else {
                     SingleSubstFormat2 subst;
                     byte *coverage_ptr;
@@ -848,7 +863,6 @@ gs_type42_substitute_glyph_index_vertical(gs_font_type42 *pfont, uint glyph_inde
                                         return new_glyph;
                                     }
                                 } else if (k0 >= k1 - 1) {
-                                    k += 0; /* A place for breakpoint. */
                                     break; /* Not found. */
                                 } else if (glyph_index < glyph)
                                     k1 = k;
@@ -887,7 +901,6 @@ gs_type42_substitute_glyph_index_vertical(gs_font_type42 *pfont, uint glyph_inde
                                         return new_glyph;
                                     }
                                 } else if (k0 >= k1 - 1) {
-                                    k += 0; /* A place for breakpoint. */
                                     break; /* Not found. */
                                 } else if (glyph_index < rr.Start)
                                     k1 = k;
@@ -977,6 +990,12 @@ gs_type42_glyph_outline(gs_font *font, int WMode, gs_glyph glyph, const gs_matri
         return code;
     if (pmat == 0)
         pmat = &imat;
+    if (!pair->ttf) {
+        void *FAPI_store = ((gs_font_base *)font)->FAPI;
+        ((gs_font_base *)font)->FAPI = NULL;
+        gx_provide_fm_pair_attributes(font->dir, font, pair, pmat, &log2_scale, false);
+        ((gs_font_base *)font)->FAPI = FAPI_store;
+    }
     if ((code = gx_path_current_point(ppath, &origin)) < 0 ||
         (code = append_outline_fitted(glyph_index, pmat, ppath, pair,
                                         &log2_scale, design_grid)) < 0 ||
@@ -1154,7 +1173,7 @@ simple_glyph_metrics(gs_font_type42 * pfont, uint glyph_index, int wmode,
  */
 int
 gs_type42_default_get_metrics(gs_font_type42 * pfont, uint glyph_index,
-                              gs_type42_metrics_options_t options, float sbw[4])
+                              gs_type42_metrics_options_t options, float *sbw)
 {
     gs_glyph_data_t glyph_data;
     int code;
@@ -1192,6 +1211,11 @@ gs_type42_default_get_metrics(gs_font_type42 * pfont, uint glyph_index,
             do {
                 uint comp_index = U16(gdata + 2);
 
+                if (comp_index == glyph_index) {
+                    result = gs_note_error(gs_error_invalidfont);
+                    goto done;
+                }
+
                 gs_type42_parse_component(&gdata, &flags, &mat, NULL, pfont, &mat);
                 if (flags & TT_CG_USE_MY_METRICS) {
                     result = pfont->data.get_metrics(pfont, comp_index, wmode, sbw);
@@ -1226,7 +1250,7 @@ gs_type42_get_metrics(gs_font_type42 * pfont, uint glyph_index,
 /* Append a TrueType outline to a path. */
 /* Note that this does not append the final moveto for the width. */
 int
-gs_type42_append(uint glyph_index, gs_state * pgs,
+gs_type42_append(uint glyph_index, gs_gstate * pgs,
                  gx_path * ppath, gs_text_enum_t *penum, gs_font *pfont,
                  bool charpath_flag)
 {
@@ -1251,12 +1275,11 @@ gs_type42_append(uint glyph_index, gs_state * pgs,
         }
         return code;
     }
-    code = gx_setcurrentpoint_from_path((gs_imager_state *)pgs, ppath);
+    code = gx_setcurrentpoint_from_path(pgs, ppath);
     if (code < 0)
         return code;
     /* Set the flatness for curve rendering. */
-    return gs_imager_setflat((gs_imager_state *)pgs,
-                gs_char_flatness((gs_imager_state *)pgs, 1.0));
+    return gs_gstate_setflat(pgs, gs_char_flatness(pgs, 1.0));
 }
 #if 0
 /* Used only by add_simple below, which has been removed as unused. */
@@ -1647,9 +1670,13 @@ gs_truetype_font_info(gs_font *font, const gs_point *pscale, int members,
     if (pfont->data.name_offset == 0)
         return 0;
     if (!(info->members & FONT_INFO_COPYRIGHT) && (members & FONT_INFO_COPYRIGHT)) {
-        code = get_from_names_table(pfont, info, &info->Copyright, FONT_INFO_COPYRIGHT, 0);
-        if (code < 0)
-            return code;
+        /* One way we can arrive here is from gs_copy_font() -> z42_font_info(), in
+         * that case we definitely want to copy the copyright informatoin if there is any,
+         * but we don't want to throw an error if we find a Type 42 font which has no
+         * copyright information. So get the informaton, but ignore the return code.
+         * Bug #696174.
+         */
+        get_from_names_table(pfont, info, &info->Copyright, FONT_INFO_COPYRIGHT, 0);
     }
     if (!(info->members & FONT_INFO_FAMILY_NAME) && (members & FONT_INFO_FAMILY_NAME)) {
         code = get_from_names_table(pfont, info, &info->FamilyName, FONT_INFO_FAMILY_NAME, 1);
@@ -1674,4 +1701,222 @@ gs_type42_font_info(gs_font *font, const gs_point *pscale, int members,
     if (code < 0)
         return code;
     return gs_truetype_font_info(font, pscale, members, info);
+}
+
+/******************** WOFF Support *************************/
+static int
+gs_woff_tabdir_compare (const void *a, const void *b)
+{
+    uint32_t poffs, qoffs;
+
+    poffs = u32((*(byte **)a) + 4);
+    qoffs = u32((*(byte **)b) + 4);
+
+    return poffs > qoffs ? 1 : poffs < qoffs ? -1 : 0;
+}
+
+static stream *
+gs_woff_push_flate_filter(stream *s)
+{
+    gs_memory_t *mem = s->memory;
+    stream *fs, *ffs = NULL;
+    byte *buf;
+    stream_zlib_state *st;
+
+    fs = s_alloc(mem, "gs_woff_push_flate_filter(fs)");
+    buf = gs_alloc_bytes(mem, 4096, "gs_woff_push_flate_filter(buf)");
+    st = gs_alloc_struct(mem, stream_zlib_state, s_zlibD_template.stype, "gs_woff_push_flate_filter(st)");
+    if (fs == 0 || st == 0 || buf == 0) {
+        gs_free_object(mem, fs, "gs_woff_push_flate_filter(fs)");
+        gs_free_object(mem, buf, "gs_woff_push_flate_filter(buf)");
+        gs_free_object(mem, st, "gs_woff_push_flate_filter(st)");
+        goto done;
+    }
+    s_std_init(fs, buf, 4096, &s_filter_read_procs, s_mode_read);
+    st->memory = mem;
+    st->templat = &s_zlibD_template;
+    fs->state = (stream_state *) st;
+    fs->procs.process = s_zlibD_template.process;
+    fs->strm = s;
+    (*s_zlibD_template.set_defaults) ((stream_state *) st);
+    (*s_zlibD_template.init) ((stream_state *) st);
+    ffs = fs;
+done:
+    return ffs;
+}
+
+static stream *
+gs_woff_pop_flate_filter(stream *s)
+{
+    gs_memory_t *mem = s->memory;
+    stream *strm = s->strm;
+    byte *buf = s->cbuf;
+
+    sclose(s);
+    gs_free_object(mem, s, "gs_woff_pop_flate_filter(s)");
+    gs_free_object(mem, buf, "gs_woff_pop_flate_filter(buf)");
+
+    return strm;
+}
+
+#define WOFFHDR_LEN 44
+#define WOFFHDR_SFNT_FLAVOR_OFFS 4
+#define WOFFHDR_SFNT_NUMTABS_OFFS 12
+#define WOFFHDR_SFNT_LEN_OFFS 16
+
+#define WOFF_TABDIR_ENT_LEN 20
+#define WOFF_TABDIR_TAG_OFFS 0
+#define WOFF_TABDIR_OFFSET_OFFS 4
+#define WOFF_TABDIR_CLEN_OFFS 8
+#define WOFF_TABDIR_OLEN_OFFS 12
+#define WOFF_TABDIR_CSUM_OFFS 16
+
+#define WOFF_TABDIR_FIELD_LEN 4
+
+#define SFNT_TABDIR_ENT_LEN 16
+#define SFNT_TABDIR_CSUM_OFFS 4
+#define SFNT_TABDIR_OFFSET_OFFS 8
+#define SFNT_TABDIR_LEN_OFFS 12
+
+
+static int
+gs_woff2sfnt(gs_memory_t *mem, stream *s, byte *outbuf, int *outbuflen)
+{
+    int code = 0;
+    gs_offset_t start;
+    uint32_t sfntlen, ntables, sr, es, rs, i;
+    byte woffhdr[44], *tabbuf = NULL;
+    byte **tabbufptrs = NULL;
+    byte *obuf = outbuf, *tdir;
+
+    if (!sseekable(s)) {
+        code = gs_note_error(gs_error_ioerror);
+        goto done;
+    }
+    start = stell(s);
+    if (s->bsize < 44){
+        code = gs_note_error(gs_error_invalidfont);
+        goto done;
+    }
+
+    if ((code = sfread(woffhdr, WOFFHDR_LEN, 1, s)) < 0)
+        goto done;
+
+    if (memcmp(woffhdr, "wOFF", 4) != 0
+     || memcmp(woffhdr + WOFFHDR_SFNT_FLAVOR_OFFS, "OTTO", 4) == 0) {
+        (void)sseek(s, start);
+        code = gs_note_error(gs_error_invalidfont);
+        goto done;
+    }
+    sfntlen = u32(woffhdr + WOFFHDR_SFNT_LEN_OFFS);
+    if (!outbuf || *outbuflen < sfntlen) {
+        *outbuflen = sfntlen;
+        (void)sseek(s, start);
+        goto done;
+    }
+    ntables = U16(woffhdr + WOFFHDR_SFNT_NUMTABS_OFFS);
+    memcpy(obuf, woffhdr + WOFFHDR_SFNT_FLAVOR_OFFS, 4);
+    obuf += 4;
+    memcpy(obuf, woffhdr + WOFFHDR_SFNT_NUMTABS_OFFS, 2);
+    obuf += 2;
+    sr = ntables;
+    sr |= (sr >> 1);
+    sr |= (sr >> 2);
+    sr |= (sr >> 4);
+    sr |= (sr >> 8);
+    sr &= ~(sr >> 1);
+    sr *= 16;
+    PUTU16(obuf, (ushort)sr, 0)
+    rs = ntables * 16 - sr;
+    es = 0;
+    while (sr > 16) {
+        es++;
+        sr >>= 1;
+    }
+    PUTU16(obuf, (ushort)es, 2)
+    PUTU16(obuf, (ushort)rs, 4);
+    obuf += 6;
+
+    tabbuf = gs_alloc_bytes(mem, WOFF_TABDIR_ENT_LEN * ntables, "gs_woff2sfnt(tabbuf)");
+    tabbufptrs = (byte **)gs_alloc_bytes(mem, (ntables + 1) * sizeof(byte *), "gs_woff2sfnt(tabbufptrs)");
+    if (!tabbuf || !tabbufptrs) {
+        code = gs_note_error(gs_error_VMerror);
+        goto done;
+    }
+    if ((code = sfread(tabbuf, WOFF_TABDIR_ENT_LEN * ntables, 1, s)) < 0)
+        goto done;
+
+    for (i = 0; i < ntables; i++)
+        tabbufptrs[i] = tabbuf + (i * WOFF_TABDIR_ENT_LEN);
+    tabbufptrs[i] = NULL;
+    qsort(tabbufptrs, ntables, sizeof(byte *), gs_woff_tabdir_compare);
+
+    /* Two pointers into the output buffer: tdir and obuf.
+     * tdir is the beginning of the current entry in the table directory
+     * and obuf is the beginning of the current table.
+     */
+    tdir = obuf;
+    obuf += (16 * ntables);
+    for (i = 0; i < ntables; i++) {
+        byte *tdirent = tabbufptrs[i];
+        uint32_t len, clen, pad;
+        len = u32(tdirent + WOFF_TABDIR_OLEN_OFFS);
+        clen = u32(tdirent + WOFF_TABDIR_CLEN_OFFS);
+        /* Build the sfnts table directory entry.
+         * For those cases where encoded fields are the same in WOFF and SFNT,
+         * we just copy the bytes over
+         */
+        memcpy(tdir, tdirent, WOFF_TABDIR_FIELD_LEN);
+        memcpy(tdir + SFNT_TABDIR_CSUM_OFFS, tdirent + WOFF_TABDIR_CSUM_OFFS, WOFF_TABDIR_FIELD_LEN);
+        memcpy(tdir + SFNT_TABDIR_LEN_OFFS, tdirent + WOFF_TABDIR_OLEN_OFFS, WOFF_TABDIR_FIELD_LEN);
+        put_u32_msb(tdir, (uint32_t)(obuf - outbuf), SFNT_TABDIR_OFFSET_OFFS);
+        tdir += SFNT_TABDIR_ENT_LEN;
+        /* Now handle the actual table data */
+        sseek(s, u32(tdirent + WOFF_TABDIR_OFFSET_OFFS));
+        if (clen != len)
+            s = gs_woff_push_flate_filter(s);
+        code = sfread(obuf, 1, len, s);
+        if (clen != len)
+            s = gs_woff_pop_flate_filter(s);
+        if (code < 0)
+            goto done;
+        obuf += len;
+        /* TTF requires each table to start on a 4 byte boundary, and
+         * padding to be zeroed bytes.
+         */
+        pad = ((len + 3) & ~3) - len;
+        while (pad > 0) {
+            *obuf = (byte)0;
+            obuf++;
+            pad--;
+        }
+    }
+done:
+    gs_free_object(mem, tabbuf, "gs_woff2sfnt(tabbuf)");
+    gs_free_object(mem, tabbufptrs, "gs_woff2sfnt(tabbufptrs)");
+    return code;
+}
+
+int
+gs_woff2sfnt_stream(gs_memory_t *mem, stream *s, byte *outbuf, int *outbuflen)
+{
+    return gs_woff2sfnt(mem, s, outbuf, outbuflen);
+}
+
+int
+gs_woff2sfnt_buffer(gs_memory_t *mem, byte *inbuf, int inbuflen, byte *outbuf, int *outbuflen)
+{
+    stream *sstrm;
+    int code = 0;
+    sstrm = file_alloc_stream(mem, "gs_woff2sfnt_buffer(buf stream)");
+    if (sstrm) {
+        sread_string(sstrm, inbuf, inbuflen);
+        code = gs_woff2sfnt(mem,sstrm , outbuf, outbuflen);
+        sclose(sstrm);
+        gs_free_object(mem, sstrm, "gs_woff2sfnt_buffer(buf stream)");
+    }
+    else {
+        code = gs_note_error(gs_error_VMerror);
+    }
+    return code;
 }

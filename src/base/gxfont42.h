@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -108,6 +108,10 @@ struct gs_type42_data_s {
      */
     uint numGlyphs;		/* from size of loca */
     uint trueNumGlyphs;		/* from maxp */
+    uint maxPoints;         /* from maxp (used by pdfwrite) */
+    uint maxContours;       /* from maxp (used by pdfwrite) */
+    uint maxCPoints;        /* from maxp (used by pdfwrite) */
+    uint maxCContours;      /* from maxp (used by pdfwrite) */
     uint *len_glyphs;		/* built from the loca table */
     gs_glyph_cache *gdcache;
     bool warning_patented;
@@ -155,7 +159,7 @@ int gs_type42_read_data(gs_font_type42 * pfont, ulong pos, uint length, byte *bu
 #define MAX_NUM_TT_TABLES 40
 
 /* Append the outline of a TrueType character to a path. */
-int gs_type42_append(uint glyph_index, gs_state * pgs,
+int gs_type42_append(uint glyph_index, gs_gstate * pgs,
                  gx_path * ppath, gs_text_enum_t *penum, gs_font *pfont,
                  bool charpath_flag);
 
@@ -187,5 +191,11 @@ uint gs_type42_substitute_glyph_index_vertical(gs_font_type42 *pfont, uint glyph
 void gs_type42_parse_component(const byte **pdata, uint *pflags, gs_matrix_fixed *psmat,
                                int *pmp /*[2], may be null*/, const gs_font_type42 *pfont,
                                const gs_matrix_fixed *pmat);
+
+int
+gs_woff2sfnt_stream(gs_memory_t *mem, stream *s, byte *outbuf, int *outbuflen);
+
+int
+gs_woff2sfnt_buffer(gs_memory_t *mem, byte *inbuf, int inbuflen, byte *outbuf, int *outbuflen);
 
 #endif /* gxfont42_INCLUDED */

@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -33,7 +33,7 @@
 
 /* setsmoothness */
 int
-gs_setsmoothness(gs_state * pgs, floatp smoothness)
+gs_setsmoothness(gs_gstate * pgs, double smoothness)
 {
     pgs->smoothness =
         (smoothness < 0 ? 0 : smoothness > 1 ? 1 : smoothness);
@@ -42,14 +42,14 @@ gs_setsmoothness(gs_state * pgs, floatp smoothness)
 
 /* currentsmoothness */
 float
-gs_currentsmoothness(const gs_state * pgs)
+gs_currentsmoothness(const gs_gstate * pgs)
 {
     return pgs->smoothness;
 }
 
 /* shfill */
 int
-gs_shfill(gs_state * pgs, const gs_shading_t * psh)
+gs_shfill(gs_gstate * pgs, const gs_shading_t * psh)
 {
     /*
      * shfill is equivalent to filling the current clipping path (or, if
@@ -93,8 +93,14 @@ gs_shfill(gs_state * pgs, const gs_shading_t * psh)
     if (pcs == NULL)
         return_error(gs_error_VMerror);
 
+    /* make sure the tag gets set correctly */
+    if (pgs->show_gstate == NULL)
+        ensure_tag_is_set(pgs, pgs->device, GS_PATH_TAG);	/* NB: may unset_dev_color */
+    else
+        ensure_tag_is_set(pgs, pgs->device, GS_TEXT_TAG);	/* NB: may unset_dev_color */
+
     pcs->params.pattern.has_base_space = false;
-    code = pcs->type->remap_color(&cc, pcs, &devc, (gs_imager_state *)pgs,
+    code = pcs->type->remap_color(&cc, pcs, &devc, pgs,
                                   pgs->device, gs_color_select_texture);
     if (code >= 0) {
         gx_device *dev = pgs->device;

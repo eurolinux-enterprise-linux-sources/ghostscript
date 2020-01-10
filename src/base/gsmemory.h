@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -88,6 +88,7 @@ typedef struct gs_memory_status_s {
      * plus overhead.
      */
     ulong used;
+    ulong max_used;
     /* used when wrapping if underlying allocator must be thread safe */
     bool is_thread_safe;
 } gs_memory_status_t;
@@ -135,7 +136,7 @@ typedef struct gs_memory_status_s {
   void proc(mem_t *mem, void *data, client_name_t cname)
 
 #define gs_free_object(mem, data, cname)\
-  ((mem)->procs.free_object(mem, data, cname))
+  do { if (mem != NULL) {((mem)->procs.free_object(mem, data, cname));} } while (0)
 
                 /*
                  * Report status (assigned, used).
@@ -201,6 +202,7 @@ typedef struct gs_memory_status_s {
 
 #define gs_consolidate_free(mem)\
   ((mem)->procs.consolidate_free(mem))
+
 
 /* Define the members of the procedure structure. */
 #define gs_raw_memory_procs(mem_t)\
@@ -385,6 +387,19 @@ typedef struct gs_memory_procs_s {
   (*(mem)->procs.enable_free)(mem, enable)
     gs_memory_proc_enable_free((*enable_free));
 
+#define gs_memory_proc_set_object_type(proc)\
+  void proc(gs_memory_t *mem, void *data, gs_memory_type_ptr_t type)
+#define gs_set_object_type(mem, data, type)\
+  (*(mem)->procs.set_object_type)(mem, data, type)
+    gs_memory_proc_set_object_type((*set_object_type));
+
+#define gs_memory_proc_defer_frees(proc)\
+  void proc(gs_memory_t *mem, int defer)
+#define gs_defer_frees(mem, defer)\
+  (*(mem)->procs.defer_frees)(mem, defer)
+    gs_memory_proc_defer_frees((*defer_frees));
+#define GS_MEMORY_CAN_DEFER_FREES
+
 } gs_memory_procs_t;
 
 /*
@@ -435,8 +450,6 @@ gs_memory_proc_consolidate_free(gs_ignore_consolidate_free);
 void *gs_raw_alloc_struct_immovable(gs_memory_t * rmem,
                                     gs_memory_type_ptr_t pstype,
                                     client_name_t cname);
-
-typedef struct pl_mem_node_s pl_mem_node_t;
 
 /*
  * Define an abstract allocator instance.

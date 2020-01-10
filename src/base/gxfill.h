@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -18,6 +18,14 @@
 
 #ifndef gxfill_INCLUDED
 #  define gxfill_INCLUDED
+
+enum
+{
+    DIR_UP = 1,
+    DIR_HORIZONTAL = 0,
+    DIR_DOWN = -1,
+    DIR_OUT_OF_Y_RANGE = 2
+};
 
 /* Define the structure for keeping track of active lines. */
 #ifndef active_line_DEFINED
@@ -71,9 +79,6 @@ struct active_line_s {
     fixed x_next;		/* x position at end of band */
     const segment *pseg;	/* endpoint of this line */
     int direction;		/* direction of line segment */
-#define DIR_UP 1
-#define DIR_HORIZONTAL 0	/* (these are handled specially) */
-#define DIR_DOWN (-1)
     bool monotonic_x;		/* "false" means "don't know"; only for scanline. */
     bool monotonic_y;		/* "false" means "don't know"; only for scanline. */
     gx_flattened_iterator fi;
@@ -91,7 +96,6 @@ struct active_line_s {
 };
 
 typedef struct fill_options_s {
-    bool pseudo_rasterization;  /* See comment about "pseudo-rasterization". */
     fixed ymin, ymax;
     const gx_device_color * pdevc;
     gs_logical_operation_t lop;
@@ -124,10 +128,7 @@ struct line_list_s {
     active_line x_head; 	/* X-sorted list of active lines */
 #define x_list x_head.next
     active_line *h_list0, *h_list1; /* lists of horizontal lines for y, y1 */
-    margin_set margin_set0, margin_set1;
-    margin *free_margin_list;
     int *windings;
-    int local_margin_alloc_count;
     int bbox_left, bbox_width;
     int main_dir;
     fixed y_break;
@@ -137,7 +138,7 @@ struct line_list_s {
     /* small displacements. */
     /* Allocate a few active_lines locally */
     /* to avoid round trips through the allocator. */
-#if arch_small_memory
+#if ARCH_SMALL_MEMORY
 #  define MAX_LOCAL_ACTIVE 6	/* don't overburden the stack */
 #  define MAX_LOCAL_SECTION 50
 #else
@@ -145,9 +146,6 @@ struct line_list_s {
 #  define MAX_LOCAL_SECTION 100
 #endif
     active_line local_active[MAX_LOCAL_ACTIVE];
-    margin local_margins[MAX_LOCAL_ACTIVE];
-    section local_section0[MAX_LOCAL_SECTION];
-    section local_section1[MAX_LOCAL_SECTION];
     int local_windings[MAX_LOCAL_ACTIVE];
 };
 

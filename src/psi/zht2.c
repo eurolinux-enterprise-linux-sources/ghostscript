@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,12 +9,13 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
 /* Level 2 sethalftone operator */
+#include "memory_.h"
 #include "ghost.h"
 #include "oper.h"
 #include "gsstruct.h"
@@ -30,6 +31,8 @@
 #include "store.h"
 #include "iname.h"
 #include "zht2.h"
+#include "gxgstate.h"
+#include "gen_ordered.h"
 
 /* Forward references */
 static int dict_spot_params(const ref *, gs_spot_halftone *, ref *, ref *,
@@ -57,7 +60,7 @@ gs_get_colorname_string(const gs_memory_t *mem, gs_separation_name colorname_ind
 
 /* Dummy spot function */
 static float
-spot1_dummy(floatp x, floatp y)
+spot1_dummy(double x, double y)
 {
     return (x + y) / 2;
 }
@@ -74,6 +77,7 @@ zsethalftone5(i_ctx_t *i_ctx_p)
     gs_halftone_component *pc;
     int code = 0;
     int j;
+    bool have_default;
     gs_halftone *pht = 0;
     gx_device_halftone *pdht = 0;
     ref sprocs[GS_CLIENT_COLOR_MAX_COMPONENTS + 1];
@@ -81,14 +85,22 @@ zsethalftone5(i_ctx_t *i_ctx_p)
     gs_memory_t *mem;
     uint edepth = ref_stack_count(&e_stack);
     int npop = 2;
-    int dict_enum = dict_first(op);
+    int dict_enum;
     ref rvalue[2];
     int cname, colorant_number;
     byte * pname;
     uint name_size;
     int halftonetype, type = 0;
-    gs_state *pgs = igs;
-    int space_index = r_space_index(op - 1);
+    gs_gstate *pgs = igs;
+    int space_index;
+
+    if (ref_stack_count(&o_stack) < 2)
+        return_error(gs_error_stackunderflow);
+    check_type(*op, t_dictionary);
+    check_type(*(op - 1), t_dictionary);
+
+    dict_enum = dict_first(op);
+    space_index = r_space_index(op - 1);
 
     mem = (gs_memory_t *) idmemory->spaces_indexed[space_index];
 
@@ -112,8 +124,8 @@ zsethalftone5(i_ctx_t *i_ctx_p)
 
     /* Count how many components that we will actually use. */
 
+    have_default = false;
     for (count = 0; ;) {
-        bool have_default = false;
 
         /* Move to next element in the dictionary */
         if ((dict_enum = dict_next(op, dict_enum, rvalue)) == -1)
@@ -122,6 +134,8 @@ zsethalftone5(i_ctx_t *i_ctx_p)
          * Verify that we have a valid component.  We may have a
          * /HalfToneType entry.
          */
+        if (!r_has_type(&rvalue[0], t_name))
+            continue;
         if (!r_has_type(&rvalue[1], t_dictionary))
             continue;
 
@@ -137,7 +151,7 @@ zsethalftone5(i_ctx_t *i_ctx_p)
         else if (colorant_number == GX_DEVICE_COLOR_MAX_COMPONENTS) {
             /* If here then we have the "Default" component */
             if (have_default)
-                return_error(e_rangecheck);
+                return_error(gs_error_rangecheck);
             have_default = true;
         }
 
@@ -147,10 +161,13 @@ zsethalftone5(i_ctx_t *i_ctx_p)
          * components.
          */
         if (count > GS_CLIENT_COLOR_MAX_COMPONENTS + 1) {
-            code = gs_note_error(e_rangecheck);
+            code = gs_note_error(gs_error_rangecheck);
             break;
         }
     }
+    if (count == 0 || (halftonetype == ht_type_multiple && ! have_default))
+        code = gs_note_error(gs_error_rangecheck);
+
     if (code >= 0) {
         check_estack(5);		/* for sampling Type 1 screens */
         refset_null(sprocs, count);
@@ -166,7 +183,7 @@ zsethalftone5(i_ctx_t *i_ctx_p)
             j = 0; /* Quiet the compiler:
                       gs_note_error isn't necessarily identity,
                       so j could be left ununitialized. */
-            code = gs_note_error(e_VMerror);
+            code = gs_note_error(gs_error_VMerror);
         }
     }
     if (code >= 0) {
@@ -181,6 +198,8 @@ zsethalftone5(i_ctx_t *i_ctx_p)
              * Verify that we have a valid component.  We may have a
              * /HalfToneType entry.
              */
+            if (!r_has_type(&rvalue[0], t_name))
+                continue;
             if (!r_has_type(&rvalue[1], t_dictionary))
                 continue;
 
@@ -199,12 +218,12 @@ zsethalftone5(i_ctx_t *i_ctx_p)
             /* Now process the component dictionary */
             check_dict_read(rvalue[1]);
             if (dict_int_param(&rvalue[1], "HalftoneType", 1, 7, 0, &type) < 0) {
-                code = gs_note_error(e_typecheck);
+                code = gs_note_error(gs_error_typecheck);
                 break;
             }
             switch (type) {
                 default:
-                    code = gs_note_error(e_rangecheck);
+                    code = gs_note_error(gs_error_rangecheck);
                     break;
                 case 1:
                     code = dict_spot_params(&rvalue[1], &pc->params.spot,
@@ -247,6 +266,8 @@ zsethalftone5(i_ctx_t *i_ctx_p)
                 break;
 
             /* Verify that we have a valid component */
+            if (!r_has_type(&rvalue[0], t_name))
+                continue;
             if (!r_has_type(&rvalue[1], t_dictionary))
                 continue;
 
@@ -313,6 +334,7 @@ zsethalftone5(i_ctx_t *i_ctx_p)
                     break;
                 /* falls through */
             case ht_type_threshold:
+            case ht_type_threshold2:
                 if (!r_has_type(tprocs + j, t__invalid)) {
                     /* Schedule TransferFunction sampling. */
                     /****** check_xstack IS WRONG ******/
@@ -349,6 +371,183 @@ zsethalftone5(i_ctx_t *i_ctx_p)
     return (ref_stack_count(&e_stack) > edepth ? o_push_estack : 0);
 }
 
+/* <dict> .genordered <string> */
+/*         array will have: width height turn_on_sequence.x turn_on_sequence.y ...	*/
+/*         total array length is 2 + (2 * width * height)				*/
+static int
+zgenordered(i_ctx_t *i_ctx_p)
+{
+    os_ptr op = osp;
+    int i, code = 0;
+    gs_memory_t *mem;
+    int space_index;
+    htsc_param_t params;
+    int S;
+    htsc_dig_grid_t final_mask;
+    float tmp_float;
+    gs_gstate *pgs = igs;
+    gx_device *currdevice = pgs->device;
+    output_format_type output_type = OUTPUT_PS;
+    ref *out_type_name;
+
+    if (ref_stack_count(&o_stack) < 1)
+        return_error(gs_error_stackunderflow);
+    check_type(*op, t_dictionary);
+
+    space_index = r_space_index(op);		/* used to construct array that is returned */
+    mem = (gs_memory_t *) idmemory->spaces_indexed[space_index];
+
+    check_type(*op, t_dictionary);
+    check_dict_read(*op);
+
+    htsc_set_default_params(&params);
+    /* Modify the default HResolution and VResolution to be the device HWResolution */
+    params.horiz_dpi = currdevice->HWResolution[0];
+    params.vert_dpi = currdevice->HWResolution[1];
+    final_mask.memory = mem->non_gc_memory;
+    final_mask.data = NULL;
+
+    if ((code = dict_find_string(op, "OutputType", &out_type_name)) > 0) {
+        ref namestr;
+
+        if (!r_has_type(out_type_name, t_name))
+            return gs_error_typecheck;
+        name_string_ref(imemory, out_type_name, &namestr);
+        if (r_size(&namestr) == 8 && !memcmp(namestr.value.bytes, "TOSArray", 8))
+            output_type = OUTPUT_TOS;
+        else if (r_size(&namestr) == 5 && !memcmp(namestr.value.bytes, "Type3", 5))
+            output_type = OUTPUT_PS;
+        else if (r_size(&namestr) == 12 && !memcmp(namestr.value.bytes, "ThreshString", 12))
+            output_type = OUTPUT_RAW;
+        else
+            return gs_error_undefined;
+    }
+    if ((code = dict_int_param(op, "Angle", 0, 360, 0, &params.targ_scr_ang)) < 0)
+        return gs_error_undefined;
+    if ((code = dict_int_param(op, "Frequency", 1, 0x7fff, 75, &params.targ_lpi)) < 0)
+        return gs_error_undefined;
+    if ((code = dict_float_param(op, "HResolution", 300., &tmp_float)) < 0)
+        return gs_error_undefined;
+    if (code == 0)
+        params.horiz_dpi = tmp_float;
+    if ((code = dict_float_param(op, "VResolution", 300., &tmp_float)) < 0)
+        return gs_error_undefined;
+    if (code == 0)
+        params.vert_dpi = tmp_float;
+    if ((code = dict_int_param(op, "Levels", 1, 0x7fff, 256, &params.targ_quant)) < 0)
+        return gs_error_undefined;
+    if (code == 0)
+        params.targ_quant_spec = true;
+    if ((code = dict_int_param(op, "SuperCellSize", 1, 0x7fff, 1, &params.targ_size)) < 0)
+        return gs_error_undefined;
+    if (code == 0)
+        params.targ_size_spec = true;
+    if ((code = dict_int_param(op, "DotShape", 0, CUSTOM - 1, 0, (int *)(&params.spot_type))) < 0)
+        return gs_error_undefined;
+    if ((code = dict_bool_param(op, "Holladay", false, &params.holladay)) < 0)
+        return gs_error_undefined;
+
+    params.output_format = OUTPUT_TOS;		/* we want this format */
+    code = htsc_gen_ordered(params, &S, &final_mask);
+
+    if (code < 0)
+        goto done;
+
+    switch (output_type) {
+      case OUTPUT_TOS:
+        /* Now return the mask info in an array [ width height turn_on.x turn_on.y ... ] */
+        code = ialloc_ref_array((ref *)op, a_all, 2 + (2 * final_mask.width * final_mask.height), "gen_ordered");
+        if (code < 0)
+            goto done;
+        make_int(&(op->value.refs[0]), final_mask.width);
+        make_int(&(op->value.refs[1]), final_mask.height);
+        for (i=0; i < 2 * final_mask.width * final_mask.height; i++)
+            make_int(&(op->value.refs[i+2]), final_mask.data[i]);
+        break;
+      case OUTPUT_RAW:
+      case OUTPUT_PS:
+    /* Return a threshold array string first two bytes are width (high byte first),
+     * next two bytes are height, followed by the threshold array (one byte per cell)
+     * PostScript can easily form a Type 3 Halftone Thresholds string from this
+     * using "getinterval".
+     */
+        {
+            /* Make a threshold array from the turn_on_sequence */
+            int level;
+            int cur_pix = 0;
+            int width = final_mask.width;
+            int num_pix = width * final_mask.height;
+            double delta_value = 1.0 / (double)(num_pix);
+            double end_value, cur_value = 0.0;
+            byte *thresh;
+            ref rval, thresh_ref;
+
+            code = gs_error_VMerror;	/* in case allocation of thresh fails */
+            if (output_type == OUTPUT_RAW) {
+                if ((thresh = ialloc_string(4 + num_pix, "gen_ordered"))  == 0)
+                    goto done;
+                *thresh++ = width >> 8;
+                *thresh++ = width & 0xff;
+                *thresh++ = final_mask.height >> 8;
+                *thresh++ = final_mask.height & 0xff;
+            } else if ((thresh = ialloc_string(num_pix, "gen_ordered"))  == 0)
+                    goto done;
+            /* The following is adapted from thresh_remap with the default linear map */
+            for (level=0; level<256; level++) {
+                end_value = (float)(1+level) / 255.;
+                if (end_value > 255.0)
+                    end_value = 255.0;		/* clamp in case of rounding errors */
+                while (cur_value < (end_value - (delta_value * (1./256.))) ||
+                       (cur_pix + 1) == (num_pix / 2) ) {	/* force 50% gray level */
+                    thresh[final_mask.data[2*cur_pix] + (width*final_mask.data[2*cur_pix+1])] = 255 - level;
+                    cur_pix++;
+                    if (cur_pix >= num_pix)
+                        break;
+                    cur_value += delta_value;
+                }
+                if (cur_pix >= num_pix)
+                    break;
+            }
+            /* now fill any remaining cells */
+            for (; cur_pix < num_pix; cur_pix++) {
+                thresh[final_mask.data[2 * cur_pix] + (width*final_mask.data[2 * cur_pix + 1])] = 0;
+            }
+            if (output_type == OUTPUT_RAW) {
+                make_string(&thresh_ref, a_all | icurrent_space, 4 + num_pix, thresh-4);
+                *op = thresh_ref;
+                code = 0;
+            } else {
+                /* output_type == OUTPUT_PS */
+                /* Return a HalftoneType 3 dictionary */
+                code = dict_create(4, op);
+                if (code < 0)
+                    goto done;
+                make_string(&thresh_ref, a_all | icurrent_space, num_pix, thresh);
+                if ((code = idict_put_string(op, "Thresholds", &thresh_ref)) < 0)
+                    goto done;
+                make_int(&rval, final_mask.width);
+                if ((code = idict_put_string(op, "Width", &rval)) < 0)
+                    goto done;
+                make_int(&rval, final_mask.height);
+                if ((code = idict_put_string(op, "Height", &rval)) < 0)
+                    goto done;
+                make_int(&rval, 3);
+                if ((code = idict_put_string(op, "HalftoneType", &rval)) < 0)
+                    goto done;
+            }
+        }
+        break;
+      default:
+        return gs_error_undefined;
+    }
+
+done:
+    if (final_mask.data != NULL)
+        gs_free_object(mem->non_gc_memory, final_mask.data, ".genordered");
+
+    return (code < 0 ? gs_error_undefined : 0);
+}
+
 /* Install the halftone after sampling. */
 static int
 sethalftone_finish(i_ctx_t *i_ctx_p)
@@ -359,8 +558,11 @@ sethalftone_finish(i_ctx_t *i_ctx_p)
     if (pdht->components)
         pdht->order = pdht->components[0].corder;
     code = gx_ht_install(igs, r_ptr(esp - 1, gs_halftone), pdht);
-    if (code < 0)
+    if (code < 0) {
+        esp -= 4;
+        sethalftone_cleanup(i_ctx_p);
         return code;
+    }
     istate->halftone = esp[-2];
     esp -= 4;
     sethalftone_cleanup(i_ctx_p);
@@ -386,6 +588,7 @@ const op_def zht2_l2_op_defs[] =
 {
     op_def_begin_level2(),
     {"2.sethalftone5", zsethalftone5},
+    {"1.genordered", zgenordered},
                 /* Internal operators */
     {"0%sethalftone_finish", sethalftone_finish},
     op_def_end(0)
@@ -412,7 +615,7 @@ dict_spot_params(const ref * pdict, gs_spot_halftone * psp,
                                 &psp->accurate_screens)) < 0 ||
       (code = dict_proc_param(pdict, "TransferFunction", ptproc, false)) < 0
         )
-        return (code < 0 ? code : e_undefined);
+        return (code < 0 ? code : gs_error_undefined);
     psp->transfer = (code > 0 ? (gs_mapping_proc) 0 : gs_mapped_transfer);
     psp->transfer_closure.proc = 0;
     psp->transfer_closure.data = 0;
@@ -421,7 +624,7 @@ dict_spot_params(const ref * pdict, gs_spot_halftone * psp,
 
 /* Set actual frequency and angle in a dictionary. */
 static int
-dict_real_result(i_ctx_t *i_ctx_p, ref * pdict, const char *kstr, floatp val)
+dict_real_result(i_ctx_t *i_ctx_p, ref * pdict, const char *kstr, double val)
 {
     int code = 0;
     ref *ignore;
@@ -464,7 +667,7 @@ dict_threshold_common_params(const ref * pdict,
         (code = dict_find_string(pdict, "Thresholds", pptstring)) <= 0 ||
       (code = dict_proc_param(pdict, "TransferFunction", ptproc, false)) < 0
         )
-        return (code < 0 ? code : e_undefined);
+        return (code < 0 ? code : gs_error_undefined);
     ptp->transfer_closure.proc = 0;
     ptp->transfer_closure.data = 0;
     return code;
@@ -485,7 +688,7 @@ dict_threshold_params(const ref * pdict, gs_threshold_halftone * ptp,
         return code;
     check_read_type_only(*tstring, t_string);
     if (r_size(tstring) != (long)ptp->width * ptp->height)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     ptp->thresholds.data = tstring->value.const_bytes;
     ptp->thresholds.size = r_size(tstring);
     ptp->transfer = (code > 0 ? (gs_mapping_proc) 0 : gs_mapped_transfer);
@@ -507,6 +710,8 @@ dict_threshold2_params(const ref * pdict, gs_threshold2_halftone * ptp,
     uint size;
     int cw2, ch2;
 
+    ptp->transfer = (code > 0 ? (gs_mapping_proc) 0 : gs_mapped_transfer);
+
     if (code < 0 ||
         (code = cw2 = dict_int_param(pdict, "Width2", 0, 0x7fff, 0,
                                      &ptp->width2)) < 0 ||
@@ -518,7 +723,7 @@ dict_threshold2_params(const ref * pdict, gs_threshold2_halftone * ptp,
     if ((bps != 8 && bps != 16) || cw2 != ch2 ||
         (!cw2 && (ptp->width2 == 0 || ptp->height2 == 0))
         )
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     ptp->bytes_per_sample = bps / 8;
     switch (r_type(tstring)) {
     case t_string:
@@ -528,17 +733,17 @@ dict_threshold2_params(const ref * pdict, gs_threshold2_halftone * ptp,
         break;
     case t_astruct:
         if (gs_object_type(mem, tstring->value.pstruct) != &st_bytes)
-            return_error(e_typecheck);
+            return_error(gs_error_typecheck);
         size = gs_object_size(mem, tstring->value.pstruct);
         gs_bytestring_from_bytes(&ptp->thresholds, r_ptr(tstring, byte),
                                  0, size);
         break;
     default:
-        return_error(e_typecheck);
+        return_error(gs_error_typecheck);
     }
     check_read(*tstring);
     if (size != (ptp->width * ptp->height + ptp->width2 * ptp->height2) *
         ptp->bytes_per_sample)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     return 0;
 }

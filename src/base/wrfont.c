@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 /*
@@ -21,6 +21,7 @@ Started by Graham Asher, 9th August 2002.
 
 #include "wrfont.h"
 #include "stdio_.h"
+#include "assert_.h"
 
 #define EEXEC_KEY 55665
 #define EEXEC_FACTOR 52845
@@ -37,9 +38,9 @@ WRF_init(WRF_output * a_output, unsigned char *a_buffer, long a_buffer_size)
 }
 
 void
-WRF_wbyte(WRF_output * a_output, unsigned char a_byte)
+WRF_wbyte(const gs_memory_t *memory, WRF_output * a_output, unsigned char a_byte)
 {
-    if (a_output->m_count < a_output->m_limit) {
+    if (a_output->m_count < a_output->m_limit && a_output->m_pos != NULL) {
         if (a_output->m_encrypt) {
             a_byte ^= (a_output->m_key >> 8);
             a_output->m_key =
@@ -52,35 +53,43 @@ WRF_wbyte(WRF_output * a_output, unsigned char a_byte)
 }
 
 void
-WRF_wtext(WRF_output * a_output, const unsigned char *a_string, long a_length)
+WRF_wtext(const gs_memory_t *memory, WRF_output * a_output, const unsigned char *a_string, long a_length)
 {
     while (a_length > 0) {
-        WRF_wbyte(a_output, *a_string++);
+        WRF_wbyte(memory, a_output, *a_string++);
         a_length--;
     }
 }
 
 void
-WRF_wstring(WRF_output * a_output, const char *a_string)
+WRF_wstring(const gs_memory_t *memory, WRF_output * a_output, const char *a_string)
 {
     while (*a_string)
-        WRF_wbyte(a_output, *a_string++);
+        WRF_wbyte(memory, a_output, *a_string++);
 }
 
 void
-WRF_wfloat(WRF_output * a_output, double a_float)
+WRF_wfloat(const gs_memory_t *memory, WRF_output * a_output, double a_float)
 {
     char buffer[32];
+    int l;
 
-    sprintf(buffer, "%f", a_float);
-    WRF_wstring(a_output, buffer);
+    l = gs_snprintf(buffer, sizeof (buffer), "%f", a_float);
+    if (l > sizeof (buffer)) {
+        emprintf(memory, "Warning: Font real number value truncated\n");
+    }
+    WRF_wstring(memory, a_output, buffer);
 }
 
 void
-WRF_wint(WRF_output * a_output, long a_int)
+WRF_wint(const gs_memory_t *memory, WRF_output * a_output, long a_int)
 {
     char buffer[32];
+    int l;
 
-    sprintf(buffer, "%ld", a_int);
-    WRF_wstring(a_output, buffer);
+    l = gs_snprintf(buffer, sizeof(buffer), "%ld", a_int);
+    if (l > sizeof (buffer)) {
+        emprintf(memory, "Warning: Font integer number value truncated\n");
+    }
+    WRF_wstring(memory, a_output, buffer);
 }

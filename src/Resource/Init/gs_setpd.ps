@@ -1,4 +1,4 @@
-% Copyright (C) 2001-2012 Artifex Software, Inc.
+% Copyright (C) 2001-2018 Artifex Software, Inc.
 % All Rights Reserved.
 %
 % This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
 % of the license contained in the file LICENSE in this distribution.
 %
 % Refer to licensing information at http://www.artifex.com or contact
-% Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-% CA  94903, U.S.A., +1(415)492-9861, for further information.
+% Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+% CA 94945, U.S.A., +1(415)492-9861, for further information.
 %
 
 % The current implementation of setpagedevice has the following limitations:
@@ -95,27 +95,41 @@ level2dict begin
  {	% Since setpagedevice doesn't create new device objects,
         % we must (carefully) reinstall the old parameters in
         % the same device.
-   .currentpagedevice pop //null currentdevice //null .trysetparams
+   .currentpagedevice pop //null currentdevice //null
+   { .trysetparams } .internalstopped
+   {
+     //null
+   } if
    dup type /booleantype eq
     { pop pop }
-    {		% This should never happen!
+    {
       SETPDDEBUG { (Error in .trysetparams!) = pstack flush } if
-      cleartomark pop pop pop
+      {cleartomark pop pop pop} .internalstopped pop
+      % if resetting the entire device state failed, at least put back the
+      % security related key
+      currentdevice //null //false mark /.LockSafetyParams
+      currentpagedevice /.LockSafetyParams .knownget not
+      {systemdict /SAFER .knownget not {//false} } if
+      .putdeviceparamsonly
       /.installpagedevice cvx /rangecheck signalerror
     }
    ifelse pop pop
         % A careful reading of the Red Book reveals that an erasepage
         % should occur, but *not* an initgraphics.
    erasepage .beginpage
- } bind def
+ } bind executeonly def
 
 /.uninstallpagedevice
- { 2 .endpage { .currentnumcopies //false .outputpage } if
+ {
+   {2 .endpage { .currentnumcopies //false .outputpage } if} .internalstopped pop
    nulldevice
  } bind def
 
 (%grestorepagedevice) cvn
- { .uninstallpagedevice grestore .installpagedevice
+ {
+ .uninstallpagedevice
+ grestore
+ .installpagedevice
  } bind def
 
 (%grestoreallpagedevice) cvn
@@ -170,7 +184,12 @@ level2dict begin
   % the default policy to "7" (impose) to avoid numerous problems with
   % printing within CUPS...
   %
-  /PageSize NOMEDIAATTRS { 7 } { 0 } ifelse
+  % If NOMEDIAATTRS is false, the set the default depending on whether
+  % PSFitPage is true. Policy 13 does best fit with page scaling up or down
+  % so it is only useful if FIXEDMEDIA is also specified, or if the set of
+  % media in the InputAttributes dictionary is the actual available choices
+  % and does not include any "range" page sizes.
+  /PageSize NOMEDIAATTRS { 7 } { //systemdict /PSFitPage known { 13 } { 0 } ifelse } ifelse
   /PolicyNotFound 1
   /PolicyReport {
     dup /.LockSafetyParams known {
@@ -199,25 +218,28 @@ level2dict begin
     mark
     % First put the device's default page size in slot 0
     % This satifies those that have devices built with a4 as the default
-    0 mark /PageSize currentdevice /PageSize gsgetdeviceprop .dicttomark
-
-    statusdict /.pagetypenames get {
-      statusdict /.pagetypeprocs get
-      exch get 0 2 getinterval cvlit
-      counttomark 1 sub 2 idiv exch mark exch /PageSize exch
-      % stack: mark --dict-- --dict-- ... key mark /PageSize [x y]
-      % see note above about pagetype executable array contents.
-      .dicttomark
-    } forall
-    % If NORANGEPAGESIZE is defined, (-dNORANGEPAGESIZE), then don't add
-    % the 'match any' PageSize entry
-    systemdict /NORANGEPAGESIZE known not {
-      % Add one last entry which is the 4 element range array (non-standard)
-      counttomark 2 idiv
-        % PageSize with either dimension 0 will be detected in
-        % match_page_size, so we can allow it here
-      mark /PageSize [0 dup 16#7ffff dup] .dicttomark
-    } if
+    0 mark /PageSize /GetDeviceParam .special_op
+    not {/setpagedevice .systemvar /configurationerror signalerror} if .dicttomark
+    % Only populate the other entries if we aren't FIXEDMEDIA
+    FIXEDMEDIA not {
+      statusdict /.pagetypenames get {
+        statusdict /.pagetypeprocs get
+        exch get 0 2 getinterval cvlit
+        counttomark 1 sub 2 idiv exch mark exch /PageSize exch
+        % stack: mark --dict-- --dict-- ... key mark /PageSize [x y]
+        % see note above about pagetype executable array contents.
+        .dicttomark
+      } forall
+      % If NORANGEPAGESIZE is defined, (-dNORANGEPAGESIZE), then don't add
+      % the 'match any' PageSize entry
+      systemdict /NORANGEPAGESIZE known not {
+        % Add one last entry which is the 4 element range array (non-standard)
+        counttomark 2 idiv
+          % PageSize with either dimension 0 will be detected in
+          % match_page_size, so we can allow it here
+        mark /PageSize [0 dup 16#7ffff dup] .dicttomark
+      } if
+    } if % FIXEDMEDIA false
     .dicttomark
   }
   (%MediaSource) 0
@@ -235,16 +257,67 @@ level2dict begin
 
 % Define currentpagedevice so it creates the dictionary on demand if needed,
 % adding all the required entries defined just above.
+
 % We have to deal specially with entries that the driver may change
-% on its own.
-/.dynamicppkeys mark
+% on its own. We also have to deal specially with parameters which the device may
+% change on its own but which we *also* want to transmit to the device. Previously
+% any parameter which was 'dynamic' would not be sent to the device, making it
+% impossible to set a parameter, and later have the device change it. Currently
+% only OutputICCProfile fits this category.
+% This whole area is broken its completely the wrong way round from the way the spec says it should work.
+
+% This dictionary contains the keys we never want to set.
+/.readonlypdkeys mark
   /.MediaSize dup		% because it changes when PageSize is set
-%  /LeadingEdge dup
   /PageCount dup
   /Colors dup
   /BitsPerPixel dup
   /ColorValues dup
 .dicttomark readonly def
+
+% Bonkers, but needed by our ridiculous setpagedevice implementation. There are
+% some keys (at the moment, RedValues, GreenValues and BlueValues are known) which
+% only exist in the page device dictionary under some conditions (ProcessColorModel == DeviceRGB)
+% If we change the conditions, so that these keys are no longer present in the params
+% returned by the device, sending these keys to the device can trigger a fault.
+% This is a problem because of our stored dictionary:
+%
+% 1) Set up the inital dictioanry by retrieving the params from the device
+% 2) Change the conditions (ProcessColorModel == DeviceGray)
+% 3) merge any volatile keys from the device. Note that RedValues etc no longer defined.
+% 4) Call .installpagdevice, use the stored dicitonary to set the params
+% 5) The stored RedValues etc, cause an error.
+%
+% The stored dictioanry is readonly (we use forceput to wedge new keys into it) so
+% we can't 'undef' keys from it. (the dictionary is made readonly by the action of zsetpagedevice
+% '.setpagedevice' in PostScrfipt)
+%
+% So the only solution is to have 'write only' keys. These can be written to the device
+% but are not stored in the saved page device dictionary. This means PostScript programs
+% can't interrogate and take action on these, but there's no solution to that except to
+% rewrite this stuff completely so that it actually works properly.
+
+/.writeonlykeys mark
+  /RedValues dup        % Set by the device when ProcessColorModel changes
+  /GreenValues dup      % Set by the device when ProcessColorModel changes
+  /BlueValues dup       % Set by the device when ProcessColorModel changes
+  /GrayValues dup       % Set by the device when ProcessColorModel changes
+.dicttomark readonly def
+
+% This dictionary contains the keys we always want to read back from the device.
+/.volatilepdkeys mark
+  /.MediaSize dup		% because it changes when PageSize is set
+  /RedValues dup        % Set by the device when ProcessColorModel changes
+  /GreenValues dup      % Set by the device when ProcessColorModel changes
+  /BlueValues dup       % Set by the device when ProcessColorModel changes
+  /GrayValues dup       % Set by the device when ProcessColorModel changes
+  /PageCount dup
+  /Colors dup
+  /BitsPerPixel dup
+  /ColorValues dup
+  /OutputICCProfile dup		% ColorConversionStrategy can change this
+.dicttomark readonly def
+
 /.makecurrentpagedevice {	% - .makecurrentpagedevice <dict>
   currentdevice //null .getdeviceparams
         % Make the dictionary large enough to add defaulted entries.
@@ -276,6 +349,10 @@ level2dict begin
       exec 2 index 3 1 roll put
     } ifelse
   } forall exch .setglobal
+
+  % Remove any keys we don't want to be stored, before .setpagedevice
+  % makes the dictionary read only
+  .writeonlykeys {2 index exch undef pop} forall
   dup .setpagedevice
 } bind def
 /currentpagedevice {
@@ -285,7 +362,7 @@ level2dict begin
     } {
                 % If any of the dynamic keys have changed,
                 % we must update the page device dictionary.
-      currentdevice //.dynamicppkeys .getdeviceparams .dicttomark {
+      currentdevice //.volatilepdkeys .getdeviceparams .dicttomark {
                 % Stack: current key value
             2 index 2 index .knownget { 1 index ne } { //true } ifelse
              { 2 index wcheck not
@@ -307,10 +384,11 @@ level2dict begin
       } forall
       % If the device is the distiller device, update distillerparams that
       % may have been changed by setdistillerparams
-      % Check to see if the current device supports Tr
-      currentdevice 1 dict dup /IsDistiller dup put .getdeviceparams
-      dup type /booleantype eq not {cleartomark false}{3 1 roll cleartomark}ifelse
-%      currentdevice .devicename /pdfwrite eq
+      /IsDistiller /GetDeviceParam .special_op {
+        exch pop
+      }{
+        //false
+      }ifelse
       {
           currentdistillerparams {
               % Stack: current key value
@@ -442,8 +520,8 @@ NOMEDIAATTRS {
 % The procedure leaves all its operands on the stack and returns
 % true iff the key/value pair should be presented to .putdeviceparams.
 /.presentspecial mark
-  .dynamicppkeys
-      { pop dup /LeadingEdge ne { //false } { pop } ifelse }
+  .readonlypdkeys
+      { pop //false }
   forall
                         % We must ignore an explicit request for .MediaSize,
                         % because media matching always handles this.
@@ -560,7 +638,7 @@ SETPDDEBUG { (Rolling back.) = pstack flush } if
          { 4 index 3 1 roll .forceput }
          { 3 index exch .undef }
         ifelse
-  } .bind
+  } .bind executeonly % must be bound and hidden for .forceput
   7 {		% For PageSize only, just impose the request.
         1 index /PageSize eq
          { pop pop 1 index /PageSize 7 put }
@@ -652,7 +730,48 @@ SETPDDEBUG { (Result of putting.) = pstack flush } if
 % ---------------- setpagedevice itself ---------------- %
 
 /setpagedevice
- {		% We mustn't pop the argument until the very end,
+ {
+                % To avoid VM mismatches caused by copying subsidiary
+                % dictionaries to local VM (see WorPerfect bug in
+                % .makecurrentpagedevice) we want to make the dict
+                % returned by currentpagedevice local. However, if we
+                % run with -dSAFER we get a call to setpagedevice from
+                % .setsafe in gs_init.ps during startup. The dict returned
+                % by currentpagdevice is stored to the graphics state by
+                % .setpagedevice below, and returned by currentpagdevice.
+                % The Display PostScript code insists that the savedinitialgstate
+                % not have any pointers to local VM objects, so if we simply
+                % make the dict local then we fail in gs_dps.ps. The only
+                % solution is to make sure the VM mode is global during
+                % startup (to satisfy gs_dps.ps) and local thereafter
+                % (to satisfy the WordPerfect bug).
+   dup /..StartupGlobal known
+   {
+       currentglobal exch true setglobal
+       dup /..StartupGlobal undef
+   } {
+                % ensure that we are always in local VM mode to avoid
+                % mismatches. This is because we always create child
+                % dictionaries in local VM, regardless of the current VM state,
+                % (see .makecurrentpagdevice) and we can't store local objects
+                % in a global object, so we must ensure teh dictionary returned
+                % from currentpagedevice is in local VM.
+     currentglobal exch false setglobal
+   } ifelse
+
+   %% We used to execute endpage after .tsrysetparams, but that actually alters
+   %% the page device dictionary (in particular /PageSize) this is not correct.
+   %% Testing with Adobe Acrobat Distiller shows that EndPage is ececuted if the
+   %% page device dictionary is empty, and indeed even if setpagedevice returns
+   %% an error (caught by stopped), so it seems pretty clear that we should
+   %% run any required EndPage very early in the setpagedevice process.
+   %% Bug 690667.
+   2 .endpage
+   { 1 //true .outputpage
+     (>>setpagedevice, press <return> to continue<<\n) .confirm
+   }
+   if
+                % We mustn't pop the argument until the very end,
                 % so that the pseudo-operator machinery can restore the stack
                 % if an error occurs.
    mark 1 index currentpagedevice
@@ -722,8 +841,8 @@ SETPDDEBUG { (Merging.) = pstack flush } if
                 % change HWResolution.
    FIXEDRESOLUTION { dup /HWResolution .undef } if
                 % Hack: if FIXEDMEDIA is true, discard any attempt to change
-                % PageSize or HWSize.
-   FIXEDMEDIA
+                % PageSize or HWSize unless the PageSize Policy 13 (for FitPage).
+   dup /Policies get /PageSize get 13 ne FIXEDMEDIA and 
     { dup /PageSize 4 index /PageSize get put
       dup /HWSize 4 index /HWSize get put
     } if
@@ -794,11 +913,7 @@ SETPDDEBUG { (Recovering.) = pstack flush } if
                 % Stack: mark ... <merged> <failed> <device> <eraseflag>
 SETPDDEBUG { (Installing.) = pstack flush } if
 
-   pop 2 .endpage
-    { 1 //true .outputpage
-      (>>setpagedevice, press <return> to continue<<\n) .confirm
-    }
-   if
+    pop
                 % .setdevice clears the current page device!
    .currentpagedevice pop exch
    .setdevice pop
@@ -857,8 +972,11 @@ SETPDDEBUG { (Installing.) = pstack flush } if
                 % We must install the new page device dictionary
                 % before calling the Install procedure.
   dup .setpagedevice
-  currentdevice 1 dict dup /HighLevelDevice dup put .getdeviceparams
-  dup type /booleantype eq not {cleartomark //true}{3 1 roll cleartomark not}ifelse
+  /HighLevelDevice /GetDeviceParam .special_op {
+    exch pop not
+  }{
+    //true
+  }ifelse
   {
   .setdefaulthalftone	% Set the default screen before calling Install.
   } if
@@ -878,6 +996,7 @@ SETPDDEBUG { (Installing.) = pstack flush } if
   } {
     .postinstall
   } ifelse
+  setglobal           % return to original VM allocation mode
 } odef
 
 % We break out the code after calling the Install procedure into a

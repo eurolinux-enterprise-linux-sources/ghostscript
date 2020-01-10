@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -24,6 +24,37 @@
 #ifndef IGC_PTR_STABILITY_CHECK
 #  define IGC_PTR_STABILITY_CHECK 0
 #endif
+
+#ifndef GS_USE_MEMORY_HEADER_ID
+#define GS_USE_MEMORY_HEADER_ID 1
+#endif
+
+#if GS_USE_MEMORY_HEADER_ID
+
+  typedef gs_id hdr_id_t;
+
+  extern hdr_id_t hdr_id;
+
+# define HDR_ID_OFFSET (sizeof(obj_header_t) - offset_of(obj_header_t, d.o.hdr_id))
+
+# ifdef DEBUG
+
+# define ASSIGN_HDR_ID(obj) (*(hdr_id_t *)(((byte *)obj) - HDR_ID_OFFSET)) = hdr_id++
+
+  gs_id get_mem_hdr_id (void *ptr);
+
+# else /* DEBUG */
+
+#  define ASSIGN_HDR_ID(obj_hdr)
+
+# endif /* DEBUG */
+
+#else
+
+# define ASSIGN_HDR_ID(obj_hdr)
+# define HDR_ID_OFFSET 0
+
+#endif /* GS_USE_MEMORY_HEADER_ID */
 
 /* ================ Objects ================ */
 
@@ -49,19 +80,19 @@
  * The back pointer's meaning depends on whether the object is
  * free (unmarked) or in use (marked):
  *      - In free objects, the back pointer is an offset from the object
- * header back to a chunk_head_t structure that contains the location
- * to which all the data in this chunk will get moved; the reloc field
+ * header back to a clump_head_t structure that contains the location
+ * to which all the data in this clump will get moved; the reloc field
  * contains the amount by which the following run of useful objects
  * will be relocated downwards.
  *      - In useful objects, the back pointer is an offset from the object
  * back to the previous free object; the reloc field is not used (it
  * overlays the type field).
- * These two cases can be distinguished when scanning a chunk linearly,
- * but when simply examining an object via a pointer, the chunk pointer
+ * These two cases can be distinguished when scanning a clump linearly,
+ * but when simply examining an object via a pointer, the clump pointer
  * is also needed.
  */
 #define obj_flag_bits 1
-#define obj_mb_bits (arch_sizeof_int * 8 - obj_flag_bits)
+#define obj_mb_bits (ARCH_SIZEOF_INT * 8 - obj_flag_bits)
 #define o_unmarked (((uint)1 << obj_mb_bits) - 1)
 #define o_set_unmarked(pp)\
   ((pp)->o_smark = o_unmarked)
@@ -80,7 +111,7 @@
 typedef struct obj_header_data_s {
     union _f {
         struct _h {
-            unsigned alone:1;
+            unsigned alone:1, pad:obj_mb_bits;
         } h;
         struct _m {
             unsigned _:1, smark:obj_mb_bits;
@@ -96,6 +127,10 @@ typedef struct obj_header_data_s {
     } t;
 #   if IGC_PTR_STABILITY_CHECK
     unsigned space_id:3; /* r_space_bits + 1 bit for "instability". */
+#   endif
+
+#   if GS_USE_MEMORY_HEADER_ID
+    hdr_id_t hdr_id; /* should be last, to save wasting space in the "strings" case. Makes object easier to trace thru GC */
 #   endif
 } obj_header_data_t;
 
@@ -142,6 +177,7 @@ struct obj_header_s {		/* must be a struct because of forward reference */
 
 /* Define some reasonable abbreviations for the fields. */
 #define o_alone d.o.f.h.alone
+#define o_pad d.o.f.h.pad
 #define o_back d.o.f.b.back
 #define o_smark d.o.f.m.smark
 #define o_size d.o.size
@@ -163,16 +199,16 @@ struct obj_header_s {		/* must be a struct because of forward reference */
 
 /*
  * Define the header that free objects point back to when relocating.
- * Every chunk, including inner chunks, has one of these.
+ * Every clump, including inner clumps, has one of these.
  */
-typedef struct chunk_head_s {
+typedef struct clump_head_s {
     byte *dest;			/* destination for objects */
-#if obj_align_mod > arch_sizeof_ptr
-    byte *_pad[obj_align_mod / arch_sizeof_ptr - 1];
+#if obj_align_mod > ARCH_SIZEOF_PTR
+    byte *_pad[obj_align_mod / ARCH_SIZEOF_PTR - 1];
 #endif
     obj_header_t free;		/* header for a free object, */
     /* in case the first real object */
     /* is in use */
-} chunk_head_t;
+} clump_head_t;
 
 #endif /* gxobj_INCLUDED */

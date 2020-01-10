@@ -1,4 +1,4 @@
-% Copyright (C) 2001-2012 Artifex Software, Inc.
+% Copyright (C) 2001-2018 Artifex Software, Inc.
 % All Rights Reserved.
 %
 % This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
 % of the license contained in the file LICENSE in this distribution.
 %
 % Refer to licensing information at http://www.artifex.com or contact
-% Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-% CA  94903, U.S.A., +1(415)492-9861, for further information.
+% Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+% CA 94945, U.S.A., +1(415)492-9861, for further information.
 %
 
 % Initialization file for the interpreter.
@@ -29,7 +29,7 @@
 % Interpreter library version number
 % NOTE: the interpreter code requires that the first non-comment token
 % in this file be an integer, and that it match the compiled-in version!
-907
+925
 
 % Check the interpreter revision.
 dup revision ne
@@ -97,7 +97,6 @@ mark	% '[' isn't defined yet
   /FAPIDEBUG		% Font API
   /INITDEBUG		% Initialization
   /PDFDEBUG		% PDF Interpreter
-  /PDFOPTDEBUG		% PDF Optimizer (Linearizer)
   /PDFWRDEBUG		% PDF Writer
   /SETPDDEBUG		% setpagedevice
   /TTFDEBUG		% TTF Fonts
@@ -112,7 +111,9 @@ currentdict /PDFSTEP known /PDFSTEP exch def
 PDFSTEP { /PDFDEBUG //true def } if
 
 currentdict /PDFSTOPONERROR known /PDFSTOPONERROR exch def
+currentdict /PDFSTOPONWARNING known {/PDFSTOPONWARNING true def /PDFSTOPONERROR true def}{/PDFSTOPONWARNING false def} ifelse
 currentdict /PDFNOCIDFALLBACK known /PDFNOCIDFALLBACK exch def
+/.bind /bind load def
 
   /VMDEBUG
     INITDEBUG {{print mark
@@ -133,21 +134,25 @@ currentdict /PDFNOCIDFALLBACK known /PDFNOCIDFALLBACK exch def
           {{pop
           }}
          ifelse
-  def
+  .bind def
+
+%% This was a debugging switch removed in 9.22, no other software
+%% should have had any regard for it, and even if testing its value
+%% should have checked its existence first. However pstotext, an
+%% ancient and no longer maintained piece of softare, did check
+%% its value unconditionally. So we retain this key in the dictionary
+%% purely for backward compatibility.
+/NOBIND false def
 
 currentdict /BATCH known   /BATCH exch def
 currentdict /DELAYBIND known   /DELAYBIND exch def
-currentdict /DISKFONTS known   /DISKFONTS exch def
-currentdict /DOINTERPOLATE .knownget { /INTERPOLATE exch def } if
+currentdict /DOINTERPOLATE .knownget { { -1 } { 0 } ifelse /InterpolateControl exch def } if
 currentdict /ESTACKPRINT known   /ESTACKPRINT exch def
 currentdict /FAKEFONTS known   /FAKEFONTS exch def
 currentdict /FIXEDMEDIA known   /FIXEDMEDIA exch def
 currentdict /FIXEDRESOLUTION known   /FIXEDRESOLUTION exch def
 currentdict /LOCALFONTS known   /LOCALFONTS exch def
 currentdict /JOBSERVER known   /JOBSERVER exch def
-currentdict /NOBIND known   /NOBIND exch def
-/.bind /bind load def
-NOBIND { /bind { } def } if
 currentdict /NOCACHE known   /NOCACHE exch def
 currentdict /NOCCFONTS known   /NOCCFONTS exch def
 currentdict /NOCIE known   /NOCIE exch def
@@ -156,7 +161,7 @@ currentdict /NODISPLAY known   not /DISPLAYING exch def
 currentdict /NOFONTMAP known   /NOFONTMAP exch def
 currentdict /NOFONTPATH known   /NOFONTPATH exch def
 currentdict /NOGC known   /NOGC exch def
-currentdict /NOINTERPOLATE .knownget { /INTERPOLATE exch not def } if
+currentdict /NOINTERPOLATE .knownget { /InterpolateControl 0 def } if
 currentdict /NOMEDIAATTRS known /NOMEDIAATTRS exch def
 currentdict /NOOUTERSAVE known   /NOOUTERSAVE exch def
 currentdict /NOPAGEPROMPT known   /NOPAGEPROMPT exch def
@@ -184,10 +189,20 @@ currentdict /DELAYSAFER known { /DELAYSAFER //true def /NOSAFER //true def } if
 }
 ifelse def
 currentdict /SHORTERRORS known   /SHORTERRORS exch def
-currentdict /STRICT known   /STRICT exch def
 currentdict /TTYPAUSE known   /TTYPAUSE exch def
 currentdict /WRITESYSTEMDICT known   /WRITESYSTEMDICT exch def
 currentdict /RENDERTTNOTDEF known /RENDERTTNOTDEF exch def
+currentdict /SCANCONVERTERTYPE known
+{
+  currentdict /SCANCONVERTERTYPE get .setscanconverter
+} if
+
+% We rely on PSFitPage to actually implement EPSFitPage
+% But we need EPSCrop to be true, to actually issue a PageSize request, so set it here
+% in case the user forgets.
+currentdict /EPSFitPage known { /PSFitPage //true def /EPSCrop //true def} if
+% This is a "convenience" option that sets a combination of EPSFitPage, PDFFitPage and PSFitPage
+currentdict /FitPage known { /EPSFitPage //true def /EPSCrop //true def /PDFFitPage //true def /PSFitPage //true def } if
 
 % Acquire environment variables.
 currentdict /DEVICE known not
@@ -239,7 +254,7 @@ userdict /=string 256 string put
 
 /printgreeting
  { mark
-   product (Ghostscript) search
+   product (GPL Ghostscript) search
     { pop pop pop
       (This software comes with NO WARRANTY: see the file PUBLIC for details.\n)
     }
@@ -281,6 +296,9 @@ QUIET not { printgreeting flush } if
 /.systemvar {		% <name> .systemvar <value>
   //systemdict exch get
 } .bind odef
+/.systemexec {
+  .systemvar exec
+} .bind odef
 /.userdict {		% - .userdict <dict>
   /userdict .systemvar
 } .bind odef
@@ -289,8 +307,17 @@ QUIET not { printgreeting flush } if
 } .bind odef
 
 % If we're delaying binding, remember everything that needs to be bound later.
-DELAYBIND NOBIND not and
- { .currentglobal //false .setglobal
+DELAYBIND
+{
+   SAFER {
+       (\n *** WARNING - you have selected SAFER, indicating you want Ghostscript\n) print
+       (               to execute in a safer environment, but at the same time\n) print
+       (               have selected DELAYBIND. Unless you use this option with\n) print
+       (               care \(and specifically, remember to call .bindnow\) it is\n) print
+       (               possible that malicious code may be able to evade the\n) print
+       (               limited security offered by the SAFER option.\n) print
+   } if
+   .currentglobal //false .setglobal
    systemdict /.delaybind 2000 array .forceput
    .setglobal
    userdict /.delaycount 0 put
@@ -305,7 +332,7 @@ DELAYBIND NOBIND not and
        }
       ifelse
     } .bind def
- } if
+} if
 
 %**************** BACKWARD COMPATIBILITY ****************
 /hwsizedict mark /HWSize //null .dicttomark readonly def
@@ -518,7 +545,6 @@ userdict /.echo.mode //true put
         0 .argindex type dup /integertype eq exch /realtype eq or not {
           /setdash .systemvar /typecheck signalerror
         } if
-        1 .argindex length 11 gt { /setdash .systemvar /limitcheck signalerror } if
         //setdash
 } odef
 /setdevice
@@ -741,23 +767,6 @@ userdict /.currentresourcefile //null put
   { /run .systemvar exec } .execasresource
 } bind def
 
-% Define procedures for getting and setting the current device resolution.
-
-/gsgetdeviceprop	% <device> <propname> gsgetdeviceprop <value>
- { 2 copy mark exch //null .dicttomark .getdeviceparams
-   dup mark eq		% if true, not found
-    { pop dup /undefined signalerror }
-    { 5 1 roll pop pop pop pop }
-   ifelse
- } bind def
-/gscurrentresolution	% - gscurrentresolution <[xres yres]>
- { currentdevice /HWResolution gsgetdeviceprop
- } bind def
-/gssetresolution	% <[xres yres]> gssetresolution -
- { 2 array astore mark exch /HWResolution exch
-   currentdevice copydevice putdeviceprops setdevice
- } bind def
-
 % Define auxiliary procedures needed for the above.
 /shellarguments		% -> shell_arguments true (or) false
         { /ARGUMENTS where
@@ -872,7 +881,7 @@ userdict /.currentresourcefile //null put
        { not exch pop exit } { pop } ifelse
     }
    for exch pop .quit
- } bind def
+ } bind executeonly def
 /.errorhandler		% <command> <errorname> .errorhandler -
   {		% Detect an internal 'stopped'.
     1 .instopped { //null eq { pop pop stop } if } if
@@ -917,7 +926,7 @@ userdict /.currentresourcefile //null put
     $error /globalmode get $error /.nosetlocal get and .setglobal
     $error /.inerror //false put
     stop
-  } bind def
+  } bind executeonly def
 % Define the standard handleerror.  We break out the printing procedure
 % (.printerror) so that it can be extended for binary output
 % if the Level 2 facilities are present.
@@ -967,7 +976,7 @@ userdict /.currentresourcefile //null put
      ifelse	% newerror
      end
      flush
-    } bind def
+    } bind executeonly def
   /.printerror_long			% long error printout,
                                         % $error is on the dict stack
    {	% Push the (anonymous) stack printing procedure.
@@ -1044,14 +1053,14 @@ userdict /.currentresourcefile //null put
         { (Current file position is ) print position = }
        if
 
-   } bind def
+   } bind executeonly def
 % Define a procedure for clearing the error indication.
 /.clearerror
  { $error /newerror //false put
    $error /errorname //null put
    $error /errorinfo //null put
    0 .setoserrno
- } bind def
+ } bind executeonly def
 
 % Define $error.  This must be in local VM.
 .currentglobal //false .setglobal
@@ -1077,11 +1086,15 @@ end
 /errordict ErrorNames length 3 add dict
 .forcedef		% errordict is local, systemdict is global
 .setglobal		% back to global VM
-% For greater Adobe compatibility, we put all non-standard errors in a
-%   separate dictionary, gserrordict.  It does not need to be in local VM,
-%   because PostScript programs do not access it.
+%  gserrordict contains all the default error handling methods, but unlike
+%  errordict it is noaccess after creation (also it is in global VM).
+%  When running 'SAFER', we'll ignore the contents of errordict, which
+%  may have been tampered with by the running job, and always use gserrordict
+%  gserrordict also contains any non-standard errors, for better compatibility
+%  with Adobe.
+%
 %   NOTE: the name gserrordict is known to the interpreter.
-/gserrordict 5 dict def
+/gserrordict ErrorNames length 3 add dict def
 % Register an error in errordict.  We make this a procedure because we only
 % register the Level 1 errors here: the rest are registered by "feature"
 % files.  However, ErrorNames contains all of the error names regardless of
@@ -1110,8 +1123,11 @@ errordict begin
  } bind def
 end		% errordict
 
-% Put non-standard errors in gserrordict.
-gserrordict /unknownerror errordict /unknownerror get put
+% Put all the default handlers in gserrordict
+gserrordict
+errordict {2 index 3 1 roll put} forall
+noaccess pop
+% remove the non-standard errors from errordict
 errordict /unknownerror .undef
 % Define a stable private copy of handleerror that we will always use under
 % JOBSERVER mode.
@@ -1495,6 +1511,14 @@ setpacking
   dup 150 lt //systemdict /DITHERPPI known not and
 } bind def
 
+/.gsgetdeviceprop	% <device> <propname> gsgetdeviceprop <value>
+ { 2 copy mark exch //null .dicttomark .getdeviceparams
+   dup mark eq		% if true, not found
+    { pop dup /undefined signalerror }
+    { 5 1 roll pop pop pop pop }
+   ifelse
+ } bind def
+
 % The following implementation uses LL2 extensions, but only in stopped
 % contexts so that with LL1, the .set??reshalftone will be used.
 %
@@ -1502,7 +1526,7 @@ setpacking
 %			      false
 /.getdefaulthalftone {
   % try the device to see if it has a default halftone
-  { currentdevice /HalftoneDefault gsgetdeviceprop } .internalstopped
+  { currentdevice /HalftoneDefault //.gsgetdeviceprop exec } .internalstopped
   { pop pop //false }		% no device property
   { dup type /dicttype eq { //true } { pop //false } ifelse }
   ifelse
@@ -1515,6 +1539,7 @@ setpacking
   }
   if
 } bind def
+currentdict /.gsgetdeviceprop .forceundef
 
 /.setdefaulthalftone {
   .getdefaulthalftone
@@ -1742,13 +1767,13 @@ currentdict /.runlibfile .undef
     { dup type /operatortype eq
        { % This might be a real operator, so bind might cause a typecheck,
          % but we've made the error a no-op temporarily.
-         .bind		% do a real bind even if NOBIND is set
+         .bind
        }
       if pop pop
     } forall
    put
  } def
-NOBIND DELAYBIND or not { .bindoperators } if
+DELAYBIND not { .bindoperators } if
 
 % Establish a default environment.
 
@@ -1872,7 +1897,10 @@ ifelse
 % Trap this and produce a reasonable error message.
 { setdevice }		% does an erasepage
 INITDEBUG { exec //false } { .internalstopped } ifelse {
-  (**** Unable to open the initial device, quitting.) = flush 1 .quit
+  (%stderr) (w) file dup
+  (**** Unable to open the initial device, quitting.\n) writestring
+  flushfile
+  1 .quit
 } if
 
 % If the media size is fixed, update the current page device dictionary.
@@ -1907,7 +1935,7 @@ put				% Policies in pagedevice
 % so that .getuseciecolor has the correct value (see gs_setpd.ps)
 /setpagedevice where {
   pop systemdict /UseCIEColor known {
-    mark /UseCIEColor UseCIEColor .dicttomark setpagedevice
+    mark /UseCIEColor UseCIEColor /..StartupGlobal //true .dicttomark setpagedevice
   } if
 } if
 
@@ -1983,15 +2011,30 @@ systemdict /EPSBoundingBoxInit known { EPSBoundingBoxInit } if
 .currentglobal //true .setglobal
 /SAFETY 2 dict
   dup /safe //false put
-  dup /tempfiles 10 dict readonly put
+  dup /tempfiles 10 dict noaccess put
 readonly def
 .setglobal
 
-/.locksafe {
+/tempfilepaths
+[
+  (TMPDIR) getenv not
+  {
+    (TEMP) getenv not
+    {
+      (TMP) getenv not
+      {
+        (/temp) (/tmp)
+      } if
+    } if
+  } if
+] def
+
+/.locksafe_userparams {
   SAFETY /safe get not {
     <<
       /PermitFileReading [
         currentuserparams /PermitFileReading get aload pop
+        //tempfilepaths (*) .generate_dir_list_templates
         /FONTPATH .systemvar (*) .generate_dir_list_templates
           % Library files :
         /LIBPATH  .systemvar (*) .generate_dir_list_templates
@@ -2006,17 +2049,57 @@ readonly def
           [ currentsystemparams /GenericResourceDir get] (*) .file_name_separator (*)
             concatstrings concatstrings .generate_dir_list_templates
         } if
+        currentuserparams /ICCProfilesDir known {
+          [currentuserparams /ICCProfilesDir get] (*)
+          .generate_dir_list_templates
+        } if
+      ]
+      /PermitFileWriting [
+          currentuserparams /PermitFileWriting get aload pop
+          //tempfilepaths (*) .generate_dir_list_templates
+      ]
+      /PermitFileControl [
+          currentuserparams /PermitFileControl get aload pop
+          //tempfilepaths (*) .generate_dir_list_templates
       ]
       /LockFilePermissions //true
     >> setuserparams
   }
   if
+} bind def
+
+currentdict /tempfilepaths undef
+
+/.locksafe {
+  .locksafe_userparams
+  systemdict /getenv {pop //false} .forceput
   % setpagedevice has the side effect of clearing the page, but
   % we will just document that. Using setpagedevice keeps the device
   % properties and pagedevice .LockSafetyParams in agreement even
   % after a restore that changes the value to false.
   currentglobal currentpagedevice gcheck setglobal % use correct VM space
   << /.LockSafetyParams //true >> setpagedevice
+  setglobal
+  //SAFETY /safe //true .forceput % overrides readonly
+} .bind executeonly odef
+
+%% This is only used during startup. Its required so that
+%% we can detect in setpagdevice that we are in fact in startup
+%% and allocate a *global* instead of local VM. We need it to be
+%% global to satisfy Display PostScript (see start of /setpagdevice
+%% in gs_setpd.ps)
+%%
+/.locksafeglobal {
+  .locksafe_userparams
+  systemdict /getenv {pop //false} put
+  % setpagedevice has the side effect of clearing the page, but
+  % we will just document that. Using setpagedevice keeps the device
+  % properties and pagedevice .LockSafetyParams in agreement even
+  % after a restore that changes the value to false.
+  currentglobal currentpagedevice gcheck setglobal % use correct VM space
+  << /.LockSafetyParams //true
+    /..StartupGlobal //true
+  >> setpagedevice
   setglobal
   //SAFETY /safe //true .forceput % overrides readonly
 } .bind executeonly odef
@@ -2034,30 +2117,159 @@ readonly def
   .locksafe
 } .bind executeonly odef
 
-/deletefile {
-  dup { deletefile } stopped {
-    pop //deletefile $error /errorname get signalerror
-  } {
-    % deletefile succeeded. Remove from tempfile list if present
-    //SAFETY /tempfiles get exch cvn 2 copy known {
-      .forceundef
-    } {
-      pop pop
-    }
-    ifelse
+%% See /.locksafeglobal above.
+%%
+/.setsafeglobal {
+  SAFETY /safe get not {
+    <<
+      /PermitFileReading [ ]
+      /PermitFileWriting [ ]
+      /PermitFileControl [ ]
+    >> setuserparams
   }
-  ifelse
-} .bind executeonly odef
-
-% If a file is opened with .tempfile with SAFER not (yet) set,
-% the file can be deleted later, even if SAFER is set.
-/.tempfile {
-  .tempfile	% filename file
-  //SAFETY /tempfiles get 2 .argindex //true .forceput
-} .bind executeonly odef
+  if
+  .locksafeglobal
+} bind executeonly odef
 
 % If we are running in SAFER mode, lock things down
-SAFER { .setsafe } if
+SAFER { .setsafeglobal } if
+
+/SAFERUndefinePostScriptOperators {
+  [
+  % Used by our own test suite files
+  /.pushpdf14devicefilter    % transparency-example.ps
+  /.poppdf14devicefilter     % transparency-example.ps
+  /.setopacityalpha          % transparency-example.ps
+  /.setshapealpha            % transparency-example.ps
+  /.endtransparencygroup     % transparency-example.ps
+  /.setdotlength             % Bug687720.ps
+  /.sort /.setdebug /.mementolistnewblocks /getenv
+
+  /.makeoperator /.setCPSImode              % gs_cet.ps, this won't work on cluster with -dSAFER
+
+  /unread
+  ]
+  {systemdict exch .forceundef} forall
+
+  //systemdict /SAFERUndefinePostScriptOperators .forceundef
+} .bind executeonly def % must be bound and hidden for .forceundef
+
+/UndefinePostScriptOperators {
+
+  %% This list is of Display PostScript operators. We believe that Display PostScript
+  %% was never fully implemented and the only known user, GNUStep, is no longer
+  %% using it. So lets remove it.
+  [
+  /condition /currentcontext /detach /.fork /join /.localfork /lock /monitor /notify
+  /wait /yield /.currentscreenphase /.setscreenphase /.image2 /eoviewclip /initviewclip
+  /viewclip /viewclippath /defineusername
+  %% NeXT DPS extensions
+  /currentalpha /setalpha /.alphaimage /composite /compositerect /dissolve /sizeimagebox /.sizeimageparams
+  ]
+  {systemdict exch .forceundef} forall
+
+  %% This list is of operators which no longer appear to be used, and which we do not believe
+  %% to have any real use. For now we will undefine the operstors so they cannot easily be used
+  %% but can be easily restored (just delete the name from the list in the array). In future
+  %% we may remove the operator and the code implementation entirely.
+  [
+  /.bitadd /.charboxpath /.cond /.countexecstack /.execstack /.runandhide /.popdevicefilter
+  /.execfile /.filenamesplit /.file_name_parent
+  /.setdefaultmatrix /.isprocfilter /.unread /.psstringencode
+  /.buildsampledfunction /.isencapfunction /.currentaccuratecurves /.currentcurvejoin /.currentdashadapt /.currentdotlength
+  /.currentlimitclamp /.dotorientation /.setaccuratecurves /.setcurvejoin /.setdashadapt /.setdotorientation
+  /.setlimitclamp /.currentscreenlevels /.dashpath /.pathbbox /.identeq /.identne /.tokenexec /.forgetsave /.pantonecallback
+
+  %% Used by our own test suite files
+  %%/.setdotlength % Bug687720.ps
+  ]
+  {systemdict exch .forceundef} forall
+
+  %% This list of operators are used internally by various parts of the Ghostscript startup code.
+  %% Since each operator is a potential security vulnerability, and any operator listed here
+  %% is not required once the initialisation is complete and functions are bound, we undefine
+  %% the ones that aren't needed at runtime.
+  [
+  /.callinstall /.callbeginpage /.callendpage
+  /.currentstackprotect /.setstackprotect /.errorexec /.finderrorobject /.installsystemnames /.bosobject /.fontbbox
+  /.type1execchar /.type2execchar /.type42execchar /.setweightvector /.getuseciecolor /processcolors /.includecolorspace
+  /.execn /.instopped /.stop /.stopped /.setcolorrendering /.setdevicecolorrendering /.buildcolorrendering1 /.builddevicecolorrendering1
+  /.TransformPQR_scale_WB0 /.TransformPQR_scale_WB1 /.TransformPQR_scale_WB2 /.currentoverprintmode /.copydevice2
+  /.devicename /.doneshowpage /.getbitsrect /.getdevice /.getdefaultdevice /.getdeviceparams /.gethardwareparams
+  /makewordimagedevice /.outputpage /.putdeviceparams /.setdevice /.currentshowpagecount
+  /.setpagedevice /.currentpagedevice /.knownundef /.setmaxlength /.rectappend /.initialize_dsc_parser /.parse_dsc_comments
+  /.fillCIDMap /.fillIdentityCIDMap /.buildcmap /.filenamelistseparator /.libfile /.getfilename
+  /.file_name_combine /.file_name_is_absolute /.file_name_separator /.file_name_directory_separator /.file_name_current /.filename
+  /.peekstring /.writecvp /.subfiledecode /.setupUnicodeDecoder /.jbig2makeglobalctx /.registerfont /.parsecff
+  /.getshowoperator /.getnativefonts /.beginform /.endform /.get_form_id /.repeatform /.reusablestream /.rsdparams
+  /.buildfunction /.currentfilladjust2 /.setfilladjust2 /.sethpglpathmode /.currenthpglpathmode
+  /.currenthalftone /.sethalftone5 /.image1 /.imagemask1 /.image3 /.image4
+  /.getiodevice /.getdevparms /.putdevparams /.bbox_transform /.matchmedia /.matchpagesize /.defaultpapersize
+  /.oserrno /.setoserrno /.oserrorstring /.getCPSImode
+  /.getscanconverter /.setscanconverter /.type1encrypt /.type1decrypt/.languagelevel /.setlanguagelevel /.eqproc /.fillpage /.buildpattern1 /.saslprep
+  /.buildshading1 /.buildshading2 /.buildshading3 /.buildshading4 /.buildshading5 /.buildshading6 /.buildshading7 /.buildshadingpattern
+  /.shfill /.argindex /.bytestring /.namestring /.stringbreak /.stringmatch /.globalvmarray /.globalvmdict /.globalvmpackedarray /.globalvmstring
+  /.localvmarray /.localvmdict /.localvmpackedarray /.localvmstring /.systemvmarray /.systemvmdict /.systemvmpackedarray /.systemvmstring /.systemvmfile /.systemvmlibfile
+  /.systemvmSFD /.settrapparams /.currentsystemparams /.currentuserparams /.getsystemparam /.getuserparam /.setsystemparams /.setuserparams
+  /.checkpassword /.locale_to_utf8 /.currentglobal /.gcheck /.imagepath
+
+  % Used by a free user in the Library of Congress. Apparently this is used to
+  % draw a partial page, which is then filled in by the results of a barcode
+  % scanner and SQL database lookup. Its not clear to us exactly why this needs to be
+  % done as a partial page, but its easiest to restore the operator, and it seems like
+  % its a reasonably safe operator to restore, for the *very* few devices on which
+  % it will have any effect. Currently this uses the 'sync_output' device method
+  % to transfer the partial page, in future we may use a spec_op instead.
+  %/flushpage
+
+  % Used by our own test suite files
+  %/.fileposition %image-qa.ps
+  %/.makeoperator /.setCPSImode % gs_cet.ps
+
+  % Either our code uses these in ways which mean they can't be undefined, or they are used directly by
+  % test files/utilities, or engineers expressed a desire to keep them visible.
+  %
+  %/currentdevice /.sort /.buildfont0 /.buildfont1 /.buildfont2 /.buildfont3 /.buildfont4 /.buildfont9 /.buildfont10 /.buildfont11
+  %/.buildfotn32 /.buildfont42 /.type9mapcid /.type11mapcid /.swapcolors
+  %/currentdevice  /.quit /.setuseciecolor /.needinput /.setoverprintmode /.special_op /.dicttomark /.knownget
+  %/.FAPIavailable /.FAPIpassfont /.FAPIrebuildfont /.FAPIBuildGlyph /.FAPIBuildChar /.FAPIBuildGlyph9
+  %/.tempfile /.numicc_components /.set_outputintent  /.max /.min /.vmreclaim /.getpath /.setglobal
+  %/.setdebug /.mementolistnewblocks /getenv
+  ]
+  {systemdict exch .forceundef} forall
+
+  //systemdict /UndefinePostScriptOperators .forceundef
+} .bind executeonly def % must be bound and hidden for .forceundef
+
+/UndefinePDFOperators {
+  %% This list of operators are used internally by various parts of the Ghostscript PDF interpreter.
+  %% Since each operator is a potential security vulnerability, and any operator listed here
+  %% is not required once the initislisation is complete and functions are bound, we undefine
+  %% the ones that aren't needed at runtime.
+  %% This function is only called if DELAYBIND is true. It is a copy of the code at the end of pdf_main.ps
+  %% and must be maintained in parallel with it.
+  [
+  /.pdfawidthshow /.pdfwidthshow /.currentblackptcomp /.setblackptcomp
+  /.setfillcolor /.setfillcolorspace /.setstrokecolor /.setstrokecolorspace /.currentrenderingintent /.setrenderingintent
+  /.currenttextrenderingmode /.settextspacing /.currenttextspacing /.settextleading /.currenttextleading
+  /.settextrise /.currenttextrise /.setwordspacing /.currentwordspacing /.settexthscaling /.currenttexthscaling
+  /.settextlinematrix /.currenttextlinematrix /.currenttextmatrix /.settextmatrix /.currentblendmode
+  /.currentopacityalpha /.currentshapealpha /.currenttextknockout
+  /.pushextendedgstate /.popextendedgstate /.begintransparencytextgroup
+  /.endtransparencytextgroup /.begintransparencymaskgroup /.begintransparencymaskimage /.endtransparencymask /.image3x
+  /.abortpdf14devicefilter /.pdfinkpath /.pdfFormName /.setstrokeconstantalpha
+  /.setfillconstantalpha /.setalphaisshape /.currentalphaisshape
+  /.settextspacing /.currenttextspacing /.settextleading /.currenttextleading /.settextrise /.currenttextrise
+  /.setwordspacing /.currentwordspacing /.settexthscaling /.currenttexthscaling /.setPDFfontsize /.currentPDFfontsize
+  /.setdistillerparams
+
+  % undefining these causes errors/incorrect output
+  %/.settextrenderingmode /.setblendmode /.begintransparencygroup /.settextknockout /check_r6_password /.setstrokeoverprint /.setfilloverprint
+  %/.currentstrokeoverprint /.currentfilloverprint /.currentfillconstantalpha /.currentstrokeconstantalpha
+  ]
+  {systemdict exch .forceundef} forall
+  //systemdict /UndefinePDFOperators .forceundef
+} .bind executeonly def % must be bound and hidden for .forceundef
 
 % If we delayed binding, make it possible to do it later.
 /.bindnow {
@@ -2072,9 +2284,15 @@ SAFER { .setsafe } if
   //systemdict /.delaybind {} .forceput	% reclaim the space
   //systemdict /.bindnow .forceundef	% ditto
   put
+  SAFER {
+    //systemdict /SAFERUndefinePostScriptOperators get exec
+  } if
+  //systemdict /UndefinePostScriptOperators get exec
+  //systemdict /UndefinePDFOperators get exec
   //systemdict /.forcecopynew .forceundef	% remove temptation
   //systemdict /.forcedef .forceundef		% ditto
   //systemdict /.forceput .forceundef		% ditto
+  //systemdict /.undef .forceundef		    % ditto
   //systemdict /.forceundef .forceundef		% ditto
   currentuserparams /IdiomRecognition known {
     1 dict dup /IdiomRecognition 4 -1 roll put setuserparams
@@ -2138,6 +2356,13 @@ $error /.nosetlocal //false put
 
 (END GLOBAL) VMDEBUG
 
+%% .savelocalstate is part of Display PostScript (if included). Part of the function of
+%% the .savelocalstate routine is to store the 'initial saved gstate' (savedinitialgstate)
+%% in systemdict. The code in dps1.c, gstate_check_space, disallows writing or creating
+%% gstates in global VM in certain conditions. If we execute setpagedevice before we
+%% reach this point, we must ensure that we do so using /..StartupGlobal so that
+%% the dictionary is defined in global VM, because the gstate contains a pointer to the
+%% device dictionary, and if that is allocated in local VM we will fail the gstate check.
 /.savelocalstate where {
         % If we might create new contexts, save away copies of all dictionaries
         % referenced from systemdict that are stored in local VM,
@@ -2171,6 +2396,16 @@ currentdict /.patterntypes .undef
 currentdict /.shadingtypes .undef
 currentdict /.wheredict .undef
 currentdict /.renderingintentdict .undef
+
+%% If we are using DELAYBIND we have to defer the undefinition
+%% until .bindnow.
+DELAYBIND not {
+  SAFER {
+    //systemdict /SAFERUndefinePostScriptOperators get exec
+  } if
+  //systemdict /UndefinePostScriptOperators get exec
+  //systemdict /UndefinePDFOperators .forceundef
+} if
 end
 
 % Clean up VM, and enable GC. Use .vmreclaim to force the GC.
@@ -2178,17 +2413,38 @@ end
  { pop NOGC not { 2 .vmreclaim 0 vmreclaim } if
  } if
 DELAYBIND not {
+  systemdict /.bindnow .undef       % We only need this for DELAYBIND
   systemdict /.forcecopynew .undef	% remove temptation
   systemdict /.forcedef .undef		% ditto
   systemdict /.forceput .undef		% ditto
   systemdict /.forceundef .undef	% ditto
 } if
+
 % Move superexec to internaldict if superexec is defined.
-currentdict /superexec .knownget {
+systemdict /superexec .knownget {
   1183615869 internaldict /superexec 3 -1 roll put
-  currentdict /superexec .undef
+  systemdict /superexec .undef
 } if
-WRITESYSTEMDICT not { systemdict readonly pop } if
+
+%% Can't remove this one until the last minute :-)
+DELAYBIND not {
+systemdict /.undef .undef
+} if
+WRITESYSTEMDICT {
+   SAFER {
+       (\n *** WARNING - you have selected SAFER, indicating you want Ghostscript\n) print
+       (               to execute in a safer environment, but at the same time\n) print
+       (               have selected WRITESYSTEMDICT. Unless you use this option with\n) print
+       (               care and specifically, remember to execute code like:\n) print
+       (                      "systemdict readonly pop"\n) print
+       (               it is possible that malicious code may be able to evade the\n) print
+       (               limited security offered by the SAFER option.\n) print
+   }if
+}
+{
+     systemdict readonly pop
+} ifelse
+
 (END GC) VMDEBUG
 
 % The Adobe AGM_Core used by Illustrator 9 has some code that breaks

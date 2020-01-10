@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -269,11 +269,11 @@ rc_trace_increment(const void *vp, const rc_header *prc)
               (ulong)vp, (long)prc->ref_count);
 }
 void
-rc_trace_adjust(const void *vp, const rc_header *prc, int delta)
+rc_trace_adjust(const void *vp, const rc_header *prc, int delta, const char *cname)
 {
-    dmprintf4(prc->memory, "[^]%s 0x%lx %+d => %ld\n",
+    dmprintf5(prc->memory, "[^]%s 0x%lx %+d => %ld (%s)\n",
               rc_object_type_name(vp, prc),
-              (ulong)vp, delta, (long)(prc->ref_count + delta));
+              (ulong)vp, delta, (long)(prc->ref_count + delta), cname);
 }
 
 #endif /* DEBUG */

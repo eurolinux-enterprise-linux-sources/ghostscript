@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -72,7 +72,6 @@ main(int argc, char *argv[])
 #ifdef NEED_COMMIT_STACK   /* hack for bug in gcc 2.96 */
     commit_stack_pages();
 #endif
-    exit_status = 0;
 
     /*
      * Call setlocale(LC_CTYPE), so that we can convert PDF passwords
@@ -91,7 +90,7 @@ main(int argc, char *argv[])
     (void)setlocale(LC_CTYPE, "");
     mem = gs_malloc_init();
     minst = gs_main_alloc_instance(mem);
-    code = (minst == NULL ? e_Fatal : 0);
+    code = (minst == NULL ? gs_error_Fatal : 0);
     if (code >= 0)
         code = gs_main_init_with_args(minst, argc, argv);
 
@@ -125,17 +124,19 @@ main(int argc, char *argv[])
     exit_status = 0;
     switch (code) {
         case 0:
-        case e_Info:
-        case e_Quit:
+        case gs_error_Info:
+        case gs_error_Quit:
             break;
-        case e_Fatal:
+        case gs_error_Fatal:
             exit_status = 1;
             break;
         default:
             exit_status = 255;
     }
 
-    gs_to_exit_with_code(minst->heap, exit_status, code);
+    if (minst)
+        gs_to_exit_with_code(minst->heap, exit_status, code);
+    gs_free_object(mem, minst, "init_main_instance");
     gs_malloc_release(mem);
 
     switch (exit_status) {

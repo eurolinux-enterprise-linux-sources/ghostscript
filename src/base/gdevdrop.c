@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 /* Default and device-independent RasterOp algorithms */
@@ -159,12 +159,12 @@ gx_default_strip_copy_rop2(gx_device * dev,
     pmdev->height = block_height;
     pmdev->bitmap_memory = mem;
     pmdev->color_info = dev->color_info;
-    plane_depth = dev_proc(dev, dev_spec_op)(dev, gxdso_is_native_planar, NULL, 0);
-    if (plane_depth > 0)
+    if (dev->is_planar)
     {
         gx_render_plane_t planes[GX_DEVICE_COLOR_MAX_COMPONENTS];
-        int num_comp = dev->color_info.num_components;
-        int i;
+        uchar num_comp = dev->color_info.num_components;
+        uchar i;
+        plane_depth = dev->color_info.depth / num_comp;
         for (i = 0; i < num_comp; i++)
         {
             planes[i].shift = plane_depth * (num_comp - 1 - i);
@@ -447,6 +447,7 @@ pack_from_standard(gx_device_memory * dev, int y, int destx, const byte * src,
             case 32:
                 *dp++ = (byte)(pixel >> 24);
                 *dp++ = (byte)(pixel >> 16);
+                /* fall through */
             case 16:
                 *dp++ = (byte)(pixel >> 8);
                 *dp++ = (byte)pixel;
@@ -472,7 +473,8 @@ pack_planar_from_standard(gx_device_memory * dev, int y, int destx,
     int shift = (~bit_x & 7) + 1;
     byte buf[GX_DEVICE_COLOR_MAX_COMPONENTS];
     const byte *sp = src;
-    int x, plane;
+    int x;
+    uchar plane;
 
     if (pdepth == 1 && dev->color_info.num_components == 4) {
         pack_planar_cmyk_1bit_from_standard(dev, y, destx, src, width,
@@ -480,7 +482,7 @@ pack_planar_from_standard(gx_device_memory * dev, int y, int destx,
         return;
     }
 
-    for (plane = 0; plane < dev->num_planes; plane++) {
+    for (plane = 0; plane < dev->color_info.num_components; plane++) {
         byte *dest = scan_line_base(dev, y + plane * dev->height);
         dp[plane] = dest + (bit_x >> 3);
         buf[plane] = (shift == 8 ? 0 : *dp[plane] & (0xff00 >> shift));
@@ -550,22 +552,22 @@ pack_planar_from_standard(gx_device_memory * dev, int y, int destx,
                 /* We have pdepth*num_planes bits in 'pixel'. We need to copy
                  * them (topmost bits first) into the buffer, packing them at
                  * shift position. */
-                int pshift = pdepth*(dev->num_planes-1);
+                int pshift = pdepth*(dev->color_info.num_components-1);
 #endif
                 /* Can we fit another pdepth bits into our buffer? */
                 shift -= pdepth;
                 if (shift < 0) {
                     /* No, so flush the buffer to the planes. */
-                    for (plane = 0; plane < dev->num_planes; plane++)
+                    for (plane = 0; plane < dev->color_info.num_components; plane++)
                         *dp[plane]++ = buf[plane];
                     shift += 8;
                 }
                 /* Copy the next pdepth bits into each planes buffer */
 #ifdef ORIGINAL_CODE_KEPT_FOR_REFERENCE
-                for (plane = 0; plane < dev->num_planes; pshift+=8,plane++)
+                for (plane = 0; plane < dev->color_info.num_components; pshift+=8,plane++)
                     buf[plane] += (byte)(((pixel>>pshift) & pmask)<<shift);
 #else
-                for (plane = 0; plane < dev->num_planes; pshift-=pdepth,plane++)
+                for (plane = 0; plane < dev->color_info.num_components; pshift-=pdepth,plane++)
                     buf[plane] += (byte)(((pixel>>pshift) & pmask)<<shift);
 #endif
                 break;
@@ -574,11 +576,11 @@ pack_planar_from_standard(gx_device_memory * dev, int y, int destx,
     }
     if (width > 0 && depth <= 8) {
         if (shift == 0)
-            for (plane = 0; plane < dev->num_planes; plane++)
+            for (plane = 0; plane < dev->color_info.num_components; plane++)
                 *dp[plane] = buf[plane];
         else {
             int mask = (1<<shift)-1;
-            for (plane = 0; plane < dev->num_planes; plane++)
+            for (plane = 0; plane < dev->color_info.num_components; plane++)
                 *dp[plane] = (*dp[plane] & mask) + buf[plane];
         }
     }
@@ -604,7 +606,7 @@ mem_default_strip_copy_rop2(gx_device * dev,
                             uint planar_height)
 {
     dmlprintf(dev->memory, "mem_default_strip_copy_rop2 should never be called!\n");
-    return gs_error_Fatal;
+    return_error(gs_error_Fatal);
 }
 
 int
@@ -649,7 +651,7 @@ mem_default_strip_copy_rop(gx_device * dev,
     byte *row = 0;
     union { long l; void *p; } dest_buffer[16];
     byte *source_row = 0;
-    uint source_row_raster;
+    uint source_row_raster = 0; /* init to quiet compiler warning */
     union { long l; void *p; } source_buffer[16];
     byte *texture_row = 0;
     uint texture_row_raster;
@@ -692,7 +694,7 @@ mem_default_strip_copy_rop(gx_device * dev,
 
     /* We know the device is a memory device, so we can store the
      * result directly into its scan lines, unless it is planar. */
-    if (tdev->num_planes <= 1) {
+    if (!tdev->is_planar || tdev->color_info.num_components <= 1) {
         if ((rop_depth == 24) && (dev_proc(dev, dev_spec_op)(dev,
                                       gxdso_is_std_cmyk_1bit, NULL, 0) > 0)) {
             pack = pack_cmyk_1bit_from_standard;
@@ -730,7 +732,7 @@ mem_default_strip_copy_rop(gx_device * dev,
          * We don't want to wrap around more than once in Y when
          * copying the texture to the intermediate buffer.
          */
-        if (textures->size.y < block_height)
+        if (textures && textures->size.y < block_height)
             block_height = textures->size.y;
     }
     gs_make_mem_device(&mdev, mdproto, mem, -1, NULL);
@@ -762,7 +764,7 @@ mem_default_strip_copy_rop(gx_device * dev,
         unpack_colors_to_standard(dev, source_colors, scolors, rop_depth);
         real_scolors = source_colors;
     }
-    if (expand_t) {
+    if (expand_t && textures) {
         texture_row_raster = bitmap_raster(textures->rep_width * rop_depth);
         ALLOC_BUF(texture_row, texture_buffer, texture_row_raster,
                   "copy_rop texture_row");

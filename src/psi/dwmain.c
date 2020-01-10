@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 /* Ghostscript DLL loader for Windows */
@@ -24,7 +24,6 @@
 #define GSREVISION gs_revision
 #include "ierrors.h"
 #include "iapi.h"
-#include "vdtrace.h"
 
 #include "dwres.h"
 #include "dwdll.h"
@@ -66,7 +65,7 @@ static int poll(void)
     }
     /* If text window closing then abort Ghostscript */
     if (tw->quitnow)
-        return e_Fatal;
+        return gs_error_Fatal;
     return 0;
 }
 
@@ -181,8 +180,10 @@ static int display_size(void *handle, void *device, int width, int height,
     text_puts(tw, buf);
 #endif
     img = image_find(handle, device);
-    image_size(img, width, height, raster, format, pimage);
-    image_updatesize(img);
+    if (img != NULL) {
+        image_size(img, width, height, raster, format, pimage);
+        image_updatesize(img);
+    }
     return 0;
 }
 
@@ -196,7 +197,8 @@ static int display_sync(void *handle, void *device)
     text_puts(tw, buf);
 #endif
     img = image_find(handle, device);
-    image_sync(img);
+    if (img != NULL)
+        image_sync(img);
     return 0;
 }
 
@@ -212,7 +214,8 @@ static int display_page(void *handle, void *device, int copies, int flush)
     text_puts(tw, buf);
 #endif
     img = image_find(handle, device);
-    image_page(img);
+    if (img != NULL)
+        image_page(img);
     return 0;
 }
 
@@ -223,7 +226,8 @@ static int display_update(void *handle, void *device,
 {
     IMAGE *img;
     img = image_find(handle, device);
-    image_poll(img);	/* redraw the window periodically */
+    if (img != NULL)
+        image_poll(img);	/* redraw the window periodically */
     return poll();
 }
 
@@ -287,11 +291,6 @@ int new_main(int argc, char *argv[])
         return 1;
     }
 
-#ifdef DEBUG
-    visual_tracer_init();
-    gsdll.set_visual_tracer(&visual_tracer);
-#endif
-
     gsdll.set_stdio(instance, gsdll_stdin, gsdll_stdout, gsdll_stderr);
     gsdll.set_poll(instance, gsdll_poll);
     gsdll.set_display_callback(instance, &display);
@@ -322,33 +321,31 @@ int new_main(int argc, char *argv[])
         sprintf(dformat, "-dDisplayFormat=%d", format);
     }
     nargc = argc + 2;
-    nargv = (char **)malloc((nargc + 1) * sizeof(char *));
+    nargv = (char **)malloc(nargc * sizeof(char *));
     nargv[0] = argv[0];
     nargv[1] = dformat;
     nargv[2] = ddpi;
-    memcpy(&nargv[3], &argv[1], argc * sizeof(char *));
+    memcpy(&nargv[3], &argv[1], (argc-1) * sizeof(char *));
 
 #if defined(_MSC_VER) || defined(__BORLANDC__)
     __try {
 #endif
+    code = gsdll.set_arg_encoding(instance, GS_ARG_ENCODING_UTF8);
+    if (code == 0)
     code = gsdll.init_with_args(instance, nargc, nargv);
     if (code == 0)
         code = gsdll.run_string(instance, start_string, 0, &exit_code);
     code1 = gsdll.exit(instance);
-    if (code == 0 || (code == e_Quit && code1 != 0))
+    if (code == 0 || (code == gs_error_Quit && code1 != 0))
         code = code1;
 #if defined(_MSC_VER) || defined(__BORLANDC__)
     } __except(exception_code() == EXCEPTION_STACK_OVERFLOW) {
-        code = e_Fatal;
+        code = gs_error_Fatal;
         text_puts(tw, "*** C stack overflow. Quiting...\n");
     }
 #endif
 
     gsdll.delete_instance(instance);
-
-#ifdef DEBUG
-    visual_tracer_close();
-#endif
 
     unload_dll(&gsdll);
 
@@ -357,12 +354,12 @@ int new_main(int argc, char *argv[])
     exit_status = 0;
     switch (code) {
         case 0:
-        case e_Quit:
+        case gs_error_Quit:
             break;
-        case e_Fatal:
+        case gs_error_Fatal:
             exit_status = 1;
             break;
-        case e_Info:
+        case gs_error_Info:
         default:
             exit_status = 255;
     }
@@ -390,6 +387,22 @@ set_font(void)
     WritePrivateProfileString(szIniSection, "FontSize", buf, szIniName);
 }
 
+typedef BOOL (SetProcessDPIAwareFn)(void);
+
+static void
+avoid_windows_scale(void)
+{
+    /* Fetch the function address and only call it if it is there; this keeps
+     * compatability with Windows < 8.1 */
+    HMODULE hUser32 = LoadLibrary(TEXT("user32.dll"));
+    SetProcessDPIAwareFn *ptr;
+
+    ptr = (SetProcessDPIAwareFn *)GetProcAddress(hUser32, "SetProcessDPIAware");
+    if (ptr != NULL)
+        ptr();
+    FreeLibrary(hUser32);
+}
+
 int PASCAL
 WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpszCmdLine, int cmdShow)
 {
@@ -401,15 +414,16 @@ WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpszCmdLine, int cmd
     int argc;
     LPSTR argv[MAXCMDTOKENS];
     LPSTR p;
-#ifndef WINDOWS_NO_UNICODE
     LPSTR pstart;
-#endif
     char command[256];
     char *args;
     char *d, *e;
     char winposbuf[256];
     int len = sizeof(winposbuf);
     int x, y, cx, cy;
+
+    /* Mark us as being 'system dpi aware' to avoid horrid scaling */
+    avoid_windows_scale();
 
     /* copy the hInstance into a variable so it can be used */
     ghInstance = hInstance;
@@ -431,16 +445,12 @@ WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpszCmdLine, int cmd
      *          if called with CreateProcess(command, args, ...)
      * Consequently we must use GetCommandLine()
      */
-#ifdef WINDOWS_NO_UNICODE
-    p = GetCommandLine();
-#else
     {
         wchar_t *uni = GetCommandLineW();
         pstart = p = malloc(wchar_to_utf8(NULL, uni));
         if (p != NULL)
             wchar_to_utf8(p, uni);
     }
-#endif
 
     argc = 0;
     args = (char *)malloc(lstrlen(p)+1);
@@ -479,9 +489,7 @@ WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpszCmdLine, int cmd
     }
     argv[argc] = NULL;
 
-#ifndef WINDOWS_NO_UNICODE
     free(pstart);
-#endif
 
     if (strlen(argv[0]) == 0) {
         GetModuleFileName(hInstance, command, sizeof(command)-1);

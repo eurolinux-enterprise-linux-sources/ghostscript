@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -7,8 +7,8 @@
    This software is distributed under license and may not be copied, modified
    or distributed except as expressly authorized under the terms of that
    license.  Refer to licensing information at http://www.artifex.com/
-   or contact Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134,
-   San Rafael, CA  94903, U.S.A., +1(415)492-9861, for further information.
+   or contact Artifex Software, Inc.,  1305 Grant Avenue - Suite 200,
+   Novato, CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 /* Font API support  */
@@ -26,9 +26,9 @@
 typedef struct gs_font_base_s gs_font_base;
 #endif
 
-#ifndef gs_state_DEFINED
-#  define gs_state_DEFINED
-typedef struct gs_state_s gs_state;
+#ifndef gs_gstate_DEFINED
+#  define gs_gstate_DEFINED
+typedef struct gs_gstate_s gs_gstate;
 #endif
 
 #ifndef gs_text_enum_DEFINED
@@ -89,6 +89,36 @@ typedef enum
     gs_fapi_font_feature_BlendAxisTypes,
     gs_fapi_font_feature_BlendPrivate_count,
     gs_fapi_font_feature_BlendFontInfo_count,
+    gs_fapi_font_feature_BlendFontBBox_length,
+    gs_fapi_font_feature_BlendFontBBox,
+
+    gs_fapi_font_feature_BlendBlueValues_length,
+    gs_fapi_font_feature_BlendBlueValues_count,
+    gs_fapi_font_feature_BlendBlueValues,
+    gs_fapi_font_feature_BlendOtherBlues_length,
+    gs_fapi_font_feature_BlendOtherBlues_count,
+    gs_fapi_font_feature_BlendOtherBlues,
+    gs_fapi_font_feature_BlendBlueScale_count,
+    gs_fapi_font_feature_BlendBlueScale,
+    gs_fapi_font_feature_BlendBlueShift_count,
+    gs_fapi_font_feature_BlendBlueShift,
+    gs_fapi_font_feature_BlendBlueFuzz_count,
+    gs_fapi_font_feature_BlendBlueFuzz,
+    gs_fapi_font_feature_BlendForceBold_count,
+    gs_fapi_font_feature_BlendForceBold,
+    gs_fapi_font_feature_BlendStdHW_length,
+    gs_fapi_font_feature_BlendStdHW_count,
+    gs_fapi_font_feature_BlendStdHW,
+    gs_fapi_font_feature_BlendStdVW_length,
+    gs_fapi_font_feature_BlendStdVW_count,
+    gs_fapi_font_feature_BlendStdVW,
+    gs_fapi_font_feature_BlendStemSnapH_length,
+    gs_fapi_font_feature_BlendStemSnapH_count,
+    gs_fapi_font_feature_BlendStemSnapH,
+    gs_fapi_font_feature_BlendStemSnapV_length,
+    gs_fapi_font_feature_BlendStemSnapV_count,
+    gs_fapi_font_feature_BlendStemSnapV,
+
     gs_fapi_font_feature_WeightVector_count,
     gs_fapi_font_feature_WeightVector,
     gs_fapi_font_feature_BlendDesignPositionsArrays_count,
@@ -101,6 +131,12 @@ typedef enum
     gs_fapi_font_feature_CharStrings_count,
     /* End CharString emission */
 } gs_fapi_font_feature;
+
+typedef enum
+{
+    gs_fapi_glyph_invalid_format = -1,
+    gs_fapi_glyph_invalid_index = -2
+} gs_fapi_glyph_error;
 
 typedef enum
 {
@@ -150,6 +186,7 @@ struct gs_fapi_font_s
     bool is_outline_font;
     bool is_mtx_skipped;        /* Ugly. Only UFST needs. */
     bool is_vertical;
+    bool metrics_only;  /* can save the expense of loading entire glyph */
     gs_fapi_ttf_cmap_request ttf_cmap_req[GS_FAPI_NUM_TTF_CMAP_REQ]; /* Lets client request a specific cmap to be set. Also, a couple of fallbacks */
     void *client_ctx_p;
     void *client_font_data;
@@ -183,7 +220,7 @@ struct gs_fapi_font_s
                                            byte *buf, ushort buf_length);
     int (*get_glyphdirectory_data) (gs_fapi_font *ff, int char_code,
                                     const byte **ptr);
-    int (*get_glyphname_or_cid) (gs_font_base *pbfont,
+    int (*get_glyphname_or_cid) (gs_text_enum_t *penum, gs_font_base *pbfont,
                                  gs_string *charstring, gs_string *name,
                                  int ccode, gs_string *enc_char_name,
                                  char *font_file_path, gs_fapi_char_ref *cr,
@@ -198,6 +235,8 @@ struct gs_fapi_font_s
                            bool *imagenow);
 };
 
+#define GS_FAPI_WEIGHTVECTOR_MAX 16
+
 typedef struct gs_fapi_face_s gs_fapi_face;
 struct gs_fapi_face_s
 {
@@ -206,6 +245,10 @@ struct gs_fapi_face_s
     gs_log2_scale_point log2_scale;
     bool align_to_pixels;
     float HWResolution[2];
+    struct {
+        int count;
+        float values[GS_FAPI_WEIGHTVECTOR_MAX];
+    } WeightVector;
 };
 
 typedef struct gs_fapi_path_s gs_fapi_path;
@@ -304,6 +347,7 @@ struct gs_fapi_server_s
     gs_fapi_font ff;
     int max_bitmap;
     bool use_outline;
+    uint grid_fit;
     gs_matrix initial_FontMatrix;       /* Font Matrix at the time the font is defined */
     /* Used to use the stored 'OrigFont' entry but */
     /* this did not change f a font was defined    */
@@ -314,7 +358,7 @@ struct gs_fapi_server_s
     gs_fapi_retcode(*ensure_open) (gs_fapi_server *server, const char *param, int param_size);
     gs_fapi_retcode(*get_scaled_font) (gs_fapi_server *server, gs_fapi_font *ff, const gs_fapi_font_scale *scale, const char *xlatmap, gs_fapi_descendant_code dc);
     gs_fapi_retcode(*get_decodingID) (gs_fapi_server *server, gs_fapi_font *ff, const char **decodingID);
-    gs_fapi_retcode(*get_font_bbox) (gs_fapi_server *server, gs_fapi_font *ff, int BBox[4]);
+    gs_fapi_retcode(*get_font_bbox) (gs_fapi_server *server, gs_fapi_font *ff, int BBox[4], int unitsPerEm[2]);
     gs_fapi_retcode(*get_font_proportional_feature) (gs_fapi_server *server, gs_fapi_font *ff, bool *bProportional);
     gs_fapi_retcode(*can_retrieve_char_by_name) (gs_fapi_server *server, gs_fapi_font *ff, gs_fapi_char_ref *c, int *result);
     gs_fapi_retcode(*can_replace_metrics) (gs_fapi_server *server, gs_fapi_font *ff, gs_fapi_char_ref *c, int *result);
@@ -330,6 +374,7 @@ struct gs_fapi_server_s
     gs_fapi_retcode(*release_typeface) (gs_fapi_server *server, void *server_font_data);
     gs_fapi_retcode(*check_cmap_for_GID) (gs_fapi_server *server, uint *index);
     gs_fapi_retcode(*get_font_info) (gs_fapi_server *server, gs_fapi_font *ff, gs_fapi_font_info item, int index, void *data, int *datalen);
+    gs_fapi_retcode(*set_mm_weight_vector) (gs_fapi_server *server, gs_fapi_font *ff, float *wvector, int length);
 
     /*  Some people get confused with terms "font cache" and "character cache".
        "font cache" means a cache for scaled font objects, which mainly
@@ -353,14 +398,14 @@ struct gs_fapi_server_s
 };
 
 /* The font type 10 (ft_CID_user_defined) must not pass to FAPI. */
-#define FAPI_ISCIDFONT(basefont) basefont->FontType == ft_CID_encrypted ||\
+#define FAPI_ISCIDFONT(basefont) (basefont->FontType == ft_CID_encrypted ||\
                          basefont->FontType == ft_CID_user_defined || \
-                         basefont->FontType == ft_CID_TrueType
+                         basefont->FontType == ft_CID_TrueType)
 
 
-#define FAPI_ISTYPE1GLYPHDATA(basefont) pbfont->FontType == ft_encrypted || \
+#define FAPI_ISTYPE1GLYPHDATA(basefont) (pbfont->FontType == ft_encrypted || \
                                 basefont->FontType == ft_encrypted2 ||\
-                                basefont->FontType == ft_CID_encrypted
+                                basefont->FontType == ft_CID_encrypted)
 
 typedef int (*gs_fapi_get_server_param_callback) (gs_fapi_server *I,
                                                   const char *subtype,
@@ -401,10 +446,10 @@ gs_fapi_prepare_font(gs_font *pfont, gs_fapi_server *I, int subfont, const char 
                      gs_string *full_font_buf, const char *xlatmap, const char **decodingID);
 
 int
-gs_fapi_finish_render(gs_font *pfont, gs_state *pgs, gs_text_enum_t *penum, gs_fapi_server *I);
+gs_fapi_finish_render(gs_font *pfont, gs_gstate *pgs, gs_text_enum_t *penum, gs_fapi_server *I);
 
 int
-gs_fapi_do_char(gs_font *pfont, gs_state *pgs, gs_text_enum_t *penum, char *font_file_path,
+gs_fapi_do_char(gs_font *pfont, gs_gstate *pgs, gs_text_enum_t *penum, char *font_file_path,
                 bool bBuildGlyph, gs_string *charstring, gs_string *glyphname,
                 gs_char chr, gs_glyph index, int subfont);
 

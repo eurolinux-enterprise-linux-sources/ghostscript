@@ -7,7 +7,7 @@ use Data::Dumper;
 
 my $verbose=0;
 
-# bmpcmp usage: [gs] [pcl] [xps] [gs] [mupdf] [bmpcmp] [lowres] [32] [$user] | abort
+# bmpcmp usage: [gs] [pcl] [xps] [mupdf] [mujstest] [bmpcmp] [lowres] [highres] [32] [pdfwrite] [ps2write] [xpswrite] [relaxtimeout] [extended] [smoke] [cull] [$user] | abort
 
 
 
@@ -19,29 +19,57 @@ my %products=('abort' =>1,
               'svg'=>1,
               'xps'=>1,
               'ls'=>1,
-              'mupdf'=>1);
+              'mupdf'=>1,
+              'mujstest'=>1);
 
 my $user;
 my $product="";
 my $filters="";
+my $extras="";
 my $command="";
 my $res="";
 my $w32="";
+my $win32="";
+my $nr="";
+my $pdfwrite="";
+my $ps2write="";
+my $xpswrite="";
+my $singlePagePDF="";
 my $relaxTimeout="";
+my $extended="";
+my $smoke="";
+my $cull="";
 my $t1;
 while ($t1=shift) {
   if ($t1 eq "lowres") {
     $res="lowres";
   } elsif ($t1 eq "highres") {
     $res="highres";
+  } elsif ($t1 eq "singlePagePDF") {
+    $singlePagePDF="singlePagePDF";
+    $pdfwrite="pdfwrite";
   } elsif ($t1 eq "32") {
     $w32="32";
+  } elsif ($t1 eq "win32") {
+    $win32="win32";
+  } elsif ($t1 eq "extended") {
+    $extended="extended";
+  } elsif ($t1 eq "smoke") {
+    $smoke="smoke";
+  } elsif ($t1 eq "cull") {
+    $win32="cull";
+  } elsif ($t1 eq "nr" || $t1 eq "nonredundnat") {
+    $nr="nonredundant";
+  } elsif ($t1 eq "pdfwrite" || $t1 eq "ps2write" || $t1 eq "xpswrite") {
+    $pdfwrite="pdfwrite";
   } elsif ($t1 eq "timeout" || $t1 eq "relaxtimeout") {
     $relaxTimeout="relaxTimeout";
   } elsif ($t1=~m/^-/ || $t1=~m/^\d/) {
     $command.=$t1.' ';
   } elsif ($t1 =~ m/filter=.*/) {
     $filters.=$t1.' ';
+  } elsif ($t1 =~ m/extras=.*/) {
+    $extras.=$t1.' ';
   } elsif (exists $products{$t1}) {
     $product.=$t1.' ';
   } elsif ($t1 =~ m/ /) {
@@ -91,7 +119,7 @@ my $directory=`pwd`;
 chomp $directory;
 
 $directory =~ s|.+/||;
-if ($directory ne 'gs' && $directory ne 'ghostpdl' && $directory ne 'mupdf') {
+if ($directory ne 'gs' && $directory ne 'ghostpdl' && $directory ne 'mupdf' && $directory ne 'ghostpdl.git' && $directory ne 'mupdf.git') {
   $directory="";
   if (-d "base" && -d "Resource") {
     $directory='gs';
@@ -99,7 +127,7 @@ if ($directory ne 'gs' && $directory ne 'ghostpdl' && $directory ne 'mupdf') {
   if (-d "pxl" && -d "pcl") {
     $directory='ghostpdl';
   }
-  if (-d "fitz" && -d "draw" && -d "pdf") {
+  if (-d "source/fitz" && -d "source/pdf") {
     $directory='mupdf';
   }
 }
@@ -113,7 +141,7 @@ if (!$product) {
   if ($directory eq 'mupdf') {
     $product='mupdf';
   } else {
-    $product='gs pcl xps ls'
+    $product='gs pcl xps'
   }
 }
 
@@ -121,7 +149,12 @@ print "$user $directory $product\n" if ($verbose);
 
 
 if ($directory eq 'gs') {
-  $directory='ghostpdl/gs';
+  if (-e 'gpdl') {
+    print "new directory structure\n";
+    $directory='ghostpdl';
+  } else {
+    $directory='ghostpdl/gs';
+  }
 }
 
 
@@ -147,7 +180,7 @@ if ($msys) {
 }
 
 my $cmd="rsync -avxcz ".
-" --max-size=10000000".
+" --max-size=30000000".
 " --delete --delete-excluded".
 " --exclude .svn --exclude .git".
 " --exclude _darcs --exclude .bzr --exclude .hg".
@@ -161,11 +194,14 @@ my $cmd="rsync -avxcz ".
 " --exclude config.log --exclude .png".
 " --exclude .ppm --exclude .pkm --exclude .pgm --exclude .pbm".
 " --exclude .tif --exclude .bmp".
-" --exclude debug --exclude release --exclude generated".  # we cannot just exclude build, since tiff/build/Makefile.in, etc. is needed
-# " --exclude Makefile". We can't just exclude Makefile, since the GhostPDL top Makefile is not a derived file.
+" --exclude debug --exclude release --exclude generated --exclude sanitize".  # we cannot just exclude build, since tiff/build/Makefile.in, etc. is needed
+" --exclude tiff-config".
+# " --exclude Makefile". We can't just exclude Makefile, since the MuPDF Makefile is not a derived file.
 " -e \"$ssh\" ".
 " .".
 " $hostpath";
+
+#print "$cmd\n";  exit;
 
 if ($product ne "abort" ) { #&& $product ne "bmpcmp") {
   print STDERR "syncing\n";
@@ -180,9 +216,10 @@ if ($product ne "abort" ) { #&& $product ne "bmpcmp") {
 }
 
 open(F,">cluster_command.run");
-print F "$user $product $res $w32 $relaxTimeout\n";
+print F "$user $product $res $w32 $win32 $nr $pdfwrite $relaxTimeout $singlePagePDF $extended $smoke $cull\n";
 print F "$command\n";
 print F "$filters\n";
+print F "$extras\n";
 close(F);
 
 $cmd="rsync -avxcz".
@@ -196,6 +233,8 @@ if ($product ne "abort") {
   print STDERR "\ndequeueing\n";
 }
 print "$cmd\n" if ($verbose);
+#print "filters=$filters\n";
+#print "extras=$extras\n";
 `$cmd`;
 
 unlink "cluster_command.run";

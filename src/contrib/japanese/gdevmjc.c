@@ -141,6 +141,8 @@ copies.  */
 /* Colour mapping procedures */
 static dev_proc_map_rgb_color (gdev_mjc_map_rgb_color);
 static dev_proc_map_color_rgb (gdev_mjc_map_color_rgb);
+static dev_proc_encode_color(gdev_mjc_encode_color);
+static dev_proc_decode_color(gdev_mjc_decode_color);
 
 /* Print-page, properties and miscellaneous procedures */
 static dev_proc_open_device(mj700v2c_open);
@@ -221,7 +223,45 @@ typedef struct gx_device_mj_s gx_device_mj;
         NULL,	/* draw_line */\
         gx_default_get_bits,\
         proc_get_params,\
-        proc_put_params\
+        proc_put_params,\
+        NULL,	/* map_cmyk_color */\
+        NULL,	/* get_xfont_procs */\
+        NULL,	/* get_xfont_device */\
+        NULL,	/* map_rgb_alpha_color */\
+        NULL,   /* get_page_device */\
+        NULL,	/* get_alpha_bits */\
+        NULL,   /* copy_alpha */\
+        NULL,	/* get_band */\
+        NULL,	/* copy_rop */\
+        NULL,	/* fill_path */\
+        NULL,	/* stroke_path */\
+        NULL,	/* fill_mask */\
+        NULL,	/* fill_trapezoid */\
+        NULL,	/* fill_parallelogram */\
+        NULL,	/* fill_triangle */\
+        NULL,	/* draw_thin_line */\
+        NULL,	/* begin_image */\
+        NULL,	/* image_data */\
+        NULL,	/* end_image */\
+        NULL,	/* strip_tile_rectangle */\
+        NULL,	/* strip_copy_rop, */\
+        NULL,	/* get_clipping_box */\
+        NULL,	/* begin_typed_image */\
+        NULL,	/* get_bits_rectangle */\
+        NULL,	/* map_color_rgb_alpha */\
+        NULL,	/* create_compositor */\
+        NULL,	/* get_hardware_params */\
+        NULL,	/* text_begin */\
+        NULL,	/* finish_copydevice */\
+        NULL, 	/* begin_transparency_group */\
+        NULL, 	/* end_transparency_group */\
+        NULL, 	/* begin_transparency_mask */\
+        NULL, 	/* end_transparency_mask */\
+        NULL, 	/* discard_transparency_layer */\
+        NULL,   /* get_color_mapping_procs */\
+        NULL,   /* get_color_comp_index */\
+        gdev_mjc_encode_color,\
+        gdev_mjc_decode_color\
 }
 
 static gx_device_procs mj700v2c_procs =
@@ -503,8 +543,9 @@ mj_put_params(gx_device *pdev,  gs_param_list *plist, int ptype)
 
 #define FSDline(scan, i, j, plane_size, cErr, mErr, yErr, kErr, cP, mP, yP, kP, n)\
 {\
-        unsigned short *mat = matrix2 + (lnum & 127)*128;\
-        int x;\
+    unsigned short *mat = matrix2 + (lnum & 127)*128;\
+    int x;\
+    (void)cErr; /* Stop compiler warning */\
     if (scan == 0) {       /* going_up */\
       x = 0;\
       for (i = 0; i < plane_size; i++) {\
@@ -932,7 +973,7 @@ mj_print_page(gx_device_printer * pdev, FILE * prn_stream, int ptype)
   int scan = 0;
   int *errors[2];
   byte *data[4], *plane_data[4][4], *out_data;
-  byte *out_row, *out_row_alt;
+  byte *out_row;
   word *storage;
   uint storage_size_words;
   uint mj_tmp_buf_size;
@@ -1046,7 +1087,6 @@ mj_print_page(gx_device_printer * pdev, FILE * prn_stream, int ptype)
     byte *p = out_data = out_row = (byte *)storage;
     data[0] = data[1] = data[2] = p;
     data[3] = p + databuff_size;
-    out_row_alt = out_row + plane_size * 2;
     if (bits_per_pixel > 1) {
       p += databuff_size;
     }
@@ -1066,7 +1106,6 @@ mj_print_page(gx_device_printer * pdev, FILE * prn_stream, int ptype)
     }
     if (bits_per_pixel == 1) {
       out_data = out_row = p;	  /* size is outbuff_size * 4 */
-      out_row_alt = out_row + plane_size * 2;
       data[1] += databuff_size;   /* coincides with plane_data pointers */
       data[3] += databuff_size;
     }
@@ -1209,7 +1248,6 @@ mj_print_page(gx_device_printer * pdev, FILE * prn_stream, int ptype)
         register byte *mP = plane_data[scan + 2][1];
         register byte *yP = plane_data[scan + 2][0];
         register byte *dp = data[scan + 2];
-        int zero_row_count;
         int i, j;
         byte *odp;
 
@@ -1340,19 +1378,18 @@ mj_print_page(gx_device_printer * pdev, FILE * prn_stream, int ptype)
          * in the order (K), C, M, Y. */
         switch (mj->colorcomp) {
         case 1:
-          zero_row_count = 0;
           out_data = (byte*) plane_data[scan][0];
           /* 3 for balck */
           mj_raster_cmd(3, plane_size, out_data, mj_tmp_buf, pdev, prn_stream);
           break;
         case 3:
-          for (zero_row_count = 0, i = 3 - 1; i >= 0; i--) {
+          for (i = 3 - 1; i >= 0; i--) {
             out_data = (byte*) plane_data[scan][i];
             mj_raster_cmd(i, plane_size, out_data, mj_tmp_buf, pdev, prn_stream);
           }
           break;
         default:
-          for (zero_row_count = 0, i = num_comps - 1; i >= 0; i--) {
+          for (i = num_comps - 1; i >= 0; i--) {
             out_data = (byte*) plane_data[scan][i];
             mj_raster_cmd(i, plane_size, out_data, mj_tmp_buf, pdev, prn_stream);
           }
@@ -1614,6 +1651,24 @@ gdev_mjc_map_color_rgb(gx_device *pdev, gx_color_index color,
 }
 
 /*
+* Encode a list of colorant values into a gx_color_index_value.
+*/
+static gx_color_index
+gdev_mjc_encode_color(gx_device *dev, const gx_color_value colors[])
+{
+    return gdev_mjc_map_rgb_color(dev, colors);
+}
+
+/*
+* Decode a gx_color_index value back to a list of colorant values.
+*/
+static int
+gdev_mjc_decode_color(gx_device * dev, gx_color_index color, gx_color_value * out)
+{
+    return gdev_mjc_map_color_rgb(dev, color, out);
+}
+
+/*
  * Convert and expand scanlines:
  *
  *       (a)    16 -> 24 bit   (1-stage)
@@ -1712,8 +1767,10 @@ static gx_color_index
 mjc_correct_color(gx_device_printer *pdev, gx_color_index ci)
 {
   gx_color_index c, m, y, k, co;
-  gx_color_index c2, m2, y2, k2;
-  gx_color_index k3, k4, k5, k6, k7, k8;
+  gx_color_index k2, k3, k4;
+#if __WORDSIZE == 64
+  gx_color_index c2, m2, y2, k5, k6, k7, k8;
+#endif
   const uint cmask = 0xff;
   uint dn = mj->density;
   uint mjy = mj->yellow;

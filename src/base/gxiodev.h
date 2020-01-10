@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -21,6 +21,7 @@
 #  define gxiodev_INCLUDED
 
 #include "stat_.h"
+#include "gsstype.h"
 
 /*
  * Note that IODevices are not the same as Ghostscript output devices.
@@ -33,6 +34,14 @@
 typedef struct gx_io_device_s gx_io_device;
 #endif
 typedef struct gx_io_device_procs_s gx_io_device_procs;  /* defined here */
+
+/* the number of slots reserved in the io device table for io devices to
+ * be added at run time.
+ */
+#define NUM_RUNTIME_IODEVS 16
+
+int
+gs_iodev_register_dev(gs_memory_t * mem, const gx_io_device *newiodev);
 
 /* The IODevice table is defined in gconf.c; its extern is in gscdefs.h. */
 
@@ -81,6 +90,10 @@ struct gx_io_device_procs_s {
   int proc(gx_io_device *iodev, gs_memory_t *mem)
     iodev_proc_init((*init));	/* one-time initialization */
 
+#define iodev_proc_finit(proc)\
+  void proc(gx_io_device *iodev, gs_memory_t *mem)
+    iodev_proc_finit((*finit));	/* finalization */
+
 #define iodev_proc_open_device(proc)\
   int proc(gx_io_device *iodev, const char *access, stream **ps,\
            gs_memory_t *mem)
@@ -97,7 +110,7 @@ struct gx_io_device_procs_s {
 #define iodev_proc_fopen(proc)\
   int proc(gx_io_device *iodev, const char *fname, const char *access,\
            FILE **pfile, char *rfname, uint rnamelen)
-    iodev_proc_fopen((*fopen));
+    iodev_proc_fopen((*gp_fopen));
 
 #define iodev_proc_fclose(proc)\
   int proc(gx_io_device *iodev, FILE *file)
@@ -146,6 +159,7 @@ typedef iodev_proc_fopen((*iodev_proc_fopen_t));
 
 /* Default implementations of procedures */
 iodev_proc_init(iodev_no_init);
+iodev_proc_finit(iodev_no_finit);
 iodev_proc_open_device(iodev_no_open_device);
 iodev_proc_open_file(iodev_no_open_file);
 iodev_proc_fopen(iodev_no_fopen);
@@ -158,7 +172,7 @@ iodev_proc_get_params(iodev_no_get_params);
 iodev_proc_put_params(iodev_no_put_params);
 /* The %os% implemention of fopen and fclose. */
 /* These are exported for pipes and for %null. */
-iodev_proc_fopen(iodev_os_fopen);
+iodev_proc_fopen(iodev_os_gp_fopen);
 iodev_proc_fclose(iodev_os_fclose);
 
 /* Get the N'th IODevice. */
@@ -196,8 +210,17 @@ struct gx_io_device_s {
     void *state;		/* (if the IODevice has state) */
 };
 
+struct_proc_finalize(io_device_finalize);
+
 #define private_st_io_device()	/* in gsiodev.c */\
-  gs_private_st_ptrs1(st_io_device, gx_io_device, "gx_io_device",\
-    io_device_enum_ptrs, io_device_reloc_ptrs, state)
+  gs_public_st_ptrs1_final(st_io_device, gx_io_device, "gx_io_device",\
+    io_device_enum_ptrs, io_device_reloc_ptrs, io_device_finalize, state)
+
+
+int
+gs_iodev_init(gs_memory_t * mem);
+
+void
+gs_iodev_finit(gs_memory_t * mem);
 
 #endif /* gxiodev_INCLUDED */

@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,14 +9,15 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
 /* MS Windows implementation of gp_getenv, and gp_serialnumber */
 
 #include "windows_.h"
+
 #include <stdio.h>
 #include <stdlib.h>		/* for getenv */
 #include <string.h>
@@ -28,37 +29,6 @@
  * Key = hkeyroot\\key, named value = name.
  * name, ptr, plen and return values are the same as in gp_getenv();
  */
-#ifdef WINDOWS_NO_UNICODE
-static int
-gp_getenv_registry(HKEY hkeyroot, const char *key, const char *name,
-    char *ptr, int *plen)
-{
-    HKEY hkey;
-    DWORD cbData;
-    BYTE b;
-    LONG rc;
-    BYTE *bptr = (BYTE *)ptr;
-
-    if (RegOpenKeyEx(hkeyroot, key, 0, KEY_READ, &hkey)
-        == ERROR_SUCCESS) {
-        cbData = *plen;
-        if (bptr == (char *)NULL)
-            bptr = &b;	/* Registry API won't return ERROR_MORE_DATA */
-                        /* if ptr is NULL */
-        rc = RegQueryValueEx(hkey, (char *)name, 0, NULL, bptr, &cbData);
-        RegCloseKey(hkey);
-        if (rc == ERROR_SUCCESS) {
-            *plen = cbData;
-            return 0;	/* found environment variable and copied it */
-        } else if (rc == ERROR_MORE_DATA) {
-            /* buffer wasn't large enough */
-            *plen = cbData;
-            return -1;
-        }
-    }
-    return 1;	/* not found */
-}
-#else        /* ifdef WINDOWS_NO_UNICODE */
 int
 gp_getenv_registry(HKEY hkeyroot, const wchar_t *key, const char *name,
     char *ptr, int *plen)
@@ -135,7 +105,6 @@ gp_getenv_registry(HKEY hkeyroot, const wchar_t *key, const char *name,
     free(wname);
     return 1;                           /* environment variable does not exist */
 }
-#endif        /* ifdef WINDOWS_NO_UNICODE */
 #endif    /* ifdef __WIN32__ */
 
 /* ------ Environment variables ------ */
@@ -144,19 +113,30 @@ gp_getenv_registry(HKEY hkeyroot, const wchar_t *key, const char *name,
 int
 gp_getenv(const char *name, char *ptr, int *plen)
 {
-    const char *str = getenv(name);
+    wchar_t *wname;
+    wchar_t *str;
+
+    wname = malloc(utf8_to_wchar(NULL, name)*sizeof(wchar_t));
+    if (wname == NULL) {
+        return -1;
+    }
+    utf8_to_wchar(wname, name);
+
+    str = _wgetenv(wname);
+
+    free(wname);
 
     if (str) {
-        int len = strlen(str);
+        /* wchar_to_utf8 returns INCLUDING terminator */
+        int len = wchar_to_utf8(NULL, str);
 
-        if (len < *plen) {
+        if (len <= *plen) {
             /* string fits */
-            strcpy(ptr, str);
-            *plen = len + 1;
+            *plen = wchar_to_utf8(ptr, str);
             return 0;
         }
         /* string doesn't fit */
-        *plen = len + 1;
+        *plen = len;
         return -1;
     }
     /* environment variable was not found */
@@ -177,21 +157,12 @@ gp_getenv(const char *name, char *ptr, int *plen)
               && ((HIWORD(version) & 0x4000) == 0))) {
             /* not Win32s */
             int code;
-#ifdef WINDOWS_NO_UNICODE
-            char key[256];
-            char dotversion[16];
-
-            sprintf(dotversion, "%d.%02d", (int)(gs_revision / 100),
-                    (int)(gs_revision % 100));
-            sprintf(key, "Software\\%s\\%s", gs_productfamily, dotversion);
-#else
             wchar_t key[256];
             wchar_t dotversion[16];
 
             wsprintfW(dotversion, L"%d.%02d", (int)(gs_revision / 100),
                       (int)(gs_revision % 100));
             wsprintfW(key, L"Software\\%hs\\%s", gs_productfamily, dotversion);
-#endif
             code = gp_getenv_registry(HKEY_CURRENT_USER, key, name, ptr, plen);
             if ( code <= 0 )
                 return code;	/* found it */
@@ -221,15 +192,9 @@ gp_serialnumber(void)
     byte buf[SERIALNUMBER_BUFSIZE];
     int buflen = SERIALNUMBER_BUFSIZE;
     int code, i;
-#ifdef WINDOWS_NO_UNICODE
-    char key[256];
-
-    sprintf(key, "Software\\Microsoft\\MSLicensing\\HardwareID");
-#else        /* WINDOWS_NO_UNICODE */
     wchar_t key[256];
 
     wsprintfW(key, L"Software\\Microsoft\\MSLicensing\\HardwareID");
-#endif        /* WINDOWS_NO_UNICODE */
     code = gp_getenv_registry(HKEY_LOCAL_MACHINE, key, "ClientHWID", (char *)buf, &buflen);
     if ( code != 0 )
         return (int)(gs_serialnumber); 	/* error - just return the default */

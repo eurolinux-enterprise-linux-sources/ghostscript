@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -43,20 +43,6 @@ typedef struct gx_device_buf_space_s {
     uint raster;
 } gx_device_buf_space_t;
 
-/* clist contents analysis per band */
-typedef struct gx_band_complexity_s {
-    /* use null or contents to denote non banding case: */
-
-    bool uses_color;
-    bool nontrivial_rops;
-
-#if 0
-    /* halftone phase */
-    int x0;
-    int y0;
-#endif
-} gx_band_complexity_t;
-
 typedef struct gx_device_buf_procs_s {
 
     /*
@@ -74,7 +60,7 @@ typedef struct gx_device_buf_procs_s {
 #define dev_proc_create_buf_device(proc)\
   int proc(gx_device **pbdev, gx_device *target, int y,\
            const gx_render_plane_t *render_plane, gs_memory_t *mem,\
-           gx_band_complexity_t *band_complexity)
+           gx_color_usage_t *color_usage)
 
     dev_proc_create_buf_device((*create_buf_device));
 

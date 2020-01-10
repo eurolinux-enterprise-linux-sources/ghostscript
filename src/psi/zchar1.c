@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -27,6 +27,7 @@
 #include "gxtype1.h"
 #include "gxfcid.h"
 #include "gxchar.h"
+#include "gxfcache.h"           /* for gs_purge_font_from_char_caches_completely */
 #include "gzstate.h"		/* for path for gs_type1_init */
                                 /* (should only be gsstate.h) */
 #include "gscencs.h"
@@ -85,7 +86,7 @@ font_uses_charstrings(const gs_font *pfont)
 /* Initialize a Type 1 interpreter. */
 static int
 type1_exec_init(gs_type1_state *pcis, gs_text_enum_t *penum,
-                gs_state *pgs, gs_font_type1 *pfont1)
+                gs_gstate *pgs, gs_font_type1 *pfont1)
 {
     /*
      * We have to disregard penum->pis and penum->path, and render to
@@ -106,7 +107,7 @@ type1_exec_init(gs_type1_state *pcis, gs_text_enum_t *penum,
         /* Keep consistency with alpha_buffer_init() */
         log2_subpixels.x = log2_subpixels.y = ilog2(alpha_bits);
     }
-    return gs_type1_interp_init(pcis, (gs_imager_state *)pgs, pgs->path,
+    return gs_type1_interp_init(pcis, pgs, pgs->path,
                                 &penum->log2_scale, &log2_subpixels,
                                 (penum->text.operation & TEXT_DO_ANY_CHARPATH) != 0 ||
                                 penum->device_disabled_grid_fitting,
@@ -166,7 +167,7 @@ static int bbox_finish_stroke(i_ctx_t *);
 static int bbox_fill(i_ctx_t *);
 static int bbox_stroke(i_ctx_t *);
 static int nobbox_finish(i_ctx_t *, gs_type1exec_state *);
-static int nobbox_draw(i_ctx_t *, int (*)(gs_state *));
+static int nobbox_draw(i_ctx_t *, int (*)(gs_gstate *));
 static int nobbox_fill(i_ctx_t *);
 static int nobbox_stroke(i_ctx_t *);
 
@@ -219,7 +220,7 @@ charstring_execchar_aux(i_ctx_t *i_ctx_p, gs_text_enum_t *penum, gs_font *pfont)
      */
     check_type(*op, t_string);
     if (r_size(op) <= max(pdata->lenIV, 0))
-        return_error(e_invalidfont);
+        return_error(gs_error_invalidfont);
     /*
      * In order to make character oversampling work, we must
      * set up the cache before calling .type1addpath.
@@ -348,7 +349,7 @@ charstring_execchar(i_ctx_t *i_ctx_p, int font_type_mask)
     if (penum == 0 ||
         pfont->FontType >= sizeof(font_type_mask) * 8 ||
         !(font_type_mask & (1 << (int)pfont->FontType)))
-        return_error(e_undefined);
+        return_error(gs_error_undefined);
     code = charstring_execchar_aux(i_ctx_p, penum, pfont);
     if (code < 0 && igs->in_cachedevice == CACHE_DEVICE_CACHING) {
         /* Perform the cache cleanup, when the cached character data
@@ -410,7 +411,7 @@ type1exec_bbox(i_ctx_t *i_ctx_p, gs_text_enum_t *penum, gs_type1exec_state * pcx
         switch (code) {
             default:		/* code < 0 or done, error */
                 return ((code < 0 ? code :
-                         gs_note_error(e_invalidfont)));
+                         gs_note_error(gs_error_invalidfont)));
             case type1_result_callothersubr:	/* unknown OtherSubr */
                 return type1_call_OtherSubr(i_ctx_p, pcxs,
                                             bbox_getsbw_continue,
@@ -452,7 +453,7 @@ bbox_getsbw_continue(i_ctx_t *i_ctx_p)
     switch (code) {
         default:		/* code < 0 or done, error */
             op_type1_free(i_ctx_p);
-            return ((code < 0 ? code : gs_note_error(e_invalidfont)));
+            return ((code < 0 ? code : gs_note_error(gs_error_invalidfont)));
         case type1_result_callothersubr:	/* unknown OtherSubr */
             return type1_push_OtherSubr(i_ctx_p, pcxs, bbox_getsbw_continue,
                                         &other_subr);
@@ -533,13 +534,13 @@ bbox_finish(i_ctx_t *i_ctx_p, op_proc_t cont, op_proc_t *exec_cont)
     if (code < 0)
         return code;
     if (penum == 0 || !font_uses_charstrings(pfont))
-        return_error(e_undefined);
+        return_error(gs_error_undefined);
     {
         gs_font_type1 *const pfont1 = (gs_font_type1 *) pfont;
         int lenIV = pfont1->data.lenIV;
 
         if (lenIV > 0 && r_size(opc) <= lenIV)
-            return_error(e_invalidfont);
+            return_error(gs_error_invalidfont);
         check_estack(5);	/* in case we need to do a callout */
         code = type1_exec_init(pcis, penum, igs, pfont1);
         if (code < 0)
@@ -594,7 +595,7 @@ bbox_continue(i_ctx_t *i_ctx_p)
  * Returns exec_cont - a function, which must be called by caller after this function.
  */
 static int
-bbox_draw(i_ctx_t *i_ctx_p, int (*draw)(gs_state *), op_proc_t *exec_cont)
+bbox_draw(i_ctx_t *i_ctx_p, int (*draw)(gs_gstate *), op_proc_t *exec_cont)
 {
     os_ptr op = osp;
     gs_rect bbox;
@@ -611,13 +612,13 @@ bbox_draw(i_ctx_t *i_ctx_p, int (*draw)(gs_state *), op_proc_t *exec_cont)
         return code;
     penum = op_show_find(i_ctx_p);
     if (penum == 0 || !font_uses_charstrings(pfont))
-        return_error(e_undefined);
+        return_error(gs_error_undefined);
     if ((code = gs_pathbbox(igs, &bbox)) < 0) {
         /*
          * If the matrix is singular, all user coordinates map onto a
          * straight line.  Don't bother rendering the character at all.
          */
-        if (code == e_undefinedresult) {
+        if (code == gs_error_undefinedresult) {
             pop(4);
             gs_newpath(igs);
             return 0;
@@ -778,7 +779,7 @@ type1_call_OtherSubr(i_ctx_t *i_ctx_p, const gs_type1exec_state * pcxs,
                       "type1_call_OtherSubr");
 
     if (hpcxs == 0)
-        return_error(e_VMerror);
+        return_error(gs_error_VMerror);
     *hpcxs = *pcxs;
     gs_type1_set_callback_data(&hpcxs->cis, hpcxs);
     push_mark_estack(es_show, op_type1_cleanup);
@@ -804,7 +805,7 @@ type1_callout_dispatch(i_ctx_t *i_ctx_p, int (*cont)(i_ctx_t *),
             return 0;
         default:		/* code < 0 or done, error */
             op_type1_free(i_ctx_p);
-            return ((code < 0 ? code : gs_note_error(e_invalidfont)));
+            return ((code < 0 ? code : gs_note_error(gs_error_invalidfont)));
         case type1_result_callothersubr:	/* unknown OtherSubr */
             return type1_push_OtherSubr(i_ctx_p, pcxs, cont, &other_subr);
         case type1_result_sbw:	/* [h]sbw, just continue */
@@ -869,7 +870,7 @@ nobbox_finish(i_ctx_t *i_ctx_p, gs_type1exec_state * pcxs)
         )
         return code;
     if (penum == 0 || !font_uses_charstrings(pfont))
-        return_error(e_undefined);
+        return_error(gs_error_undefined);
     {
         gs_font_base *const pbfont = (gs_font_base *) pfont;
         gs_font_type1 *const pfont1 = (gs_font_type1 *) pfont;
@@ -912,7 +913,7 @@ nobbox_finish(i_ctx_t *i_ctx_p, gs_type1exec_state * pcxs)
 }
 /* Finish by popping the operands and filling or stroking. */
 static int
-nobbox_draw(i_ctx_t *i_ctx_p, int (*draw)(gs_state *))
+nobbox_draw(i_ctx_t *i_ctx_p, int (*draw)(gs_gstate *))
 {
     int code = draw(igs);
 
@@ -949,6 +950,7 @@ zsetweightvector(i_ctx_t *i_ctx_p)
     int code = font_param(op - 1, &pfont);
     gs_font_type1 *pfont1;
     int size;
+    float wv[max_WeightVector];
 
     if (code < 0) {
         /* The font was not defined yet. Just ignore. See lib/gs_type1.ps . */
@@ -956,14 +958,19 @@ zsetweightvector(i_ctx_t *i_ctx_p)
         return 0;
     }
     if (pfont->FontType != ft_encrypted && pfont->FontType != ft_encrypted2)
-        return_error(e_invalidfont);
+        return_error(gs_error_invalidfont);
     pfont1 = (gs_font_type1 *)pfont;
     size = r_size(op);
     if (size != pfont1->data.WeightVector.count)
-        return_error(e_invalidfont);
-    code = process_float_array(imemory, op, size, pfont1->data.WeightVector.values);
+        return_error(gs_error_invalidfont);
+    code = process_float_array(imemory, op, size, wv);
     if (code < 0)
         return code;
+    if (memcmp(wv, pfont1->data.WeightVector.values,
+        sizeof(pfont1->data.WeightVector.values[0]) * size) != 0) {
+        memcpy(pfont1->data.WeightVector.values, wv, size);
+        gs_purge_font_from_char_caches_completely(pfont);
+    }
     pop(2);
     return 0;
 }
@@ -1025,7 +1032,7 @@ z1_seac_data(gs_font_type1 *pfont, int ccode, gs_glyph *pglyph,
     ref rglyph;
 
     if (glyph == GS_NO_GLYPH)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     if ((code = gs_c_glyph_name(glyph, gstr)) < 0 ||
         (code = name_ref(pfont->memory, gstr->data, gstr->size, &rglyph, 0)) < 0
         )
@@ -1110,16 +1117,16 @@ zcharstring_outline(gs_font_type1 *pfont1, int WMode, const ref *pgref,
     gs_type1_state *const pcis = &cxs.cis;
     const gs_type1_data *pdata;
     int value;
-    gs_imager_state gis;
+    gs_gstate gs;
     double wv[4];
     gs_point mpt;
 
     pdata = &pfont1->data;
     if (pgd->bits.size <= max(pdata->lenIV, 0))
-        return_error(e_invalidfont);
+        return_error(gs_error_invalidfont);
 #if 0 /* Ignore CDevProc for now. */
     if (zchar_get_CDevProc((const gs_font_base *)pfont1, &pcdevproc))
-        return_error(e_rangecheck); /* can't call CDevProc from here */
+        return_error(gs_error_rangecheck); /* can't call CDevProc from here */
 #endif
     switch (WMode) {
     default:
@@ -1140,15 +1147,15 @@ zcharstring_outline(gs_font_type1 *pfont1, int WMode, const ref *pgref,
     cxs.present = code;
     /* Initialize just enough of the imager state. */
     if (pmat)
-        gs_matrix_fixed_from_matrix(&gis.ctm, pmat);
+        gs_matrix_fixed_from_matrix(&gs.ctm, pmat);
     else {
         gs_matrix imat;
 
         gs_make_identity(&imat);
-        gs_matrix_fixed_from_matrix(&gis.ctm, &imat);
+        gs_matrix_fixed_from_matrix(&gs.ctm, &imat);
     }
-    gis.flatness = 0;
-    code = gs_type1_interp_init(&cxs.cis, &gis, ppath, NULL, NULL, true, 0,
+    gs.flatness = 0;
+    code = gs_type1_interp_init(&cxs.cis, &gs, ppath, NULL, NULL, true, 0,
                                 pfont1);
     if (code < 0)
         return code;
@@ -1174,7 +1181,7 @@ icont:
     default:		/* code < 0, error */
         return code;
     case type1_result_callothersubr:	/* unknown OtherSubr */
-        return_error(e_rangecheck); /* can't handle it */
+        return_error(gs_error_rangecheck); /* can't handle it */
     case type1_result_sbw:	/* [h]sbw, just continue */
         type1_cis_get_metrics(pcis, cxs.sbw);
         type1_cis_get_metrics(pcis, sbw);
@@ -1186,7 +1193,7 @@ icont:
 /*
  * Redefine glyph_info to take Metrics[2] and CDevProc into account (unless
  * GLYPH_INFO_OUTLINE_WIDTHS is set).  If CDevProc is present, return
- * e_rangecheck, since we can't call the interpreter from here.
+ * gs_error_rangecheck, since we can't call the interpreter from here.
  */
 int
 z1_glyph_info_generic(gs_font *font, gs_glyph glyph, const gs_matrix *pmat,
@@ -1210,7 +1217,7 @@ z1_glyph_info_generic(gs_font *font, gs_glyph glyph, const gs_matrix *pmat,
         done_members |= GLYPH_INFO_CDEVPROC;
         if (members & GLYPH_INFO_CDEVPROC) {
             info->members = done_members;
-            return_error(e_rangecheck);
+            return_error(gs_error_rangecheck);
         } else {
             /* Ignore CDevProc. Used to compure MissingWidth.*/
         }

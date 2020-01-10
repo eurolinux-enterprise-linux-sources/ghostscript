@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -42,7 +42,7 @@
 #include "gsicc_manage.h"
 #include "gsparamx.h"
 #include "gx.h"
-#include "gxistate.h"
+#include "gxgstate.h"
 #include "gslibctx.h"
 
 
@@ -65,7 +65,7 @@ typedef struct long_param_def_s {
     int (*set)(i_ctx_t *, long);
 } long_param_def_t;
 
-#if arch_sizeof_long > arch_sizeof_int
+#if ARCH_SIZEOF_LONG > ARCH_SIZEOF_INT
 #  define MAX_UINT_PARAM max_uint
 #  define MIN_INT_PARAM min_int
 #else
@@ -171,7 +171,10 @@ current_MaxGlobalVM(i_ctx_t *i_ctx_p)
     gs_memory_gc_status_t stat;
 
     gs_memory_gc_status(iimemory_global, &stat);
-    return stat.max_vm;
+    if (gs_currentcpsimode(imemory))
+        return stat.max_vm & 0x7fffffff;
+    else
+        return stat.max_vm;
 }
 static int
 set_MaxGlobalVM(i_ctx_t *i_ctx_p, long val)
@@ -188,12 +191,26 @@ current_Revision(i_ctx_t *i_ctx_p)
 {
     return gs_revision;
 }
+
+static long
+current_PageCount(i_ctx_t *i_ctx_p)
+{
+    gx_device *dev = gs_currentdevice(igs);
+
+    if ((*dev_proc(dev, get_page_device))(dev) != 0)
+        if (dev->ShowpageCount > i_ctx_p->nv_page_count)
+        	i_ctx_p->nv_page_count = dev->ShowpageCount;
+    return 1000 + i_ctx_p->nv_page_count; /* Add 1000 to imitate NV memory */
+}
+
 static const long_param_def_t system_long_params[] =
 {
     {"BuildTime", min_long, max_long, current_BuildTime, NULL},
 {"MaxFontCache", 0, MAX_UINT_PARAM, current_MaxFontCache, set_MaxFontCache},
     {"CurFontCache", 0, MAX_UINT_PARAM, current_CurFontCache, NULL},
     {"Revision", min_long, max_long, current_Revision, NULL},
+    {"PageCount", min_long, max_long, current_PageCount, NULL},
+
     /* Extensions */
     {"MaxGlobalVM", 0, max_long, current_MaxGlobalVM, set_MaxGlobalVM}
 };
@@ -202,7 +219,7 @@ static const long_param_def_t system_long_params[] =
 static bool
 current_ByteOrder(i_ctx_t *i_ctx_p)
 {
-    return !arch_is_big_endian;
+    return !ARCH_IS_BIG_ENDIAN;
 }
 static const bool_param_def_t system_bool_params[] =
 {
@@ -257,7 +274,7 @@ zsetsystemparams(i_ctx_t *i_ctx_p)
     code = param_check_password(plist, &pass);
     if (code != 0) {
         if (code > 0)
-            code = gs_note_error(e_invalidaccess);
+            code = gs_note_error(gs_error_invalidaccess);
         goto out;
     }
     code = param_read_password(plist, "StartJobPassword", &pass);
@@ -379,7 +396,10 @@ current_MaxLocalVM(i_ctx_t *i_ctx_p)
     gs_memory_gc_status_t stat;
 
     gs_memory_gc_status(iimemory_local, &stat);
-    return stat.max_vm;
+    if (gs_currentcpsimode(imemory))
+        return stat.max_vm & 0x7fffffff;
+    else
+        return stat.max_vm;
 }
 static int
 set_MaxLocalVM(i_ctx_t *i_ctx_p, long val)
@@ -558,11 +578,11 @@ static const long_param_def_t user_long_params[] =
      current_MaxFontItem, set_MaxFontItem},
     {"MinFontCompress", MIN_INT_PARAM, MAX_UINT_PARAM,
      current_MinFontCompress, set_MinFontCompress},
-    {"MaxOpStack", 0, MAX_UINT_PARAM,
+    {"MaxOpStack", -1, max_long,
      current_MaxOpStack, set_MaxOpStack},
-    {"MaxDictStack", 0, MAX_UINT_PARAM,
+    {"MaxDictStack", -1, max_long,
      current_MaxDictStack, set_MaxDictStack},
-    {"MaxExecStack", 0, MAX_UINT_PARAM,
+    {"MaxExecStack", -1, max_long,
      current_MaxExecStack, set_MaxExecStack},
     {"MaxLocalVM", 0, max_long,
      current_MaxLocalVM, set_MaxLocalVM},
@@ -621,14 +641,12 @@ set_AccurateScreens(i_ctx_t *i_ctx_p, bool val)
 static bool
 current_OverrideICC(i_ctx_t *i_ctx_p)
 {
-    const gs_imager_state * pis = (gs_imager_state *) igs;
-    return gs_currentoverrideicc(pis);
+    return gs_currentoverrideicc(igs);
 }
 static int
 set_OverrideICC(i_ctx_t *i_ctx_p, bool val)
 {
-    gs_imager_state * pis = (gs_imager_state *) igs;
-    gs_setoverrideicc(pis, val);
+    gs_setoverrideicc(igs, val);
     return 0;
 }
 static bool
@@ -641,7 +659,7 @@ set_LockFilePermissions(i_ctx_t *i_ctx_p, bool val)
 {
     /* allow locking even if already locked */
     if (i_ctx_p->LockFilePermissions && !val)
-        return_error(e_invalidaccess);
+        return_error(gs_error_invalidaccess);
     i_ctx_p->LockFilePermissions = val;
     return 0;
 }
@@ -759,7 +777,7 @@ setparams(i_ctx_t *i_ctx_p, gs_param_list * plist, const param_set * pset)
                 break;
             case 0:
                 if (val < pdef->min_value || val > pdef->max_value)
-                    return_error(e_rangecheck);
+                    return_error(gs_error_rangecheck);
                 code = (*pdef->set)(i_ctx_p, val);
                 if (code < 0)
                     return code;
@@ -902,7 +920,7 @@ currentparam1(i_ctx_t *i_ctx_p, const param_set * pset)
     if (code < 0)
         return code;
     if (osp == op)
-        return_error(e_undefined);
+        return_error(gs_error_undefined);
     /* We know osp == op + 2. */
     ref_assign(op, op + 2);
     pop(2);

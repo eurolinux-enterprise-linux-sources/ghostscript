@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -83,7 +83,7 @@ typedef struct gs_pattern_instance_s gs_pattern_instance_t;
     rc_header rc;\
     /* Following are set by makepattern */\
     const gs_pattern_type_t *type;  /* from template */\
-    gs_state *saved;\
+    gs_gstate *saved;\
     gs_id pattern_id
 struct gs_pattern_instance_s {
     gs_pattern_instance_common;
@@ -100,17 +100,17 @@ extern_st(st_pattern_instance);
 /* ---------------- Procedures ---------------- */
 
 /* Set a Pattern color or a Pattern color space. */
-int gs_setpattern(gs_state *, const gs_client_color *);
-int gs_setpatternspace(gs_state *);
+int gs_setpattern(gs_gstate *, const gs_client_color *);
+int gs_setpatternspace(gs_gstate *);
 
 /*
  * Construct a Pattern color of any PatternType.
  * The gs_memory_t argument for gs_make_pattern may be NULL, meaning use the
- * same allocator as for the gs_state argument.  Note that gs_make_pattern
+ * same allocator as for the gs_gstate argument.  Note that gs_make_pattern
  * uses rc_alloc_struct_1 to allocate pattern instances.
  */
 int gs_make_pattern(gs_client_color *, const gs_pattern_template_t *,
-                    const gs_matrix *, gs_state *, gs_memory_t *);
+                    const gs_matrix *, gs_gstate *, gs_memory_t *);
 const gs_pattern_template_t *gs_get_pattern(const gs_client_color *);
 
 /*

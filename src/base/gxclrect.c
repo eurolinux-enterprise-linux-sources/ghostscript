@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -23,6 +23,8 @@
 #include "gxcldev.h"
 #include "gxclpath.h"
 #include "gxdevsop.h"
+
+extern dev_proc_dev_spec_op(gdev_prn_forwarding_dev_spec_op);
 
 /* ---------------- Writing utilities ---------------- */
 
@@ -38,13 +40,13 @@ cmd_size_rect(register const gx_cmd_rect * prect)
         cmd_sizew(prect->x) + cmd_sizew(prect->y) +
         cmd_sizew(prect->width) + cmd_sizew(prect->height);
 }
-static byte *
-cmd_put_rect(register const gx_cmd_rect * prect, register byte * dp)
+static inline byte *
+cmd_put_rect(const gx_cmd_rect * prect, byte * dp)
 {
-    cmd_putw(prect->x, dp);
-    cmd_putw(prect->y, dp);
-    cmd_putw(prect->width, dp);
-    cmd_putw(prect->height, dp);
+    cmd_putw(prect->x, &dp);
+    cmd_putw(prect->y, &dp);
+    cmd_putw(prect->width, &dp);
+    cmd_putw(prect->height, &dp);
     return dp;
 }
 
@@ -60,12 +62,12 @@ cmd_write_rect_hl_cmd(gx_device_clist_writer * cldev, gx_clist_state * pcls,
     cmd_set_rect(pcls->rect);
     if (extended_command) {
         rcsize = 2 + cmd_size_rect(&pcls->rect);
-        code = set_cmd_put_op(dp, cldev, pcls, cmd_opv_extend, rcsize);
+        code = set_cmd_put_op(&dp, cldev, pcls, cmd_opv_extend, rcsize);
         dp[1] = op;
         dp += 2;
     } else {
         rcsize = 1 + cmd_size_rect(&pcls->rect);
-        code = set_cmd_put_op(dp, cldev, pcls, op, rcsize);
+        code = set_cmd_put_op(&dp, cldev, pcls, op, rcsize);
         dp += 1;
     }
     if (code < 0)
@@ -103,11 +105,11 @@ cmd_write_rect_cmd(gx_device_clist_writer * cldev, gx_clist_state * pcls,
         byte op_tiny = op + 0x20 + dwidth - cmd_min_dw_tiny;
 
         if (dx == width - dwidth && dy == 0) {
-            code = set_cmd_put_op(dp, cldev, pcls, op_tiny + 8, 1);
+            code = set_cmd_put_op(&dp, cldev, pcls, op_tiny + 8, 1);
             if (code < 0)
                 return code;
         } else {
-            code = set_cmd_put_op(dp, cldev, pcls, op_tiny, 2);
+            code = set_cmd_put_op(&dp, cldev, pcls, op_tiny, 2);
             if (code < 0)
                 return code;
             dp[1] = (dx << 4) + dy - (cmd_min_dxy_tiny * 0x11);
@@ -122,13 +124,13 @@ cmd_write_rect_cmd(gx_device_clist_writer * cldev, gx_clist_state * pcls,
             dh != 0 && dy == 0
             ) {
             op += dh;
-            code = set_cmd_put_op(dp, cldev, pcls, op + 0x10, 3);
+            code = set_cmd_put_op(&dp, cldev, pcls, op + 0x10, 3);
             if (code < 0)
                 return code;
             if_debug3m('L', cldev->memory, "    rs2:%d,%d,0,%d\n",
                        dx, dwidth, dheight);
         } else {
-            code = set_cmd_put_op(dp, cldev, pcls, op + 0x10, 5);
+            code = set_cmd_put_op(&dp, cldev, pcls, op + 0x10, 5);
             if (code < 0)
                 return code;
             if_debug4m('L', cldev->memory, "    rs4:%d,%d,%d,%d\n",
@@ -146,16 +148,16 @@ cmd_write_rect_cmd(gx_device_clist_writer * cldev, gx_clist_state * pcls,
         ) {
         int rcsize = 1 + cmd_sizew(x) + cmd_sizew(width);
 
-        code = set_cmd_put_op(dp, cldev, pcls,
+        code = set_cmd_put_op(&dp, cldev, pcls,
                               op + ((dy + 2) << 2) + dheight + 2, rcsize);
         if (code < 0)
             return code;
         ++dp;
-        cmd_put2w(x, width, dp);
+        cmd_put2w(x, width, &dp);
     } else {
         int rcsize = 1 + cmd_size_rect(&pcls->rect);
 
-        code = set_cmd_put_op(dp, cldev, pcls, op, rcsize);
+        code = set_cmd_put_op(&dp, cldev, pcls, op, rcsize);
         if (code < 0)
             return code;
         if_debug5m('L', cldev->memory, "    r%d:%d,%d,%d,%d\n",
@@ -180,16 +182,16 @@ cmd_write_page_rect_cmd(gx_device_clist_writer * cldev, int op)
     int code;
 
     if_debug0m('L', cldev->memory, "[L]fillpage beg\n");
-    code = set_cmd_put_all_op(dp, cldev, op, rcsize);
+    code = set_cmd_put_all_op(&dp, cldev, op, rcsize);
     if (code < 0)
         return code;
     for (pcls1 = cldev->states; pcls1 < cldev->states + cldev->nbands; pcls1++)
         cmd_set_rect(pcls1->rect);
     ++dp;
-    cmd_putw(0, dp);
-    cmd_putw(0, dp);
-    cmd_putw(0, dp);
-    cmd_putw(0, dp);
+    cmd_putw(0, &dp);
+    cmd_putw(0, &dp);
+    cmd_putw(0, &dp);
+    cmd_putw(0, &dp);
     if_debug0m('L', cldev->memory, "[L]fillpage end\n");
     return 0;
 }
@@ -197,8 +199,8 @@ cmd_write_page_rect_cmd(gx_device_clist_writer * cldev, int op)
 static inline byte *
 cmd_put_frac31_color(gx_device_clist_writer * cldev, const frac31 *c, byte *dp)
 {
-    int num_components = cldev->clist_color_info.num_components;
-    int j;
+    uchar num_components = cldev->clist_color_info.num_components;
+    uchar j;
 
     for (j = 0; j < num_components; j++)
         dp = cmd_put_frac31(c[j], dp);
@@ -208,8 +210,9 @@ cmd_put_frac31_color(gx_device_clist_writer * cldev, const frac31 *c, byte *dp)
 static inline int
 cmd_size_frac31_color(gx_device_clist_writer * cldev, const frac31 *c)
 {
-    int j, s = 0;
-    int num_components = cldev->clist_color_info.num_components;
+    uchar j;
+    int s = 0;
+    uchar num_components = cldev->clist_color_info.num_components;
 
     for (j = 0; j < num_components; j++)
         s += cmd_size_frac31(c[j]);
@@ -258,33 +261,36 @@ cmd_write_trapezoid_cmd(gx_device_clist_writer * cldev, gx_clist_state * pcls,
         }
         rcsize += cmd_sizew(colors_mask);
     }
-    code = set_cmd_put_op(dp, cldev, pcls, op, rcsize);
+    code = set_cmd_put_op(&dp, cldev, pcls, op, rcsize);
     if (code < 0)
         return code;
     dp++;
-    cmd_putw(left->start.x, dp);
-    cmd_putw(left->start.y, dp);
-    cmd_putw(left->end.x, dp);
-    cmd_putw(left->end.y, dp);
-    cmd_putw(right->start.x, dp);
-    cmd_putw(right->start.y, dp);
-    cmd_putw(right->end.x, dp);
-    cmd_putw(right->end.y, dp);
-    cmd_putw(options, dp);
+    cmd_putw(left->start.x, &dp);
+    cmd_putw(left->start.y, &dp);
+    cmd_putw(left->end.x, &dp);
+    cmd_putw(left->end.y, &dp);
+    cmd_putw(right->start.x, &dp);
+    cmd_putw(right->start.y, &dp);
+    cmd_putw(right->end.x, &dp);
+    cmd_putw(right->end.y, &dp);
+    cmd_putw(options, &dp);
     if (!(options & 4)) {
-        cmd_putw(ybot, dp);
-        cmd_putw(ytop, dp);
+        cmd_putw(ybot, &dp);
+        cmd_putw(ytop, &dp);
     }
     if_debug6m('L', cldev->memory, "    t%d:%ld,%ld,%ld,%ld   %ld\n",
-               rcsize - 1, left->start.x, left->start.y, left->end.x, left->end.y, ybot);
+               rcsize - 1, (long int)left->start.x, (long int)left->start.y,
+               (long int)left->end.x, (long int)left->end.y, (long int)ybot);
     if_debug6m('L', cldev->memory, "    t%ld,%ld,%ld,%ld   %ld   o=%d\n",
-               right->start.x, right->start.y, right->end.x, right->end.y, ytop, options);
+               (long int)right->start.x, (long int)right->start.y,
+               (long int)right->end.x, (long int)right->end.y, (long int)ytop,
+               options);
     if (options & 2) {
-        cmd_putw(fa->clip->p.x, dp);
-        cmd_putw(fa->clip->p.y, dp);
-        cmd_putw(fa->clip->q.x, dp);
-        cmd_putw(fa->clip->q.y, dp);
-        cmd_putw(colors_mask, dp);
+        cmd_putw(fa->clip->p.x, &dp);
+        cmd_putw(fa->clip->p.y, &dp);
+        cmd_putw(fa->clip->q.x, &dp);
+        cmd_putw(fa->clip->q.y, &dp);
+        cmd_putw(colors_mask, &dp);
         if (c0 != NULL)
             dp = cmd_put_frac31_color(cldev, c0, dp);
         if (c1 != NULL)
@@ -300,17 +306,23 @@ cmd_write_trapezoid_cmd(gx_device_clist_writer * cldev, gx_clist_state * pcls,
 /* ---------------- Driver procedures ---------------- */
 
 int
-clist_fillpage(gx_device * dev, gs_imager_state *pis, gx_drawing_color *pdcolor)
+clist_fillpage(gx_device * dev, gs_gstate *pgs, gx_drawing_color *pdcolor)
 {
-    gx_device_clist_writer * const cdev = &((gx_device_clist *)dev)->writer;
-    gx_clist_state * pcls = cdev->states; /* Use any. */
+    gx_device_clist * const cldev = (gx_device_clist *)dev;
+    gx_device_clist_writer * const cdev = &(cldev->writer);
+    gx_clist_state * pcls;
     int code;
 
-    do {
-        code = cmd_put_drawing_color(cdev, pcls, pdcolor, NULL, devn_not_tile);
-        if (code >= 0)
-            code = cmd_write_page_rect_cmd(cdev, cmd_op_fill_rect);
-    } while (RECT_RECOVER(code));
+    /* flush previous contents */
+    if ((code = clist_close_writer_and_init_reader(cldev) < 0) ||
+        (code = clist_finish_page(dev, true)) < 0)
+        return code;;
+
+    pcls = cdev->states; /* Use any. */
+
+    code = cmd_put_drawing_color(cdev, pcls, pdcolor, NULL, devn_not_tile);
+    if (code >= 0)
+        code = cmd_write_page_rect_cmd(cdev, cmd_op_fill_rect);
     return code;
 }
 
@@ -329,31 +341,34 @@ clist_fill_rectangle(gx_device * dev, int rx, int ry, int rwidth, int rheight,
         return 0;
     if (cdev->permanent_error < 0)
       return (cdev->permanent_error);
+    /* If needed, update the trans_bbox */
+    if (cdev->pdf14_needed) {
+        gs_int_rect bbox;
+
+        bbox.p.x = rx;
+        bbox.q.x = rx + rwidth - 1;
+        bbox.p.y = ry;
+        bbox.q.y = ry + rheight - 1;
+
+        clist_update_trans_bbox(cdev, &bbox);
+    }
     RECT_ENUM_INIT(re, ry, rheight);
     color_usage = gx_color_index2usage(dev, color);
     do {
         RECT_STEP_INIT(re);
         re.pcls->color_usage.or |= color_usage;
-        re.pcls->band_complexity.uses_color |= ((color_usage != 0) && (color_usage != gx_color_usage_all(cdev)));
-        do {
-            code = cmd_disable_lop(cdev, re.pcls);
-            if (code >= 0 && color != re.pcls->colors[1]) {
-                code = cmd_put_color(cdev, re.pcls, &clist_select_color1,
-                                     color, &re.pcls->colors[1]);
-            }
-            if (code >= 0) {
-                code = cmd_write_rect_cmd(cdev, re.pcls, cmd_op_fill_rect, rx, re.y,
-                                          rwidth, re.height);
-            }
-        } while (RECT_RECOVER(code));
-        if (code < 0 && SET_BAND_CODE(code))
-            goto error_in_rect;
+        code = cmd_disable_lop(cdev, re.pcls);
+        if (code >= 0 && color != re.pcls->colors[1]) {
+            code = cmd_put_color(cdev, re.pcls, &clist_select_color1,
+                                 color, &re.pcls->colors[1]);
+        }
+        if (code >= 0) {
+            code = cmd_write_rect_cmd(cdev, re.pcls, cmd_op_fill_rect, rx, re.y,
+                                      rwidth, re.height);
+        }
+        if (code < 0)
+            return code;
         re.y += re.height;
-        continue;
-error_in_rect:
-        if (!(cdev->error_is_retryable && cdev->driver_call_nesting == 0 &&
-                SET_BAND_CODE(clist_VMerror_recover_flush(cdev, re.band_code)) >= 0))
-            return re.band_code;
     } while (re.y < re.yend);
     return 0;
 }
@@ -361,7 +376,7 @@ error_in_rect:
 /* This is used in fills from devn color types */
 int
 clist_fill_rectangle_hl_color(gx_device *dev, const gs_fixed_rect *rect,
-    const gs_imager_state *pis, const gx_drawing_color *pdcolor,
+    const gs_gstate *pgs, const gx_drawing_color *pdcolor,
     const gx_clip_path *pcpath)
 {
     gx_device_clist_writer * const cdev =
@@ -369,6 +384,7 @@ clist_fill_rectangle_hl_color(gx_device *dev, const gs_fixed_rect *rect,
     int code;
     int rx, ry, rwidth, rheight;
     cmd_rects_enum_t re;
+    gx_color_usage_bits color_usage = cmd_drawing_color_usage(cdev, pdcolor);
 
     rx = fixed2int(rect->p.x);
     ry = fixed2int(rect->p.y);
@@ -380,30 +396,48 @@ clist_fill_rectangle_hl_color(gx_device *dev, const gs_fixed_rect *rect,
         return 0;
     if (cdev->permanent_error < 0)
       return (cdev->permanent_error);
+    /* If needed, update the trans_bbox */
+    if (cdev->pdf14_needed) {
+        gs_int_rect bbox;
+
+        bbox.p.x = rx;
+        bbox.q.x = rx + rwidth - 1;
+        bbox.p.y = ry;
+        bbox.q.y = ry + rheight - 1;
+
+        clist_update_trans_bbox(cdev, &bbox);
+    }
     RECT_ENUM_INIT(re, ry, rheight);
     do {
         RECT_STEP_INIT(re);
-        re.pcls->color_usage.or = gx_color_usage_all(cdev);
-        re.pcls->band_complexity.uses_color = true;
-        do {
-            code = cmd_disable_lop(cdev, re.pcls);
-            code = cmd_put_drawing_color(cdev, re.pcls, pdcolor, &re,
-                                         devn_not_tile);
-            if (code >= 0) {
-                code = cmd_write_rect_hl_cmd(cdev, re.pcls, cmd_op_fill_rect_hl,
-                                             rx, re.y, rwidth, re.height, false);
-            }
-        } while (RECT_RECOVER(code));
-        if (code < 0 && SET_BAND_CODE(code))
-            goto error_in_rect;
+        re.pcls->color_usage.or |= color_usage;
+        code = cmd_disable_lop(cdev, re.pcls);
+        code = cmd_put_drawing_color(cdev, re.pcls, pdcolor, &re,
+                                     devn_not_tile);
+        if (code >= 0) {
+            code = cmd_write_rect_hl_cmd(cdev, re.pcls, cmd_op_fill_rect_hl,
+                                         rx, re.y, rwidth, re.height, false);
+        }
+        if (code < 0)
+            return code;
         re.y += re.height;
-        continue;
-error_in_rect:
-        if (!(cdev->error_is_retryable && cdev->driver_call_nesting == 0 &&
-                SET_BAND_CODE(clist_VMerror_recover_flush(cdev, re.band_code)) >= 0))
-            return re.band_code;
     } while (re.y < re.yend);
     return 0;
+}
+
+static void update_color_use_frac_array(uchar num_colors, const frac31 *color,
+    cmd_rects_enum_t *re)
+{
+    uchar k;
+
+    if (color == NULL)
+        return;
+
+    for (k = 0; k < num_colors; k++){
+        if (color[k] != 0) {
+            re->pcls->color_usage.or |= (1<<k);
+        }
+    }
 }
 
 static inline int
@@ -419,14 +453,18 @@ clist_write_fill_trapezoid(gx_device * dev,
         &((gx_device_clist *)dev)->writer;
     int code;
     cmd_rects_enum_t re;
-    int ry, rheight;
+    int ry, rheight, rx, rxe;
     bool swap_axes = (options & 1);
 
     if (options & 4) {
         if (swap_axes) {
+            rx =  fixed2int(max(min(min(left->start.y, left->end.y), right->start.y), fa->clip->p.y));
+            rxe =  fixed2int_ceiling(min(max(max(left->start.y, left->end.y), right->start.y), fa->clip->q.y));
             ry = fixed2int(max(min(min(left->start.x, left->end.x), right->start.x), fa->clip->p.x));
             rheight = fixed2int_ceiling(min(max(max(left->start.x, left->end.x), right->start.x), fa->clip->q.x)) - ry;
         } else {
+            rx = fixed2int(max(min(min(left->start.x, left->end.x), right->start.x), fa->clip->p.x));
+            rxe = fixed2int_ceiling(min(max(max(left->start.x, left->end.x), right->start.x), fa->clip->q.x));
             ry = fixed2int(max(min(min(left->start.y, left->end.y), right->start.y), fa->clip->p.y));
             rheight = fixed2int_ceiling(min(max(max(left->start.y, left->end.y), right->start.y), fa->clip->q.y)) - ry;
         }
@@ -436,9 +474,13 @@ clist_write_fill_trapezoid(gx_device * dev,
            Would like to know a better range by X
            with computing intersections of sides with ybot, ytop. */
         if (swap_axes) {
+            rx = fixed2int(ybot);
+            rxe = fixed2int_ceiling(ytop);
             ry = fixed2int(min(left->start.x, left->end.x));
             rheight = fixed2int_ceiling(max(right->start.x, right->end.x)) - ry;
         } else {
+            rx = fixed2int(min(left->start.x, left->end.x));
+            rxe = fixed2int_ceiling(max(right->start.x, right->end.x));
             ry = fixed2int(ybot);
             rheight = fixed2int_ceiling(ytop) - ry;
         }
@@ -448,37 +490,48 @@ clist_write_fill_trapezoid(gx_device * dev,
         return 0;
     if (cdev->permanent_error < 0)
         return (cdev->permanent_error);
+    /* If needed, update the trans_bbox */
+    if (cdev->pdf14_needed) {
+        gs_int_rect bbox;
+
+        bbox.p.x = rx;
+        bbox.q.x = rxe;
+        bbox.p.y = ry;
+        bbox.q.y = ry + rheight;
+
+        clist_update_trans_bbox(cdev, &bbox);
+    }
     RECT_ENUM_INIT(re, ry, rheight);
     do {
         RECT_STEP_INIT(re);
-        do {
-            if (pdcolor != NULL) {
-                code = cmd_put_drawing_color(cdev, re.pcls, pdcolor, &re,
-                                             devn_not_tile);
-                if (code == gs_error_unregistered)
-                    return code;
-                if (code < 0) {
-                    /* Something went wrong, use the default implementation. */
-                    return gx_default_fill_trapezoid(dev, left, right, ybot, ytop, swap_axes, pdcolor, lop);
-                }
-                code = cmd_update_lop(cdev, re.pcls, lop);
-            } else
-                code = 0;
-            if (code >= 0) {
-                /* Dont't want to shorten the trapezoid by the band boundary,
-                   keeping in mind a further optimization with writing same data to all bands. */
-                code = cmd_write_trapezoid_cmd(cdev, re.pcls, cmd_opv_fill_trapezoid, left, right,
-                                          ybot, ytop, options, fa, c0, c1, c2, c3);
+        if (pdcolor != NULL) {
+            code = cmd_put_drawing_color(cdev, re.pcls, pdcolor, &re,
+                                         devn_not_tile);
+            if (code == gs_error_unregistered)
+                return code;
+            if (code < 0) {
+                /* Something went wrong, use the default implementation. */
+                return gx_default_fill_trapezoid(dev, left, right, ybot, ytop, swap_axes, pdcolor, lop);
             }
-        } while (RECT_RECOVER(code));
-        if (code < 0 && SET_BAND_CODE(code))
-            goto error_in_rect;
+            code = cmd_update_lop(cdev, re.pcls, lop);
+        } else {
+            /* Even with pdcolor NULL, we may still have colors packed in
+               c0, c1, c2 or c3 */
+            update_color_use_frac_array(dev->color_info.num_components, c0, &re);
+            update_color_use_frac_array(dev->color_info.num_components, c1, &re);
+            update_color_use_frac_array(dev->color_info.num_components, c2, &re);
+            update_color_use_frac_array(dev->color_info.num_components, c3, &re);
+            code = 0;
+        }
+        if (code >= 0) {
+            /* Dont't want to shorten the trapezoid by the band boundary,
+               keeping in mind a further optimization with writing same data to all bands. */
+            code = cmd_write_trapezoid_cmd(cdev, re.pcls, cmd_opv_fill_trapezoid, left, right,
+                                      ybot, ytop, options, fa, c0, c1, c2, c3);
+        }
+        if (code < 0)
+            return code;
         re.y += re.height;
-        continue;
-error_in_rect:
-        if (!(cdev->error_is_retryable && cdev->driver_call_nesting == 0 &&
-                SET_BAND_CODE(clist_VMerror_recover_flush(cdev, re.band_code)) >= 0))
-            return re.band_code;
     } while (re.y < re.yend);
     return 0;
 }
@@ -551,19 +604,18 @@ clist_fill_linear_color_triangle(gx_device * dev, const gs_fill_attributes *fa,
     return 1;
 }
 
+extern dev_proc_open_device(pattern_clist_open_device);
+extern dev_proc_dev_spec_op(pattern_accum_dev_spec_op);
+
 int
 clist_dev_spec_op(gx_device *pdev, int dev_spec_op, void *data, int size)
 {
-    gs_pattern1_instance_t *pinst = (gs_pattern1_instance_t *)data;
-    gx_bitmap_id id = (gx_bitmap_id)size;
     gx_device_clist_common * const cdev = &((gx_device_clist *)pdev)->common;
 
     if (dev_spec_op == gxdso_pattern_handles_clip_path)
         return 1;
     if (dev_spec_op == gxdso_pattern_shfill_doesnt_need_path)
         return 1;
-    if (dev_spec_op == gxdso_is_native_planar)
-        return cdev->is_planar;
     if (dev_spec_op == gxdso_supports_devn) {
         cmm_dev_profile_t *dev_profile;
         int code;
@@ -574,11 +626,22 @@ clist_dev_spec_op(gx_device *pdev, int dev_spec_op, void *data, int size)
             return 0;
         }
     }
-    return gx_default_dev_spec_op(pdev, dev_spec_op, pinst, id);
+    if (dev_spec_op == gxdso_restrict_bbox) {
+        gx_device_clist_writer *cwdev = &((gx_device_clist *)pdev)->writer;
+        gs_int_rect *ibox = (gs_int_rect *)data;
+        if (ibox->p.y < cwdev->cropping_min)
+            ibox->p.y = cwdev->cropping_min;
+        if (ibox->q.y > cwdev->cropping_max)
+            ibox->q.y = cwdev->cropping_max;
+        return 0;
+    }
+    /* forward to the appropriate super class */
+    if (cdev->is_printer)
+        return gdev_prn_forwarding_dev_spec_op(pdev, dev_spec_op, data, size);
+    if (dev_proc(cdev, open_device) == pattern_clist_open_device)
+        return pattern_accum_dev_spec_op(pdev, dev_spec_op, data, size);
+    return gx_default_dev_spec_op(pdev, dev_spec_op, data, size);
 }
-
-#define dev_proc_pattern_manage(proc)\
-  dev_t_proc_pattern_manage(proc, gx_device)
 
 /* Based heavily off of clist_strip_tile_rectangle */
 int
@@ -592,65 +655,64 @@ clist_strip_tile_rect_devn(gx_device * dev, const gx_strip_bitmap * tile,
     int depth = 1;
     int code;
     cmd_rects_enum_t re;
+    gx_color_usage_bits color_usage = cmd_drawing_color_usage(cdev, pdcolor0);
 
     crop_fill(cdev, rx, ry, rwidth, rheight);
     if (rwidth <= 0 || rheight <= 0)
         return 0;
     if (cdev->permanent_error < 0)
       return (cdev->permanent_error);
+    /* If needed, update the trans_bbox */
+    if (cdev->pdf14_needed) {
+        gs_int_rect bbox;
+
+        bbox.p.x = rx;
+        bbox.q.x = rx + rwidth - 1;
+        bbox.p.y = ry;
+        bbox.q.y = ry + rheight - 1;
+
+        clist_update_trans_bbox(cdev, &bbox);
+    }
+    color_usage |= cmd_drawing_color_usage(cdev, pdcolor1);
     RECT_ENUM_INIT(re, ry, rheight);
     do {
         ulong offset_temp;
 
         RECT_STEP_INIT(re);
-        re.pcls->color_usage.or = gx_color_usage_all(cdev);
-        re.pcls->band_complexity.uses_color = true;
-        do {
-            code = cmd_disable_lop(cdev, re.pcls);
-        } while (RECT_RECOVER(code));
-        if (code < 0 && SET_BAND_CODE(code))
-            goto error_in_rect;
+        re.pcls->color_usage.or |= color_usage;
+        code = cmd_disable_lop(cdev, re.pcls);
+        if (code < 0)
+            return code;
         /* Change the tile if needed */
         if (!cls_has_tile_id(cdev, re.pcls, tile->id, offset_temp)) {
             if (tile->id != gx_no_bitmap_id) {
-                do {
-                    code = clist_change_tile(cdev, re.pcls, tile, depth);
-                } while (RECT_RECOVER(code));
-                if (code < 0 && !(code != gs_error_VMerror || !cdev->error_is_retryable) && SET_BAND_CODE(code))
-                    goto error_in_rect;
-            } else
-                code = -1;
-            if (code < 0) {
+                code = clist_change_tile(cdev, re.pcls, tile, depth);
+                if (code < 0)
+                    return code;
+            } else {
                 return_error(gs_error_unregistered);
             }
         }
-        do {
-            code = 0;
-            /* Write out the devn colors */
-            code = cmd_put_drawing_color(cdev, re.pcls, pdcolor0, &re,
-                                         devn_tile0);
-            code = cmd_put_drawing_color(cdev, re.pcls, pdcolor1, &re,
-                                         devn_tile1);
-            /* Set the tile phase */
-            if (px != re.pcls->tile_phase.x || py != re.pcls->tile_phase.y) {
-                if (code >= 0)
-                    code = cmd_set_tile_phase(cdev, re.pcls, px, py);
-            }
-            /* Write out the actually command to fill with the devn colors */
-            if (code >= 0) {
-                code = cmd_write_rect_hl_cmd(cdev, re.pcls,
-                                             cmd_opv_ext_tile_rect_hl, rx, re.y,
-                                             rwidth, re.height, true);
-            }
-        } while (RECT_RECOVER(code));
-        if (code < 0 && SET_BAND_CODE(code))
-            goto error_in_rect;
+        code = 0;
+        /* Write out the devn colors */
+        code = cmd_put_drawing_color(cdev, re.pcls, pdcolor0, &re,
+                                     devn_tile0);
+        code = cmd_put_drawing_color(cdev, re.pcls, pdcolor1, &re,
+                                     devn_tile1);
+        /* Set the tile phase */
+        if (px != re.pcls->tile_phase.x || py != re.pcls->tile_phase.y) {
+            if (code >= 0)
+                code = cmd_set_tile_phase(cdev, re.pcls, px, py);
+        }
+        /* Write out the actually command to fill with the devn colors */
+        if (code >= 0) {
+            code = cmd_write_rect_hl_cmd(cdev, re.pcls,
+                                         cmd_opv_ext_tile_rect_hl, rx, re.y,
+                                         rwidth, re.height, true);
+        }
+        if (code < 0)
+            return code;
         re.y += re.height;
-        continue;
-error_in_rect:
-        if (!(cdev->error_is_retryable && cdev->driver_call_nesting == 0 &&
-                SET_BAND_CODE(clist_VMerror_recover_flush(cdev, re.band_code)) >= 0))
-            return re.band_code;
     } while (re.y < re.yend);
     return 0;
 }
@@ -678,29 +740,30 @@ clist_strip_tile_rectangle(gx_device * dev, const gx_strip_bitmap * tile,
     if (rwidth <= 0 || rheight <= 0)
         return 0;
     if (cdev->permanent_error < 0)
-      return (cdev->permanent_error);
+        return (cdev->permanent_error);
+    /* If needed, update the trans_bbox */
+    if (cdev->pdf14_needed) {
+        gs_int_rect bbox;
+
+        bbox.p.x = rx;
+        bbox.q.x = rx + rwidth - 1;
+        bbox.p.y = ry;
+        bbox.q.y = ry + rheight - 1;
+
+        clist_update_trans_bbox(cdev, &bbox);
+    }
     RECT_ENUM_INIT(re, ry, rheight);
     do {
         ulong offset_temp;
 
         RECT_STEP_INIT(re);
         re.pcls->color_usage.or |= color_usage;
-        re.pcls->band_complexity.uses_color |=
-            ((color0 != gx_no_color_index) && (color0 != 0xffffff) && (color0 != 0)) ||
-            ((color1 != gx_no_color_index) && (color1 != 0xffffff) && (color1 != 0));
-
-        do {
-            code = cmd_disable_lop(cdev, re.pcls);
-        } while (RECT_RECOVER(code));
-        if (code < 0 && SET_BAND_CODE(code))
-            goto error_in_rect;
+        code = cmd_disable_lop(cdev, re.pcls);
+        if (code < 0)
+            return code;
         if (!cls_has_tile_id(cdev, re.pcls, tile->id, offset_temp)) {
             if (tile->id != gx_no_bitmap_id) {
-                do {
-                    code = clist_change_tile(cdev, re.pcls, tile, depth);
-                } while (RECT_RECOVER(code));
-                if (code < 0 && !(code != gs_error_VMerror || !cdev->error_is_retryable) && SET_BAND_CODE(code))
-                    goto error_in_rect;
+                code = clist_change_tile(cdev, re.pcls, tile, depth);
             } else
                 code = -1; /* Force the default implementation. Should never happen. */
             if (code < 0) {
@@ -710,32 +773,25 @@ clist_strip_tile_rectangle(gx_device * dev, const gx_strip_bitmap * tile,
                                                        rx, re.y, rwidth, re.height,
                                                        color0, color1,
                                                        px, py);
-                if (code < 0 && SET_BAND_CODE(code))
-                    goto error_in_rect;
+                if (code < 0)
+                    return code;
                 goto endr;
             }
         }
-        do {
-            code = 0;
-            if (color0 != re.pcls->tile_colors[0] || color1 != re.pcls->tile_colors[1])
-                code = cmd_set_tile_colors(cdev, re.pcls, color0, color1);
-            if (px != re.pcls->tile_phase.x || py != re.pcls->tile_phase.y) {
-                if (code >= 0)
-                    code = cmd_set_tile_phase(cdev, re.pcls, px, py);
-            }
+        code = 0;
+        if (color0 != re.pcls->tile_colors[0] || color1 != re.pcls->tile_colors[1])
+            code = cmd_set_tile_colors(cdev, re.pcls, color0, color1);
+        if (px != re.pcls->tile_phase.x || py != re.pcls->tile_phase.y) {
             if (code >= 0)
-                code = cmd_write_rect_cmd(cdev, re.pcls, cmd_op_tile_rect, rx, re.y,
-                                          rwidth, re.height);
-        } while (RECT_RECOVER(code));
-        if (code < 0 && SET_BAND_CODE(code))
-            goto error_in_rect;
+                code = cmd_set_tile_phase(cdev, re.pcls, px, py);
+        }
+        if (code >= 0)
+            code = cmd_write_rect_cmd(cdev, re.pcls, cmd_op_tile_rect, rx, re.y,
+                                      rwidth, re.height);
+        if (code < 0)
+            return code;
 endr:;
         re.y += re.height;
-        continue;
-error_in_rect:
-        if (!(cdev->error_is_retryable && cdev->driver_call_nesting == 0 &&
-                SET_BAND_CODE(clist_VMerror_recover_flush(cdev, re.band_code)) >= 0))
-            return re.band_code;
     } while (re.y < re.yend);
     return 0;
 }
@@ -753,15 +809,23 @@ clist_copy_mono(gx_device * dev,
     gx_color_usage_bits color_usage =
         (color0 == gx_no_color_index ? 0 : gx_color_index2usage(dev, color0)) |
         (color1 == gx_no_color_index ? 0 : gx_color_index2usage(dev, color1));
-    bool uses_color =
-        ((color0 != gx_no_color_index) && (color0 != 0xffffff) && (color0 != 0)) ||
-        ((color1 != gx_no_color_index) && (color1 != 0xffffff) && (color1 != 0));
     cmd_rects_enum_t re;
 
     fit_copy(dev, data, data_x, raster, id, rx, ry, rwidth, rheight);
     y0 = ry;
     if (cdev->permanent_error < 0)
       return (cdev->permanent_error);
+    /* If needed, update the trans_bbox */
+    if (cdev->pdf14_needed) {
+        gs_int_rect bbox;
+
+        bbox.p.x = rx;
+        bbox.q.x = rx + rwidth - 1;
+        bbox.p.y = ry;
+        bbox.q.y = ry + rheight - 1;
+
+        clist_update_trans_bbox(cdev, &bbox);
+    }
     RECT_ENUM_INIT(re, ry, rheight);
     do {
         int dx = data_x & 7;
@@ -771,18 +835,15 @@ clist_copy_mono(gx_device * dev,
 
         RECT_STEP_INIT(re);
         re.pcls->color_usage.or |= color_usage;
-        re.pcls->band_complexity.uses_color |= uses_color;
-        do {
-            code = cmd_disable_lop(cdev, re.pcls);
-            if (code >= 0)
-                code = cmd_disable_clip(cdev, re.pcls);
-            if (color0 != re.pcls->colors[0] && code >= 0)
-                code = cmd_set_color0(cdev, re.pcls, color0);
-            if (color1 != re.pcls->colors[1] && code >= 0)
-                code = cmd_set_color1(cdev, re.pcls, color1);
-        } while (RECT_RECOVER(code));
-        if (code < 0 && SET_BAND_CODE(code))
-            goto error_in_rect;
+        code = cmd_disable_lop(cdev, re.pcls);
+        if (code >= 0)
+            code = cmd_disable_clip(cdev, re.pcls);
+        if (color0 != re.pcls->colors[0] && code >= 0)
+            code = cmd_set_color0(cdev, re.pcls, color0);
+        if (color1 != re.pcls->colors[1] && code >= 0)
+            code = cmd_set_color1(cdev, re.pcls, color1);
+        if (code < 0)
+            return code;
         /* Don't bother to check for a possible cache hit: */
         /* tile_rectangle and fill_mask handle those cases. */
 copy:{
@@ -797,15 +858,13 @@ copy:{
         rect.x = rx, rect.y = re.y;
         rect.width = w1, rect.height = re.height;
         rsize = (dx ? 3 : 1) + cmd_size_rect(&rect) + cmd_sizew(0); /* planar_height 0 */
-        do {
-            code = cmd_put_bits(cdev, re.pcls, row, w1, re.height, raster,
-                                rsize, (orig_id == gx_no_bitmap_id ?
-                                        1 << cmd_compress_rle :
-                                        cmd_mask_compress_any),
-                                &dp, &csize);
-        } while (RECT_RECOVER(code));
-        if (code < 0 && !(code == gs_error_limitcheck) && SET_BAND_CODE(code))
-            goto error_in_rect;
+        code = cmd_put_bits(cdev, re.pcls, row, w1, re.height, raster,
+                            rsize, (orig_id == gx_no_bitmap_id ?
+                                    1 << cmd_compress_rle :
+                                    cmd_mask_compress_any),
+                            &dp, &csize);
+        if (code < 0 && !(code == gs_error_limitcheck))
+            return code;
         compress = (uint)code;
         if (code < 0) {
             /* The bitmap was too large; split up the transfer. */
@@ -820,20 +879,16 @@ copy:{
                 /* Split a single (very long) row. */
                 int w2 = w1 >> 1;
 
-                ++cdev->driver_call_nesting;
-                {
-                    code = clist_copy_mono(dev, row, dx,
-                                           raster, gx_no_bitmap_id, rx, re.y,
-                                           w2, 1, color0, color1);
-                    if (code >= 0)
-                        code = clist_copy_mono(dev, row, dx + w2,
-                                               raster, gx_no_bitmap_id,
-                                               rx + w2, re.y,
-                                               w1 - w2, 1, color0, color1);
-                }
-                --cdev->driver_call_nesting;
-                if (code < 0 && SET_BAND_CODE(code))
-                    goto error_in_rect;
+                code = clist_copy_mono(dev, row, dx,
+                                       raster, gx_no_bitmap_id, rx, re.y,
+                                       w2, 1, color0, color1);
+                if (code >= 0)
+                    code = clist_copy_mono(dev, row, dx + w2,
+                                           raster, gx_no_bitmap_id,
+                                           rx + w2, re.y,
+                                           w1 - w2, 1, color0, color1);
+                if (code < 0)
+                    return code;
                 continue;
             }
         }
@@ -844,17 +899,11 @@ copy:{
         }
         *dp++ = cmd_count_op(op, csize, dev->memory);
         /* Store the plane_height */
-        cmd_putw(0, dp);
-        cmd_put2w(rx, re.y, dp);
-        cmd_put2w(w1, re.height, dp);
+        cmd_putw(0, &dp);
+        cmd_put2w(rx, re.y, &dp);
+        cmd_put2w(w1, re.height, &dp);
         re.pcls->rect = rect;
         }
-        continue;
-error_in_rect:
-        if (!(cdev->error_is_retryable && cdev->driver_call_nesting == 0 &&
-                SET_BAND_CODE(clist_VMerror_recover_flush(cdev, re.band_code)) >= 0))
-            return re.band_code;
-        re.y -= re.height;
     } while ((re.y += re.height) < re.yend);
     return 0;
 }
@@ -880,154 +929,121 @@ clist_copy_planes(gx_device * dev,
     y0 = ry;
     if (cdev->permanent_error < 0)
       return (cdev->permanent_error);
+
+#ifdef DEBUG
+    if (plane_height == 0) {
+        dprintf("clist_copy_planes called with plane_height == 0.\n");
+    }
+#endif
+
+    /* If needed, update the trans_bbox */
+    if (cdev->pdf14_needed) {
+        gs_int_rect bbox;
+
+        bbox.p.x = rx;
+        bbox.q.x = rx + rwidth - 1;
+        bbox.p.y = ry;
+        bbox.q.y = ry + rheight - 1;
+
+        clist_update_trans_bbox(cdev, &bbox);
+    }
+
     RECT_ENUM_INIT(re, ry, rheight);
     do {
+        int code;
+        gx_cmd_rect rect;
+        int rsize;
+        byte *dp, *dp2;
+        uint csize;
+        byte op = (byte) cmd_op_copy_mono_planes;
         int dx = data_x % (8/bpc);
         int w1 = dx + rwidth;
         const byte *row = data + (re.y - y0) * raster + (data_x / (8/bpc));
-        int code;
-
+        int bytes_row = ((w1*bpc+7)/8 + 7) & ~7;
+        int maxheight = data_bits_size / bytes_row / cdev->color_info.num_components;
+        int plane;
 
         RECT_STEP_INIT(re);
-        do {
-            code = cmd_disable_lop(cdev, re.pcls);
-            if (code >= 0)
-                code = cmd_disable_clip(cdev, re.pcls);
-        } while (RECT_RECOVER(code));
-        if (code < 0 && SET_BAND_CODE(code))
-            goto error_in_rect;
+        code = cmd_disable_lop(cdev, re.pcls);
+        if (code >= 0)
+            code = cmd_disable_clip(cdev, re.pcls);
+        if (code < 0)
+            return code;
         /* Don't bother to check for a possible cache hit: */
         /* tile_rectangle and fill_mask handle those cases. */
-copy:
+
         /* We require that in the copy_planes case all the planes fit into
-         * a single cbuf. */
-        if (plane_height > 0) {
-            int bytes_row = ((w1*bpc+7)/8 + 7) & ~7;
-            int maxheight = (cbuf_size - 0x100) / bytes_row / cdev->color_info.num_components;
+         * the data_bits area (for the copy_planes call by the clist reader) */
+        if (re.height > maxheight)
+            re.height = maxheight;
 
-            if ((cdev->cend - cdev->cnext) < 0x100 + (bytes_row * cdev->color_info.num_components))
-                cmd_write_buffer(cdev, cmd_opv_end_run);	/* Insure that all planes fit in the bufferspace */
+        if (re.height == 0) {
+            /* Not even a single row fits. Revert to a single row and split it in two recursively */
+            int w2 = w1 >> 1;
 
-            if (re.height > maxheight)
-                re.height = maxheight;
-            if (re.height == 0)
-            {
-                /* Split a single (very long) row. */
-                int w2 = w1 >> 1;
-
-                re.height = 1;
-                ++cdev->driver_call_nesting;
-                {
-                    code = clist_copy_planes(dev, row, dx, raster,
-                                             gx_no_bitmap_id, rx, re.y,
-                                             w2, 1, plane_height);
-                    if (code >= 0)
-                        code = clist_copy_planes(dev, row, dx + w2,
-                                                 raster, gx_no_bitmap_id,
-                                                 rx + w2, re.y,
-                                                 w1 - w2, 1, plane_height);
-                }
-                --cdev->driver_call_nesting;
-                if (code < 0 && SET_BAND_CODE(code))
-                    goto error_in_rect;
-                continue;
-            }
+            re.height = 1;
+            code = clist_copy_planes(dev, row, dx, raster,
+                                     gx_no_bitmap_id, rx, re.y,
+                                     w2, 1, plane_height);
+            if (code >= 0)
+                code = clist_copy_planes(dev, row, dx + w2,
+                                         raster, gx_no_bitmap_id,
+                                         rx + w2, re.y,
+                                         w1 - w2, 1, plane_height);
+            if (code < 0)
+                return code;
+            continue;
         }
-        {
-        gx_cmd_rect rect;
-        int rsize;
-        byte op = (byte) cmd_op_copy_mono_planes;
-        byte *dp, *dp2;
-        uint csize;
-        int code;
+
+        /* 0x100 fudge is arbitrary, but the BufferSpace is large w.r.t. cbuf size so it doesn't matter */
+        if ((cdev->cend - cdev->cnext) < 0x100 + (re.height * bytes_row * (long)cdev->color_info.num_components))
+            cmd_write_buffer(cdev, cmd_opv_end_run);	/* Insure that all planes fit in the bufferspace */
 
         rect.x = rx, rect.y = re.y;
         rect.width = w1, rect.height = re.height;
         rsize = (dx ? 3 : 1) + cmd_size_rect(&rect) + cmd_sizew(plane_height);
-        do {
-            int plane;
-            /* Copy the 0th plane - this is the one the op goes in. */
-            code = cmd_put_bits(cdev, re.pcls, row, w1*bpc, re.height, raster,
-                                rsize, (bpc == 1 ? (orig_id == gx_no_bitmap_id ?
-                                                    1 << cmd_compress_rle :
-                                                    cmd_mask_compress_any) : 0),
-                                &dp, &csize);
-            if (code < 0)
-                continue;
-            /* Write the command header out now, in case the following
-             * cmd_put_bits fill the buffer up. */
-            dp2 = dp;
-            if (dx) {
-                *dp2++ = cmd_count_op(cmd_opv_set_misc, 2, cdev->memory);
-                *dp2++ = cmd_set_misc_data_x + dx;
-            }
-            *dp2++ = cmd_count_op(op + code, csize, cdev->memory);
-            cmd_putw(plane_height, dp2);
-            cmd_put2w(rx, re.y, dp2);
-            cmd_put2w(w1, re.height, dp2);
-            if (plane_height > 0) {
-                for (plane = 1; plane < cdev->color_info.num_components && (code >= 0); plane++)
-                {
-                    byte *dummy_dp;
-                    uint csize2;
-                    /* Copy subsequent planes - 1 byte header used to send the
-                     * compression type. */
-                    code = cmd_put_bits(cdev, re.pcls,
-                                        row + plane_height * raster * plane,
-                                        w1*bpc, re.height, raster, 1,
-                                        (bpc == 1 ?
-                                         (orig_id == gx_no_bitmap_id ?
-                                          1 << cmd_compress_rle :
-                                          cmd_mask_compress_any) : 0),
-                                        &dummy_dp, &csize2);
-                    if (code >= 0)
-                        *dummy_dp = code;
-
-                    csize += csize2;
-                }
-            }
-        } while (RECT_RECOVER(code));
-        if (code < 0 && !(code == gs_error_limitcheck) && SET_BAND_CODE(code))
-            goto error_in_rect;
-        if (code < 0) {
-            /* The bitmap was too large; split up the transfer. */
-            if (re.height > 1) {
-                /*
-                 * Split the transfer by reducing the height.
-                 * See the comment above FOR_RECTS in gxcldev.h.
-                 */
-                re.height >>= 1;
-                goto copy;
-            } else {
-                /* Split a single (very long) row. */
-                int w2 = w1 >> 1;
-
-                ++cdev->driver_call_nesting;
-                {
-                    code = clist_copy_planes(dev, row, dx, raster,
-                                             gx_no_bitmap_id, rx, re.y,
-                                             w2, 1, plane_height);
-                    if (code >= 0)
-                        code = clist_copy_planes(dev, row, dx + w2,
-                                                 raster, gx_no_bitmap_id,
-                                                 rx + w2, re.y,
-                                                 w1 - w2, 1, plane_height);
-                }
-                --cdev->driver_call_nesting;
-                if (code < 0 && SET_BAND_CODE(code))
-                    goto error_in_rect;
-                continue;
-            }
+        /* Copy the 0th plane - this is the one the op goes in. */
+        code = cmd_put_bits(cdev, re.pcls, row, w1*bpc, re.height, raster,
+                            rsize, (bpc == 1 ? (orig_id == gx_no_bitmap_id ?
+                                                1 << cmd_compress_rle :
+                                                cmd_mask_compress_any) : 0),
+                            &dp, &csize);
+        if (code < 0)
+            continue;
+        /* Write the command header out now, in case the following
+         * cmd_put_bits fill the buffer up. */
+        dp2 = dp;
+        if (dx) {
+            *dp2++ = cmd_count_op(cmd_opv_set_misc, 2, cdev->memory);
+            *dp2++ = cmd_set_misc_data_x + dx;
         }
+        *dp2++ = cmd_count_op(op + code, csize, cdev->memory);
+        cmd_putw(plane_height, &dp2);
+        cmd_put2w(rx, re.y, &dp2);
+        cmd_put2w(w1, re.height, &dp2);
+        for (plane = 1; plane < cdev->color_info.num_components && (code >= 0); plane++)
+        {
+            byte *dummy_dp;
+            uint csize2;
+            /* Copy subsequent planes - 1 byte header used to send the
+             * compression type. */
+            code = cmd_put_bits(cdev, re.pcls,
+                                row + plane_height * raster * plane,
+                                w1*bpc, re.height, raster, 1,
+                                (bpc == 1 ?
+                                 (orig_id == gx_no_bitmap_id ?
+                                  1 << cmd_compress_rle :
+                                  cmd_mask_compress_any) : 0),
+                                &dummy_dp, &csize2);
+            if (code >= 0)
+                *dummy_dp = code;
+
+            csize += csize2;
+        }
+        if (code < 0 && !(code == gs_error_limitcheck))
+            return code;
 
         re.pcls->rect = rect;
-        }
-        continue;
-error_in_rect:
-        if (!(cdev->error_is_retryable && cdev->driver_call_nesting == 0 &&
-                SET_BAND_CODE(clist_VMerror_recover_flush(cdev, re.band_code)) >= 0))
-            return re.band_code;
-        re.y -= re.height;
     } while ((re.y += re.height) < re.yend);
     return 0;
 }
@@ -1052,6 +1068,17 @@ clist_copy_color(gx_device * dev,
     data_x_bit = data_x * depth;
     if (cdev->permanent_error < 0)
       return (cdev->permanent_error);
+    /* If needed, update the trans_bbox */
+    if (cdev->pdf14_needed) {
+        gs_int_rect bbox;
+
+        bbox.p.x = rx;
+        bbox.q.x = rx + rwidth - 1;
+        bbox.p.y = ry;
+        bbox.q.y = ry + rheight - 1;
+
+        clist_update_trans_bbox(cdev, &bbox);
+    }
     RECT_ENUM_INIT(re, ry, rheight);
     do {
         int dx = (data_x_bit & 7) / depth;
@@ -1061,24 +1088,19 @@ clist_copy_color(gx_device * dev,
 
         RECT_STEP_INIT(re);
         re.pcls->color_usage.or |= all;
-        re.pcls->band_complexity.uses_color = 1;
 
-        do {
-            code = cmd_disable_lop(cdev, re.pcls);
-            if (code >= 0)
-                code = cmd_disable_clip(cdev, re.pcls);
-        } while (RECT_RECOVER(code));
-        if (code < 0 && SET_BAND_CODE(code))
-            goto error_in_rect;
+        code = cmd_disable_lop(cdev, re.pcls);
+        if (code >= 0)
+            code = cmd_disable_clip(cdev, re.pcls);
+        if (code < 0)
+            return code;
         if (re.pcls->color_is_alpha) {
             byte *dp;
 
-            do {
-                code =
-                    set_cmd_put_op(dp, cdev, re.pcls, cmd_opv_set_copy_color, 1);
-            } while (RECT_RECOVER(code));
-            if (code < 0 && SET_BAND_CODE(code))
-                goto error_in_rect;
+            code =
+                set_cmd_put_op(&dp, cdev, re.pcls, cmd_opv_set_copy_color, 1);
+            if (code < 0)
+                return code;
             re.pcls->color_is_alpha = 0;
         }
 copy:{
@@ -1092,13 +1114,11 @@ copy:{
             rect.x = rx, rect.y = re.y;
             rect.width = w1, rect.height = re.height;
             rsize = (dx ? 3 : 1) + cmd_size_rect(&rect);
-            do {
-                code = cmd_put_bits(cdev, re.pcls, row, w1 * depth,
-                                    re.height, raster, rsize,
-                                    1 << cmd_compress_rle, &dp, &csize);
-            } while (RECT_RECOVER(code));
-            if (code < 0 && !(code == gs_error_limitcheck) && SET_BAND_CODE(code))
-                goto error_in_rect;
+            code = cmd_put_bits(cdev, re.pcls, row, w1 * depth,
+                                re.height, raster, rsize,
+                                1 << cmd_compress_rle, &dp, &csize);
+            if (code < 0 && !(code == gs_error_limitcheck))
+                return code;
             compress = (uint)code;
             if (code < 0) {
                 /* The bitmap was too large; split up the transfer. */
@@ -1112,19 +1132,15 @@ copy:{
                     /* Split a single (very long) row. */
                     int w2 = w1 >> 1;
 
-                    ++cdev->driver_call_nesting;
-                    {
-                        code = clist_copy_color(dev, row, dx,
+                    code = clist_copy_color(dev, row, dx,
+                                            raster, gx_no_bitmap_id,
+                                            rx, re.y, w2, 1);
+                    if (code >= 0)
+                        code = clist_copy_color(dev, row, dx + w2,
                                                 raster, gx_no_bitmap_id,
-                                                rx, re.y, w2, 1);
-                        if (code >= 0)
-                            code = clist_copy_color(dev, row, dx + w2,
-                                                    raster, gx_no_bitmap_id,
-                                                    rx + w2, re.y, w1 - w2, 1);
-                    }
-                    --cdev->driver_call_nesting;
-                    if (code < 0 && SET_BAND_CODE(code))
-                        goto error_in_rect;
+                                                rx + w2, re.y, w1 - w2, 1);
+                    if (code < 0)
+                        return code;
                     continue;
                 }
             }
@@ -1134,16 +1150,10 @@ copy:{
                 *dp++ = cmd_set_misc_data_x + dx;
             }
             *dp++ = cmd_count_op(op, csize, dev->memory);
-            cmd_put2w(rx, re.y, dp);
-            cmd_put2w(w1, re.height, dp);
+            cmd_put2w(rx, re.y, &dp);
+            cmd_put2w(w1, re.height, &dp);
             re.pcls->rect = rect;
         }
-        continue;
-error_in_rect:
-        if (!(cdev->error_is_retryable && cdev->driver_call_nesting == 0 &&
-                SET_BAND_CODE(clist_VMerror_recover_flush(cdev, re.band_code)) >= 0))
-            return re.band_code;
-        re.y -= re.height;
     } while ((re.y += re.height) < re.yend);
     return 0;
 }
@@ -1176,6 +1186,17 @@ clist_copy_alpha_hl_color(gx_device * dev, const byte * data, int data_x,
     data_x_bit = data_x << log2_depth;
     if (cdev->permanent_error < 0)
       return (cdev->permanent_error);
+    /* If needed, update the trans_bbox */
+    if (cdev->pdf14_needed) {
+        gs_int_rect bbox;
+
+        bbox.p.x = rx;
+        bbox.q.x = rx + rwidth - 1;
+        bbox.p.y = ry;
+        bbox.q.y = ry + rheight - 1;
+
+        clist_update_trans_bbox(cdev, &bbox);
+    }
     RECT_ENUM_INIT(re, ry, rheight);
     do {
         int dx = (data_x_bit & 7) >> log2_depth;
@@ -1185,43 +1206,32 @@ clist_copy_alpha_hl_color(gx_device * dev, const byte * data, int data_x,
 
         RECT_STEP_INIT(re);
         re.pcls->color_usage.or = all;
-        re.pcls->band_complexity.uses_color = true;
-        do {
-            code = cmd_disable_lop(cdev, re.pcls);
-            if (code >= 0)
-                code = cmd_disable_clip(cdev, re.pcls);
-        } while (RECT_RECOVER(code));
-        if (code < 0 && SET_BAND_CODE(code))
-            goto error_in_rect;
+        code = cmd_disable_lop(cdev, re.pcls);
+        if (code >= 0)
+            code = cmd_disable_clip(cdev, re.pcls);
+        if (code < 0)
+            return code;
         if (!re.pcls->color_is_alpha) {
             byte *dp;
 
-            do {
-                code =
-                    set_cmd_put_op(dp, cdev, re.pcls, cmd_opv_set_copy_alpha, 1);
-            } while (RECT_RECOVER(code));
-            if (code < 0 && SET_BAND_CODE(code))
-                goto error_in_rect;
+            code = set_cmd_put_op(&dp, cdev, re.pcls, cmd_opv_set_copy_alpha, 1);
+            if (code < 0)
+                return code;
             re.pcls->color_is_alpha = 1;
         }
         /* Set extended command for overload of copy_color_alpha with devn type */
         if (!re.pcls->color_is_devn) {
             byte *dp;
 
-            do {
-                code = set_cmd_put_op(dp, cdev, re.pcls, cmd_opv_extend, 2);
-                dp[1] = cmd_opv_ext_set_color_is_devn;
-                dp += 2;
-            } while (RECT_RECOVER(code));
-            if (code < 0 && SET_BAND_CODE(code))
-                goto error_in_rect;
+            code = set_cmd_put_op(&dp, cdev, re.pcls, cmd_opv_extend, 2);
+            dp[1] = cmd_opv_ext_set_color_is_devn;
+            dp += 2;
+            if (code < 0)
+                  return code;
             re.pcls->color_is_alpha = 1;
         }
         /* Set the color */
-        do {
-            code = cmd_put_drawing_color(cdev, re.pcls, pdcolor, &re,
-                                         devn_not_tile);
-        } while (RECT_RECOVER(code));
+        code = cmd_put_drawing_color(cdev, re.pcls, pdcolor, &re, devn_not_tile);
 copy:{
             gx_cmd_rect rect;
             int rsize;
@@ -1233,13 +1243,11 @@ copy:{
             rect.x = rx, rect.y = re.y;
             rect.width = w1, rect.height = re.height;
             rsize = (dx ? 4 : 2) + cmd_size_rect(&rect);
-            do {
-                code = cmd_put_bits(cdev, re.pcls, row, w1 << log2_depth,
-                                    re.height, raster, rsize,
-                                    1 << cmd_compress_rle, &dp, &csize);
-            } while (RECT_RECOVER(code));
-            if (code < 0 && !(code == gs_error_limitcheck) && SET_BAND_CODE(code))
-                goto error_in_rect;
+            code = cmd_put_bits(cdev, re.pcls, row, w1 << log2_depth,
+                                re.height, raster, rsize,
+                                1 << cmd_compress_rle, &dp, &csize);
+            if (code < 0 && !(code == gs_error_limitcheck))
+                return code;
             compress = (uint)code;
             if (code < 0) {
                 /* The bitmap was too large; split up the transfer. */
@@ -1253,20 +1261,16 @@ copy:{
                     /* Split a single (very long) row. */
                     int w2 = w1 >> 1;
 
-                    ++cdev->driver_call_nesting;
-                    {
-                        code = clist_copy_alpha_hl_color(dev, row, dx,
-                                                raster, gx_no_bitmap_id, rx, re.y,
-                                                w2, 1, pdcolor, depth);
-                        if (code >= 0)
+                    code = clist_copy_alpha_hl_color(dev, row, dx,
+                                            raster, gx_no_bitmap_id, rx, re.y,
+                                            w2, 1, pdcolor, depth);
+                    if (code >= 0)
                             code = clist_copy_alpha_hl_color(dev, row, dx + w2,
                                                     raster, gx_no_bitmap_id,
                                                     rx + w2, re.y, w1 - w2, 1,
                                                     pdcolor, depth);
-                    }
-                    --cdev->driver_call_nesting;
-                    if (code < 0 && SET_BAND_CODE(code))
-                        goto error_in_rect;
+                    if (code < 0)
+                        return code;
                     continue;
                 }
             }
@@ -1277,16 +1281,10 @@ copy:{
             }
             *dp++ = cmd_count_op(op, csize, dev->memory);
             *dp++ = depth;
-            cmd_put2w(rx, re.y, dp);
-            cmd_put2w(w1, re.height, dp);
+            cmd_put2w(rx, re.y, &dp);
+            cmd_put2w(w1, re.height, &dp);
             re.pcls->rect = rect;
         }
-        continue;
-error_in_rect:
-        if (!(cdev->error_is_retryable && cdev->driver_call_nesting == 0 &&
-                SET_BAND_CODE(clist_VMerror_recover_flush(cdev, re.band_code)) >= 0))
-            return re.band_code;
-        re.y -= re.height;
     } while ((re.y += re.height) < re.yend);
     return 0;
 }
@@ -1317,6 +1315,17 @@ clist_copy_alpha(gx_device * dev, const byte * data, int data_x,
     data_x_bit = data_x << log2_depth;
     if (cdev->permanent_error < 0)
       return (cdev->permanent_error);
+    /* If needed, update the trans_bbox */
+    if (cdev->pdf14_needed) {
+        gs_int_rect bbox;
+
+        bbox.p.x = rx;
+        bbox.q.x = rx + rwidth - 1;
+        bbox.p.y = ry;
+        bbox.q.y = ry + rheight - 1;
+
+        clist_update_trans_bbox(cdev, &bbox);
+    }
     RECT_ENUM_INIT(re, ry, rheight);
     do {
         int dx = (data_x_bit & 7) >> log2_depth;
@@ -1326,50 +1335,34 @@ clist_copy_alpha(gx_device * dev, const byte * data, int data_x,
 
         RECT_STEP_INIT(re);
         re.pcls->color_usage.or |= color_usage;
-        do {
-            code = cmd_disable_lop(cdev, re.pcls);
-            if (code >= 0)
-                code = cmd_disable_clip(cdev, re.pcls);
-        } while (RECT_RECOVER(code));
-        if (code < 0 && SET_BAND_CODE(code))
-            goto error_in_rect;
+        code = cmd_disable_lop(cdev, re.pcls);
+        if (code >= 0)
+            code = cmd_disable_clip(cdev, re.pcls);
+        if (code < 0)
+            return code;
         if (!re.pcls->color_is_alpha) {
             byte *dp;
 
-            do {
-                code =
-                    set_cmd_put_op(dp, cdev, re.pcls, cmd_opv_set_copy_alpha, 1);
-            } while (RECT_RECOVER(code));
-            if (code < 0 && SET_BAND_CODE(code))
-                goto error_in_rect;
+            code = set_cmd_put_op(&dp, cdev, re.pcls, cmd_opv_set_copy_alpha, 1);
+            if (code < 0)
+                return code;
             re.pcls->color_is_alpha = 1;
         }
         if (re.pcls->color_is_devn) {
             byte *dp;
 
-            do {
-                code = set_cmd_put_op(dp, cdev, re.pcls, cmd_opv_extend, 1);
-                code = set_cmd_put_op(dp, cdev, re.pcls,
+            code = set_cmd_put_op(&dp, cdev, re.pcls, cmd_opv_extend, 1);
+            if (code >= 0)
+                code = set_cmd_put_op(&dp, cdev, re.pcls,
                                       cmd_opv_ext_unset_color_is_devn, 1);
-            } while (RECT_RECOVER(code));
-            if (code < 0 && SET_BAND_CODE(code))
-                goto error_in_rect;
+            if (code < 0)
+                return code;
             re.pcls->color_is_alpha = 1;
         }
-
-
-
-
-
-
-
-
         if (color != re.pcls->colors[1]) {
-            do {
-                code = cmd_set_color1(cdev, re.pcls, color);
-            } while (RECT_RECOVER(code));
-            if (code < 0 && SET_BAND_CODE(code))
-                goto error_in_rect;
+            code = cmd_set_color1(cdev, re.pcls, color);
+            if (code < 0)
+                return code;
         }
 copy:{
             gx_cmd_rect rect;
@@ -1382,13 +1375,11 @@ copy:{
             rect.x = rx, rect.y = re.y;
             rect.width = w1, rect.height = re.height;
             rsize = (dx ? 4 : 2) + cmd_size_rect(&rect);
-            do {
-                code = cmd_put_bits(cdev, re.pcls, row, w1 << log2_depth,
-                                    re.height, raster, rsize,
-                                    1 << cmd_compress_rle, &dp, &csize);
-            } while (RECT_RECOVER(code));
-            if (code < 0 && !(code == gs_error_limitcheck) && SET_BAND_CODE(code))
-                goto error_in_rect;
+            code = cmd_put_bits(cdev, re.pcls, row, w1 << log2_depth,
+                                re.height, raster, rsize,
+                                1 << cmd_compress_rle, &dp, &csize);
+            if (code < 0 && !(code == gs_error_limitcheck))
+                return code;
             compress = (uint)code;
             if (code < 0) {
                 /* The bitmap was too large; split up the transfer. */
@@ -1402,20 +1393,16 @@ copy:{
                     /* Split a single (very long) row. */
                     int w2 = w1 >> 1;
 
-                    ++cdev->driver_call_nesting;
-                    {
-                        code = clist_copy_alpha(dev, row, dx,
-                                                raster, gx_no_bitmap_id, rx, re.y,
-                                                w2, 1, color, depth);
-                        if (code >= 0)
-                            code = clist_copy_alpha(dev, row, dx + w2,
-                                                    raster, gx_no_bitmap_id,
-                                                    rx + w2, re.y, w1 - w2, 1,
-                                                    color, depth);
-                    }
-                    --cdev->driver_call_nesting;
-                    if (code < 0 && SET_BAND_CODE(code))
-                        goto error_in_rect;
+                    code = clist_copy_alpha(dev, row, dx,
+                                            raster, gx_no_bitmap_id, rx, re.y,
+                                            w2, 1, color, depth);
+                    if (code >= 0)
+                        code = clist_copy_alpha(dev, row, dx + w2,
+                                                raster, gx_no_bitmap_id,
+                                                rx + w2, re.y, w1 - w2, 1,
+                                                color, depth);
+                    if (code < 0)
+                        return code;
                     continue;
                 }
             }
@@ -1426,16 +1413,10 @@ copy:{
             }
             *dp++ = cmd_count_op(op, csize, dev->memory);
             *dp++ = depth;
-            cmd_put2w(rx, re.y, dp);
-            cmd_put2w(w1, re.height, dp);
+            cmd_put2w(rx, re.y, &dp);
+            cmd_put2w(w1, re.height, &dp);
             re.pcls->rect = rect;
         }
-        continue;
-error_in_rect:
-        if (!(cdev->error_is_retryable && cdev->driver_call_nesting == 0 &&
-                SET_BAND_CODE(clist_VMerror_recover_flush(cdev, re.band_code)) >= 0))
-            return re.band_code;
-        re.y -= re.height;
     } while ((re.y += re.height) < re.yend);
     return 0;
 }
@@ -1488,6 +1469,18 @@ clist_strip_copy_rop2(gx_device * dev,
     }
     if (rwidth <= 0 || rheight <= 0)
         return 0;
+
+    /* If needed, update the trans_bbox */
+    if (cdev->pdf14_needed) {
+        gs_int_rect bbox;
+
+        bbox.p.x = rx;
+        bbox.q.x = rx + rwidth - 1;
+        bbox.p.y = ry;
+        bbox.q.y = ry + rheight - 1;
+
+        clist_update_trans_bbox(cdev, &bbox);
+    }
     /*
      * On CMYK devices, RasterOps must be executed with complete pixels
      * if the operation involves the destination.
@@ -1513,7 +1506,16 @@ clist_strip_copy_rop2(gx_device * dev,
     y0 = ry;
     if (cdev->permanent_error < 0)
       return (cdev->permanent_error);
-    {
+    /* If needed, update the trans_bbox */
+    if (cdev->pdf14_needed) {
+        gs_int_rect bbox;
+
+        bbox.p.x = rx;
+        bbox.q.x = rx + rwidth - 1;
+        bbox.p.y = ry;
+        bbox.q.y = ry + rheight - 1;
+
+        clist_update_trans_bbox(cdev, &bbox);
     }
     RECT_ENUM_INIT(re, ry, rheight);
     do {
@@ -1535,12 +1537,15 @@ clist_strip_copy_rop2(gx_device * dev,
             D = (rop_operand)re.pcls->color_usage.or;
             re.pcls->color_usage.or |=
                     ((rop_proc_table[color_rop])(D, (rop_operand)S, (rop_operand)T) & all);
-            D = (rop_operand)(re.pcls->color_usage.or>>(8*sizeof(rop_operand)));
+#define DOWN(x) ((rop_operand)(((x)>>(4*sizeof(rop_operand)))>>(4*sizeof(rop_operand))))
+#define UP(x)   ((((gx_color_usage_bits)(x))<<(4*sizeof(rop_operand)))<<(4*sizeof(rop_operand)))
+            D = DOWN(re.pcls->color_usage.or);
             re.pcls->color_usage.or |=
-                    (((gx_color_usage_bits)(rop_proc_table[color_rop])(D, (rop_operand)(S>>(8*sizeof(rop_operand))), (rop_operand)(T>>(8*sizeof(rop_operand)))))<<(8*sizeof(rop_operand))) & all;
+                    UP((rop_proc_table[color_rop])(D, DOWN(S), DOWN(T))) & all;
+#undef DOWN
+#undef UP
         }
         re.pcls->color_usage.slow_rop |= slow_rop;
-        re.pcls->band_complexity.nontrivial_rops |= slow_rop;
         if (rop3_uses_T(rop)) {
             if (tcolors == 0 || tcolors[0] != tcolors[1]) {
                 ulong offset_temp;
@@ -1552,13 +1557,11 @@ clist_strip_copy_rop2(gx_device * dev,
                         tile_with_id.id = gs_next_ids(dev->memory, 1);
                         tiles = &tile_with_id;
                     }
-                    do {
-                        code = clist_change_tile(cdev, re.pcls, tiles,
-                                                 (tcolors != 0 ? 1 :
-                                                  cdev->clist_color_info.depth));
-                    } while (RECT_RECOVER(code));
-                    if (code < 0 && !(code == gs_error_limitcheck) && SET_BAND_CODE(code))
-                        goto error_in_rect;
+                    code = clist_change_tile(cdev, re.pcls, tiles,
+                                            (tcolors != 0 ? 1 :
+                                                 cdev->clist_color_info.depth));
+                    if (code < 0 && !(code == gs_error_limitcheck))
+                        return code;
                     if (code < 0) {
                         /*
                          * The error is a limitcheck: we have a tile that
@@ -1633,85 +1636,65 @@ clist_strip_copy_rop2(gx_device * dev,
                             line_tile.data = tiles->data + raster *
                                 ((re.y + iy + phase_y) % rep_height) + data_shift;
                             line_tile.id = ids + (iy % rep_height);
-                            ++cdev->driver_call_nesting;
-                            {
-                                code = clist_strip_copy_rop2(dev,
-                                        (sdata == 0 ? 0 : row + iy * sraster),
-                                        sourcex, sraster,
-                                        gx_no_bitmap_id, scolors,
-                                        &line_tile, tcolors,
-                                        rx, re.y + iy, rwidth, 1,
-                                        new_phase, 0, lop, planar_height);
-                            }
-                            --cdev->driver_call_nesting;
-                            if (code < 0 && SET_BAND_CODE(code))
-                                goto error_in_rect;
+                            code = clist_strip_copy_rop2(dev,
+                                    (sdata == 0 ? 0 : row + iy * sraster),
+                                    sourcex, sraster,
+                                    gx_no_bitmap_id, scolors,
+                                    &line_tile, tcolors,
+                                    rx, re.y + iy, rwidth, 1,
+                                    new_phase, 0, lop, planar_height);
+                            if (code < 0)
+                                return code;
                         }
                         continue;
                     }
                     if (((phase_x != re.pcls->tile_phase.x) && (tiles->rep_width > 1)) ||
                         ((phase_y != re.pcls->tile_phase.y) && (tiles->rep_height > 1))) {
-                        do {
-                            code = cmd_set_tile_phase(cdev, re.pcls, phase_x,
-                                                      phase_y);
-                        } while (RECT_RECOVER(code));
-                        if (code < 0 && SET_BAND_CODE(code))
-                            goto error_in_rect;
+                        code = cmd_set_tile_phase(cdev, re.pcls, phase_x,
+                                                  phase_y);
+                        if (code < 0)
+                            return code;
                     }
                 }
             }
             /* Set the tile colors. */
-            do {
-                code =
-                    (tcolors != 0 ?
-                     cmd_set_tile_colors(cdev, re.pcls, tcolors[0], tcolors[1]) :
-                     cmd_set_tile_colors(cdev, re.pcls, gx_no_color_index,
-                                         gx_no_color_index));
-            } while (RECT_RECOVER(code));
-            if (code < 0 && SET_BAND_CODE(code))
-                goto error_in_rect;
+            code =
+                (tcolors != 0 ?
+                 cmd_set_tile_colors(cdev, re.pcls, tcolors[0], tcolors[1]) :
+                 cmd_set_tile_colors(cdev, re.pcls, gx_no_color_index,
+                                     gx_no_color_index));
+            if (code < 0)
+                return code;
         }
-        do {
-            code = 0;
-            if (lop != re.pcls->lop)
-                code = cmd_set_lop(cdev, re.pcls, lop);
-            if (code >= 0)
-                code = cmd_enable_lop(cdev, re.pcls);
-        } while (RECT_RECOVER(code));
-        if (code < 0 && SET_BAND_CODE(code))
-            goto error_in_rect;
+        code = 0;
+        if (lop != re.pcls->lop)
+            code = cmd_set_lop(cdev, re.pcls, lop);
+        if (code >= 0)
+            code = cmd_enable_lop(cdev, re.pcls);
+        if (code < 0)
+            return code;
         /* Set lop_enabled to -1 so that fill_rectangle / copy_* */
         /* won't attempt to set it to 0. */
         re.pcls->lop_enabled = -1;
-        ++cdev->driver_call_nesting;
-        {
-            if (scolors != NULL) {
-                if (scolors[0] == scolors[1])
-                    code = clist_fill_rectangle(dev, rx, re.y, rwidth, re.height,
-                                                scolors[1]);
-                else
-                    code = clist_copy_mono(dev, row, sourcex, sraster, id,
-                                           rx, re.y, rwidth, re.height,
-                                           scolors[0], scolors[1]);
-            } else if (planar_height) {
-                code = clist_copy_planes(dev, row, sourcex, sraster, id,
-                                         rx, re.y, rwidth, re.height,
-                                         planar_height);
-            } else {
-                code = clist_copy_color(dev, row, sourcex, sraster, id,
-                                        rx, re.y, rwidth, re.height);
-            }
+        if (scolors != NULL) {
+            if (scolors[0] == scolors[1])
+                code = clist_fill_rectangle(dev, rx, re.y, rwidth, re.height,
+                                            scolors[1]);
+            else
+                code = clist_copy_mono(dev, row, sourcex, sraster, id,
+                                       rx, re.y, rwidth, re.height,
+                                       scolors[0], scolors[1]);
+        } else if (planar_height) {
+            code = clist_copy_planes(dev, row, sourcex, sraster, id,
+                                     rx, re.y, rwidth, re.height,
+                                     planar_height);
+        } else {
+            code = clist_copy_color(dev, row, sourcex, sraster, id,
+                                    rx, re.y, rwidth, re.height);
         }
-        --cdev->driver_call_nesting;
         re.pcls->lop_enabled = 1;
-        if (code < 0 && SET_BAND_CODE(code))
-            goto error_in_rect;
-        continue;
-error_in_rect:
-        if (!(cdev->error_is_retryable && cdev->driver_call_nesting == 0 &&
-                SET_BAND_CODE(clist_VMerror_recover_flush(cdev, re.band_code)) >= 0))
-            return re.band_code;
-        re.y -= re.height;
+        if (code < 0)
+            return code;
     } while ((re.y += re.height) < re.yend);
     return 0;
 }

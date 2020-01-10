@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,12 +9,13 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
 /* Command line parsing and dispatching */
+
 #include "ctype_.h"
 #include "memory_.h"
 #include "string_.h"
@@ -26,9 +27,13 @@
 #include "gscdefs.h"
 #include "gsmalloc.h"           /* for gs_malloc_limit */
 #include "gsmdebug.h"
+#include "gspaint.h"		/* for gs_erasepage */
 #include "gxdevice.h"
 #include "gxdevmem.h"
 #include "gsdevice.h"
+#include "gxdevsop.h"		/* for gxdso_* enums */
+#include "gxclpage.h"
+#include "gdevprn.h"
 #include "stream.h"
 #include "ierrors.h"
 #include "estack.h"
@@ -48,7 +53,6 @@
 #include "interp.h"
 #include "iutil.h"
 #include "ivmspace.h"
-#include "vdtrace.h"
 
 /* Import operator procedures */
 extern int zflush(i_ctx_t *);
@@ -134,7 +138,9 @@ gs_main_init_with_args(gs_main_instance * minst, int argc, char *argv[])
     int code;
 
     arg_init(&args, (const char **)argv, argc,
-             gs_main_arg_fopen, (void *)minst);
+             gs_main_arg_fopen, (void *)minst,
+             minst->get_codepoint,
+             minst->heap);
     code = gs_main_init0(minst, 0, 0, 0, GS_MAX_LIB_DIRS);
     if (code < 0)
         return code;
@@ -167,24 +173,24 @@ gs_main_init_with_args(gs_main_instance * minst, int argc, char *argv[])
         bool helping = false;
 
         for (i = 1; i < argc; ++i)
-            if (!strcmp(argv[i], "--")) {
+            if (!arg_strcmp(&args, argv[i], "--")) {
                 /* A PostScript program will be interpreting all the */
                 /* remaining switches, so stop scanning. */
                 helping = false;
                 break;
-            } else if (!strcmp(argv[i], "--help")) {
+            } else if (!arg_strcmp(&args, argv[i], "--help")) {
                 print_help(minst);
                 helping = true;
-            } else if (!strcmp(argv[i], "--debug")) {
+            } else if (!arg_strcmp(&args, argv[i], "--debug")) {
                 gs_debug_flags_list(minst->heap);
                 helping = true;
-            } else if (!strcmp(argv[i], "--version")) {
+            } else if (!arg_strcmp(&args, argv[i], "--version")) {
                 print_version(minst);
                 puts(minst->heap, "");  /* \n */
                 helping = true;
             }
         if (helping)
-            return e_Info;
+            return gs_error_Info;
     }
     /* Execute files named in the command line, */
     /* processing options along the way. */
@@ -201,11 +207,11 @@ gs_main_init_with_args(gs_main_instance * minst, int argc, char *argv[])
             (char *)gs_alloc_bytes(minst->heap, len, "GS_OPTIONS");
 
             gp_getenv(GS_OPTIONS, opts, &len);  /* can't fail */
-            if (arg_push_memory_string(&args, opts, false, minst->heap))
-                return e_Fatal;
+            if (arg_push_decoded_memory_string(&args, opts, false, true, minst->heap))
+                return gs_error_Fatal;
         }
     }
-    while ((arg = arg_next(&args, &code, minst->heap)) != 0) {
+    while ((code = arg_next(&args, (const char **)&arg, minst->heap)) > 0) {
         switch (*arg) {
             case '-':
                 code = swproc(minst, arg, &args);
@@ -223,9 +229,31 @@ gs_main_init_with_args(gs_main_instance * minst, int argc, char *argv[])
                 }
                 break;
             default:
+                /* default is to treat this as a file name to be run */
                 code = argproc(minst, arg);
                 if (code < 0)
                     return code;
+                if (minst->saved_pages_test_mode) {
+                    gx_device *pdev;
+                    int ret;
+                    gxdso_device_child_request child_dev_data;
+
+                    /* get the real target (printer) device */
+                    pdev = gs_currentdevice(minst->i_ctx_p->pgs);
+                    do {
+                        child_dev_data.target = pdev;
+                        ret = dev_proc(pdev, dev_spec_op)(pdev, gxdso_device_child, &child_dev_data,
+                                                          sizeof(child_dev_data));
+                        if (ret > 0)
+                            pdev = child_dev_data.target;
+                    } while ((ret > 0) && (child_dev_data.n != 0));
+                    if ((code = gx_saved_pages_param_process((gx_device_printer *)pdev,
+                               (byte *)"print normal flush", 18)) < 0)
+                        return code;
+                    if (code > 0)
+                        if ((code = gs_erasepage(minst->i_ctx_p->pgs)) < 0)
+                            return code;
+                }
         }
     }
     if (code < 0)
@@ -244,8 +272,22 @@ gs_main_init_with_args(gs_main_instance * minst, int argc, char *argv[])
         dmprintf(minst->heap, "\n");
     }
     if (!minst->run_start)
-        return e_Quit;
+        return gs_error_Quit;
     return code ;
+}
+
+/*
+ * Specify a decoding function
+ */
+void gs_main_inst_arg_decode(gs_main_instance * minst,
+                             gs_arg_get_codepoint *get_codepoint)
+{
+    minst->get_codepoint = get_codepoint;
+}
+
+gs_arg_get_codepoint *gs_main_inst_get_arg_decode(gs_main_instance * minst)
+{
+    return minst->get_codepoint;
 }
 
 /*
@@ -265,9 +307,6 @@ swproc(gs_main_instance * minst, const char *arg, arg_list * pal)
     char sw = arg[1];
     ref vtrue;
     int code = 0;
-#undef initial_enter_name
-#define initial_enter_name(nstr, pvalue)\
-  i_initial_enter_name(minst->i_ctx_p, nstr, pvalue)
 
     make_true(&vtrue);
     arg += 2;                   /* skip - and letter */
@@ -293,12 +332,81 @@ run_stdin:
             code = run_string(minst, ".runstdin", runFlush);
             if (code < 0)
                 return code;
+            /* If in saved_pages_test_mode, print and flush previous job before the next file */
+            if (minst->saved_pages_test_mode) {
+                gx_device *pdev;
+                int ret;
+                gxdso_device_child_request child_dev_data;
+
+                /* get the real target (printer) device */
+                pdev = gs_currentdevice(minst->i_ctx_p->pgs);
+                do {
+                    child_dev_data.target = pdev;
+                    ret = dev_proc(pdev, dev_spec_op)(pdev, gxdso_device_child, &child_dev_data,
+                                                      sizeof(child_dev_data));
+                    if (ret > 0)
+                        pdev = child_dev_data.target;
+                } while ((ret > 0) && (child_dev_data.n != 0));
+                if ((code = gx_saved_pages_param_process((gx_device_printer *)pdev,
+                           (byte *)"print normal flush", 18)) < 0)
+                    return code;
+                if (code > 0)
+                    if ((code = gs_erasepage(minst->i_ctx_p->pgs)) < 0)
+                        return code;
+            }
             break;
         case '-':               /* run with command line args */
             if (strncmp(arg, "debug=", 6) == 0) {
                 code = gs_debug_flags_parse(minst->heap, arg+6);
                 if (code < 0)
                     return code;
+                break;
+            } else if (strncmp(arg, "saved-pages=", 12) == 0) {
+                gx_device *pdev;
+
+                /* If init2 not yet done, just save the argument for processing then */
+                if (minst->init_done < 2) {
+                    if (minst->saved_pages_initial_arg == NULL) {
+                        /* Tuck the parameters away for later when init2 is done */
+                        minst->saved_pages_initial_arg = (char *)arg+12;
+                    } else {
+                        outprintf(minst->heap,
+                                  "   Only one --saved-pages=... command allowed before processing input\n");
+                        arg_finit(pal);
+                        return gs_error_Fatal;
+                    }
+                } else {
+                    int ret;
+                    gxdso_device_child_request child_dev_data;
+
+                    /* get the current device */
+                    pdev = gs_currentdevice(minst->i_ctx_p->pgs);
+                    if (dev_proc(pdev, dev_spec_op)(pdev, gxdso_supports_saved_pages, NULL, 0) <= 0) {
+                        outprintf(minst->heap,
+                                  "   --saved-pages not supported by the '%s' device.\n",
+                                  pdev->dname);
+                        arg_finit(pal);
+                        return gs_error_Fatal;
+                    }
+                    /* get the real target (printer) device */
+                    do {
+                        child_dev_data.target = pdev;
+                        ret = dev_proc(pdev, dev_spec_op)(pdev, gxdso_device_child, &child_dev_data,
+                                                          sizeof(child_dev_data));
+                        if (ret > 0)
+                            pdev = child_dev_data.target;
+                    } while ((ret > 0) && (child_dev_data.n != 0));
+                    if ((code = gx_saved_pages_param_process((gx_device_printer *)pdev,
+                                                              (byte *)arg+12, strlen(arg+12))) < 0)
+                        return code;
+                    if (code > 0)
+                        if ((code = gs_erasepage(minst->i_ctx_p->pgs)) < 0)
+                            return code;
+                }
+                break;
+            /* The following code is only to allow regression testing of saved-pages */
+            } else if (strncmp(arg, "saved-pages-test", 16) == 0) {
+                minst->saved_pages_test_mode = true;
                 break;
             }
             /* FALLTHROUGH */
@@ -307,24 +415,26 @@ run_stdin:
             /* FALLTHROUGH */
         case '@':               /* ditto with @-expansion */
             {
-                const char *psarg = arg_next(pal, &code, minst->heap);
+                char *psarg;
+
+                code = arg_next(pal, (const char **)&psarg, minst->heap);
 
                 if (code < 0)
-                    return e_Fatal;
-                if (psarg == 0) {
+                    return gs_error_Fatal;
+                if (psarg == NULL) {
                     outprintf(minst->heap, "Usage: gs ... -%c file.ps arg1 ... argn\n", sw);
                     arg_finit(pal);
-                    return e_Fatal;
+                    return gs_error_Fatal;
                 }
                 psarg = arg_copy(psarg, minst->heap);
                 if (psarg == NULL)
-                    code = e_Fatal;
+                    code = gs_error_Fatal;
                 else
                     code = gs_main_init2(minst);
                 if (code >= 0)
                     code = run_string(minst, "userdict/ARGUMENTS[", 0);
                 if (code >= 0)
-                    while ((arg = arg_next(pal, &code, minst->heap)) != 0) {
+                    while ((code = arg_next(pal, (const char **)&arg, minst->heap)) > 0) {
                         code = runarg(minst, "", arg, "", runInit);
                         if (code < 0)
                             break;
@@ -333,7 +443,7 @@ run_stdin:
                     code = runarg(minst, "]put", psarg, ".runfile", runInit | runFlush);
                 arg_free((char *)psarg, minst->heap);
                 if (code >= 0)
-                    code = e_Quit;
+                    code = gs_error_Quit;
                 
                 return code;
             }
@@ -347,7 +457,7 @@ run_stdin:
                     break;
                 default:
                     puts(minst->heap, "-A may only be followed by -");
-                    return e_Fatal;
+                    return gs_error_Fatal;
             }
             break;
         case 'B':               /* set run_string buffer size */
@@ -362,7 +472,7 @@ run_stdin:
                     outprintf(minst->heap,
                               "-B must be followed by - or size between 1 and %u\n",
                               MAX_BUFFERED_SIZE);
-                    return e_Fatal;
+                    return gs_error_Fatal;
                 }
                 minst->run_buffer_size = bsize;
             }
@@ -375,7 +485,7 @@ run_stdin:
                 if (code < 0)
                     return code;
                 pal->expand_ats = false;
-                while ((arg = arg_next(pal, &code, minst->heap)) != 0) {
+                while ((code = arg_next(pal, (const char **)&arg, minst->heap)) > 0) {
                     if (arg[0] == '@' ||
                         (arg[0] == '-' && !isdigit((unsigned char)arg[1]))
                         )
@@ -385,11 +495,11 @@ run_stdin:
                         return code;
                 }
                 if (code < 0)
-                    return e_Fatal;
-                if (arg != 0) {
+                    return gs_error_Fatal;
+                if (arg != NULL) {
                     char *p = arg_copy(arg, minst->heap);
                     if (p == NULL)
-                        return e_Fatal;
+                        return gs_error_Fatal;
                     arg_push_string(pal, p, true);
                 }
                 pal->expand_ats = ats;
@@ -405,7 +515,7 @@ run_stdin:
                     break;
                 default:
                     puts(minst->heap, "-E may only be followed by -");
-                    return e_Fatal;
+                    return gs_error_Fatal;
             }
             break;
         case 'f':               /* run file of arbitrary name */
@@ -413,12 +523,34 @@ run_stdin:
                 code = argproc(minst, arg);
                 if (code < 0)
                     return code;
+                /* If in saved_pages_test_mode, print and flush previous job before the next file */
+                if (minst->saved_pages_test_mode) {
+                    gx_device *pdev;
+                    int ret;
+                    gxdso_device_child_request child_dev_data;
+
+                    /* get the real target (printer) device */
+                    pdev = gs_currentdevice(minst->i_ctx_p->pgs);
+                    do {
+                        child_dev_data.target = pdev;
+                        ret = dev_proc(pdev, dev_spec_op)(pdev, gxdso_device_child, &child_dev_data,
+                                                          sizeof(child_dev_data));
+                        if (ret > 0)
+                            pdev = child_dev_data.target;
+                    } while ((ret > 0) && (child_dev_data.n != 0));
+                    if ((code = gx_saved_pages_param_process((gx_device_printer *)pdev,
+                               (byte *)"print normal flush", 18)) < 0)
+                        return code;
+                    if (code > 0)
+                        if ((code = gs_erasepage(minst->i_ctx_p->pgs)) < 0)
+                            return code;
+                }
             }
             break;
         case 'F':               /* run file with buffer_size = 1 */
             if (!*arg) {
                 puts(minst->heap, "-F requires a file name");
-                return e_Fatal;
+                return gs_error_Fatal;
             } {
                 uint bsize = minst->run_buffer_size;
 
@@ -427,6 +559,28 @@ run_stdin:
                 minst->run_buffer_size = bsize;
                 if (code < 0)
                     return code;
+                /* If in saved_pages_test_mode, print and flush previous job before the next file */
+                if (minst->saved_pages_test_mode) {
+                    gx_device *pdev;
+                    int ret;
+                    gxdso_device_child_request child_dev_data;
+
+                    /* get the real target (printer) device */
+                    pdev = gs_currentdevice(minst->i_ctx_p->pgs);
+                    do {
+                        child_dev_data.target = pdev;
+                        ret = dev_proc(pdev, dev_spec_op)(pdev, gxdso_device_child, &child_dev_data,
+                                                          sizeof(child_dev_data));
+                        if (ret > 0)
+                            pdev = child_dev_data.target;
+                    } while ((ret > 0) && (child_dev_data.n != 0));
+                    if ((code = gx_saved_pages_param_process((gx_device_printer *)pdev,
+                               (byte *)"print normal flush", 18)) < 0)
+                        return code;
+                    if (code > 0)
+                        if ((code = gs_erasepage(minst->i_ctx_p->pgs)) < 0)
+                            return code;
+                }
             }
             break;
         case 'g':               /* define device geometry */
@@ -438,34 +592,34 @@ run_stdin:
                     return code;
                 if (sscanf((const char *)arg, "%ldx%ld", &width, &height) != 2) {
                     puts(minst->heap, "-g must be followed by <width>x<height>");
-                    return e_Fatal;
+                    return gs_error_Fatal;
                 }
                 make_int(&value, width);
-                initial_enter_name("DEVICEWIDTH", &value);
+                i_initial_enter_name(minst->i_ctx_p, "DEVICEWIDTH", &value);
                 make_int(&value, height);
-                initial_enter_name("DEVICEHEIGHT", &value);
-                initial_enter_name("FIXEDMEDIA", &vtrue);
+                i_initial_enter_name(minst->i_ctx_p, "DEVICEHEIGHT", &value);
+                i_initial_enter_name(minst->i_ctx_p, "FIXEDMEDIA", &vtrue);
                 break;
             }
         case 'h':               /* print help */
         case '?':               /* ditto */
             print_help(minst);
-            return e_Info;      /* show usage info on exit */
+            return gs_error_Info;      /* show usage info on exit */
         case 'I':               /* specify search path */
             {
                 const char *path;
 
                 if (arg[0] == 0) {
-                    path = arg_next(pal, &code, minst->heap);
+                    code = arg_next(pal, (const char **)&path, minst->heap);
                     if (code < 0)
                         return code;
                 } else
                     path = arg;
                 if (path == NULL)
-                    return e_Fatal;
+                    return gs_error_Fatal;
                 path = arg_copy(path, minst->heap);
                 if (path == NULL)
-                    return e_Fatal;
+                    return gs_error_Fatal;
                 gs_main_add_lib_path(minst, path);
             }
             break;
@@ -478,7 +632,7 @@ run_stdin:
                 if (msize <= 0 || msize > max_long >> 10) {
                     outprintf(minst->heap, "-K<numK> must have 1 <= numK <= %ld\n",
                               max_long >> 10);
-                    return e_Fatal;
+                    return gs_error_Fatal;
                 }
                 rawheap->limit = msize << 10;
             }
@@ -491,10 +645,10 @@ run_stdin:
 #if ARCH_INTS_ARE_SHORT
                 if (msize <= 0 || msize >= 64) {
                     puts(minst->heap, "-M must be between 1 and 63");
-                    return e_Fatal;
+                    return gs_error_Fatal;
                 }
 #endif
-                minst->memory_chunk_size = msize << 10;
+                minst->memory_clump_size = msize << 10;
             }
             break;
         case 'N':               /* set size of name table */
@@ -505,7 +659,7 @@ run_stdin:
 #if ARCH_INTS_ARE_SHORT
                 if (nsize < 2 || nsize > 64) {
                     puts(minst->heap, "-N must be between 2 and 64");
-                    return e_Fatal;
+                    return gs_error_Fatal;
                 }
 #endif
                 minst->name_table_size = (ulong) nsize << 10;
@@ -513,27 +667,39 @@ run_stdin:
             break;
         case 'o':               /* set output file name and batch mode */
             {
+                i_ctx_t *i_ctx_p;
+                uint space;
                 const char *adef;
-                char *str;
+                byte *str;
                 ref value;
                 int len;
 
+                if ((code = gs_main_init1(minst)) < 0)
+                    return code;
+
+                i_ctx_p = minst->i_ctx_p;
+                space = icurrent_space;
                 if (arg[0] == 0) {
-                    adef = arg_next(pal, &code, minst->heap);
+                    code = arg_next(pal, (const char **)&adef, minst->heap);
                     if (code < 0)
                         return code;
+                    if (code == 0)
+                        return gs_error_undefinedfilename;
                 } else
                     adef = arg;
                 if ((code = gs_main_init1(minst)) < 0)
                     return code;
+                ialloc_set_space(idmemory, avm_system);
                 len = strlen(adef);
-                str = (char *)gs_alloc_bytes(minst->heap, (uint)len, "-o");
+                str = ialloc_string(len, "-o");
+                if (str == NULL)
+                    return gs_error_VMerror;
                 memcpy(str, adef, len);
-                make_const_string(&value, a_readonly | avm_foreign,
-                                  len, (const byte *)str);
-                initial_enter_name("OutputFile", &value);
-                initial_enter_name("NOPAUSE", &vtrue);
-                initial_enter_name("BATCH", &vtrue);
+                make_const_string(&value, a_readonly | avm_system, len, str);
+                ialloc_set_space(idmemory, space);
+                i_initial_enter_name(minst->i_ctx_p, "OutputFile", &value);
+                i_initial_enter_name(minst->i_ctx_p, "NOPAUSE", &vtrue);
+                i_initial_enter_name(minst->i_ctx_p, "BATCH", &vtrue);
             }
             break;
         case 'P':               /* choose whether search '.' first */
@@ -543,13 +709,13 @@ run_stdin:
                 minst->search_here_first = false;
             else {
                 puts(minst->heap, "Only -P or -P- is allowed.");
-                return e_Fatal;
+                return gs_error_Fatal;
             }
             break;
         case 'q':               /* quiet startup */
             if ((code = gs_main_init1(minst)) < 0)
                 return code;
-            initial_enter_name("QUIET", &vtrue);
+            i_initial_enter_name(minst->i_ctx_p, "QUIET", &vtrue);
             break;
         case 'r':               /* define device resolution */
             {
@@ -561,15 +727,16 @@ run_stdin:
                 switch (sscanf((const char *)arg, "%fx%f", &xres, &yres)) {
                     default:
                         puts(minst->heap, "-r must be followed by <res> or <xres>x<yres>");
-                        return e_Fatal;
+                        return gs_error_Fatal;
                     case 1:     /* -r<res> */
                         yres = xres;
+                        /* fall through */
                     case 2:     /* -r<xres>x<yres> */
                         make_real(&value, xres);
-                        initial_enter_name("DEVICEXRESOLUTION", &value);
+                        i_initial_enter_name(minst->i_ctx_p, "DEVICEXRESOLUTION", &value);
                         make_real(&value, yres);
-                        initial_enter_name("DEVICEYRESOLUTION", &value);
-                        initial_enter_name("FIXEDRESOLUTION", &vtrue);
+                        i_initial_enter_name(minst->i_ctx_p, "DEVICEYRESOLUTION", &value);
+                        i_initial_enter_name(minst->i_ctx_p, "FIXEDRESOLUTION", &vtrue);
                 }
                 break;
             }
@@ -584,18 +751,21 @@ run_stdin:
                 ref value;
 
                 if (adef == NULL)
-                    return e_Fatal;
+                    return gs_error_Fatal;
                 eqp = strchr(adef, '=');
 
                 if (eqp == NULL)
                     eqp = strchr(adef, '#');
                 /* Initialize the object memory, scanner, and */
                 /* name table now if needed. */
-                if ((code = gs_main_init1(minst)) < 0)
+                if ((code = gs_main_init1(minst)) < 0) {
+                    arg_free((char *)adef, minst->heap);
                     return code;
+                }
                 if (eqp == adef) {
                     puts(minst->heap, "Usage: -dNAME, -dNAME=TOKEN, -sNAME=STRING");
-                    return e_Fatal;
+                    arg_free((char *)adef, minst->heap);
+                    return gs_error_Fatal;
                 }
                 if (eqp == NULL) {
                     if (isd)
@@ -651,7 +821,8 @@ run_stdin:
                             code = gs_scan_token(minst->i_ctx_p, &value, &state);
                             if (code) {
                                 outprintf(minst->heap, "Invalid value for option -d%s, -dNAME= must be followed by a valid token\n", arg);
-                                return e_Fatal;
+                                arg_free((char *)adef, minst->heap);
+                                return gs_error_Fatal;
                             }
                             if (r_has_type_attrs(&value, t_name,
                                                  a_executable)) {
@@ -670,40 +841,38 @@ run_stdin:
                                     make_false(&value);
                                 else {
                                     outprintf(minst->heap, "Invalid value for option -d%s, use -sNAME= to define string constants\n", arg);
-                                    return e_Fatal;
+                                    arg_free((char *)adef, minst->heap);
+                                    return gs_error_Fatal;
                                 }
                             }
                         }
                     } else {
                         int len = strlen(eqp);
-                        char *str =
-                        (char *)gs_alloc_bytes(minst->heap,
-                                               (uint) len, "-s");
+                        byte *body = ialloc_string(len, "-s");
 
-                        if (str == 0) {
+                        if (body == NULL) {
                             lprintf("Out of memory!\n");
-                            return e_Fatal;
+                            arg_free((char *)adef, minst->heap);
+                            return gs_error_Fatal;
                         }
-                        memcpy(str, eqp, len);
-                        make_const_string(&value,
-                                          a_readonly | avm_foreign,
-                                          len, (const byte *)str);
-                        if ((code = try_stdout_redirect(minst, adef, eqp)) < 0)
+                        memcpy(body, eqp, len);
+                        make_const_string(&value, a_readonly | avm_system, len, body);
+                        if ((code = try_stdout_redirect(minst, adef, eqp)) < 0) {
+                            arg_free((char *)adef, minst->heap);
                             return code;
+                        }
                     }
                     ialloc_set_space(idmemory, space);
                 }
                 /* Enter the name in systemdict. */
-                initial_enter_name(adef, &value);
+                i_initial_enter_name_copy(minst->i_ctx_p, adef, &value);
+                arg_free((char *)adef, minst->heap);
                 break;
             }
-        case 'T':
-            set_debug_flags(arg, vd_flags);
-            break;
         case 'u':               /* undefine name */
             if (!*arg) {
                 puts(minst->heap, "-u requires a name to undefine.");
-                return e_Fatal;
+                return gs_error_Fatal;
             }
             if ((code = gs_main_init1(minst)) < 0)
                 return code;
@@ -711,7 +880,7 @@ run_stdin:
             break;
         case 'v':               /* print revision */
             print_revision(minst);
-            return e_Info;
+            return gs_error_Info;
 /*#ifdef DEBUG */
             /*
              * Here we provide a place for inserting debugging code that can be
@@ -736,7 +905,7 @@ run_stdin:
                 run_x("== flush\n");
                 stop_x();
             }
-            return e_Quit;
+            return gs_error_Quit;
 /*#endif */
         case 'Z':
             set_debug_flags(arg, gs_debug);
@@ -798,7 +967,7 @@ run_buffered(gs_main_instance * minst, const char *arg)
 
     if (in == 0) {
         outprintf(minst->heap, "Unable to open %s for reading", arg);
-        return_error(e_invalidfileaccess);
+        return_error(gs_error_invalidfileaccess);
     }
     code = gs_main_init2(minst);
     if (code < 0) {
@@ -811,15 +980,15 @@ run_buffered(gs_main_instance * minst, const char *arg)
         char buf[MAX_BUFFERED_SIZE];
         int count;
 
-        code = e_NeedInput;
+        code = gs_error_NeedInput;
         while ((count = fread(buf, 1, minst->run_buffer_size, in)) > 0) {
             code = gs_main_run_string_continue(minst, buf, count,
                                                minst->user_errors,
                                                &exit_code, &error_object);
-            if (code != e_NeedInput)
+            if (code != gs_error_NeedInput)
                 break;
         }
-        if (code == e_NeedInput) {
+        if (code == gs_error_NeedInput) {
             code = gs_main_run_string_end(minst, minst->user_errors,
                                           &exit_code, &error_object);
         }
@@ -846,7 +1015,7 @@ runarg(gs_main_instance * minst, const char *pre, const char *arg,
     line = (char *)gs_alloc_bytes(minst->heap, len, "runarg");
     if (line == 0) {
         lprintf("Out of memory!\n");
-        return_error(e_VMerror);
+        return_error(gs_error_VMerror);
     }
     strcpy(line, pre);
     esc_strcat(line, arg);
@@ -876,10 +1045,10 @@ run_finish(gs_main_instance *minst, int code, int exit_code,
            ref * perror_object)
 {
     switch (code) {
-        case e_Quit:
+        case gs_error_Quit:
         case 0:
             break;
-        case e_Fatal:
+        case gs_error_Fatal:
             emprintf1(minst->heap,
                       "Unrecoverable error, exit code %d\n",
                       exit_code);
@@ -923,7 +1092,7 @@ try_stdout_redirect(gs_main_instance * minst,
             }
             else if ((minst->heap->gs_lib_ctx->fstdout2 =
                       gp_fopen(filename, "w")) == (FILE *)NULL)
-                return_error(e_invalidfileaccess);
+                return_error(gs_error_invalidfileaccess);
             minst->heap->gs_lib_ctx->stdout_is_redirected = 1;
         }
         return 0;
@@ -959,6 +1128,11 @@ static const char help_devices[] = "Available devices:";
 static const char help_default_device[] = "Default output device:";
 static const char help_emulators[] = "Input formats:";
 static const char help_paths[] = "Search path:";
+#ifdef HAVE_FONTCONFIG
+static const char help_fontconfig[] = "Ghostscript is also using fontconfig to search for font files\n";
+#else
+static const char help_fontconfig[] = "";
+#endif
 
 extern_gx_io_device_table();
 
@@ -979,7 +1153,12 @@ print_help(gs_main_instance * minst)
         const char *dname = iodev->dname;
 
         if (dname && strlen(dname) == 5 && !memcmp("%rom%", dname, 5)) {
-            have_rom_device = 1;
+            struct stat pstat;
+            /* gs_error_unregistered means no usable romfs is available */
+            int code = iodev->procs.file_status((gx_io_device *)iodev, dname, &pstat);
+            if (code != gs_error_unregistered){
+                have_rom_device = 1;
+            }
             break;
         }
     }
@@ -1128,6 +1307,7 @@ print_paths(gs_main_instance * minst)
         }
     }
     outprintf(minst->heap, "\n");
+    outprintf(minst->heap, "%s", help_fontconfig);
 }
 
 /* Print the help trailer. */

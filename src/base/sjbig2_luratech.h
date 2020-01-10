@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -74,6 +74,7 @@ typedef struct stream_jbig2encode_state_s
     unsigned long outsize;	/* bytes available in the buffer */
     unsigned long outfill;	/* bytes written to the buffer */
     unsigned long offset;	/* bytes written from the buffer */
+    bool jb2_encode;            /* are we writing a jb2 file (true), or a stream for a PDF (false) */
 
 } stream_jbig2encode_state;
 

@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -102,9 +102,7 @@ names_init(ulong count, gs_ref_memory_t *imem)
         int code = name_alloc_sub(nt);
 
         if (code < 0) {
-            while (nt->sub_next > 0)
-                name_free_sub(nt, --(nt->sub_next), false);
-            gs_free_object(mem, nt, "name_init(nt)");
+            names_free(nt);
             return 0;
         }
     }
@@ -129,6 +127,17 @@ names_init(ulong count, gs_ref_memory_t *imem)
     nt->free = 0;
     names_trace_finish(nt, NULL);
     return nt;
+}
+
+/* Free a name table */
+void
+names_free(name_table *nt)
+{
+    if (nt == NULL) return;
+
+    while (nt->sub_count > 0)
+        name_free_sub(nt, --(nt->sub_count), false);
+    gs_free_object(nt->memory, nt, "name_init(nt)");
 }
 
 static void
@@ -194,9 +203,9 @@ names_ref(name_table *nt, const byte *ptr, uint size, ref *pref, int enterflag)
     }
     /* Name was not in the table.  Make a new entry. */
     if (enterflag < 0)
-        return_error(e_undefined);
+        return_error(gs_error_undefined);
     if (size > max_name_string)
-        return_error(e_limitcheck);
+        return_error(gs_error_limitcheck);
     nidx = nt->free;
     if (nidx == 0) {
         int code = name_alloc_sub(nt);
@@ -211,7 +220,7 @@ names_ref(name_table *nt, const byte *ptr, uint size, ref *pref, int enterflag)
                                              "names_ref(string)");
 
         if (cptr == 0)
-            return_error(e_VMerror);
+            return_error(gs_error_VMerror);
         memcpy(cptr, ptr, size);
         pnstr->string_bytes = cptr;
         pnstr->foreign_string = 0;
@@ -477,7 +486,7 @@ name_alloc_sub(name_table * nt)
 
     for (;; ++sub_index) {
         if (sub_index > nt->max_sub_count)
-            return_error(e_limitcheck);
+            return_error(gs_error_limitcheck);
         if (nt->sub[sub_index].names == 0)
             break;
     }
@@ -492,7 +501,7 @@ name_alloc_sub(name_table * nt)
     if (sub == 0 || ssub == 0) {
         gs_free_object(mem, ssub, "name_alloc_sub(string sub-table)");
         gs_free_object(mem, sub, "name_alloc_sub(sub-table)");
-        return_error(e_VMerror);
+        return_error(gs_error_VMerror);
     }
     memset(sub, 0, sizeof(name_sub_table));
     memset(ssub, 0, sizeof(name_string_sub_table_t));

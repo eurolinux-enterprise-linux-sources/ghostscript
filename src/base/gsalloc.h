@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -33,9 +33,8 @@ typedef struct gs_memory_gc_status_s {
         /* Set by client */
     long vm_threshold;		/* GC interval */
     long max_vm;		/* maximum allowed allocation */
-    int *psignal;		/* if not NULL, store signal_value */
-                                /* here if we go over the vm_threshold */
-    int signal_value;		/* value to store in *psignal */
+
+    int signal_value;		/* value to store in gs_lib_ctx->gcsignal */
     bool enabled;		/* auto GC enabled if true */
         /* Set by allocator */
     long requested;		/* amount of last failing request */
@@ -54,11 +53,17 @@ void gs_memory_set_vm_reclaim(gs_ref_memory_t * mem, bool enabled);
 gs_ref_memory_t *ialloc_alloc_state(gs_memory_t *, uint);
 
 /*
- * Add a chunk to an externally controlled allocator.  Such allocators
- * allocate all objects as immovable, are not garbage-collected, and
- * don't attempt to acquire additional memory (or free chunks) on their own.
+ * Function to free a gs_ref_memory_t allocated by ialloc_alloc_state. ONLY
+ * USEFUL FOR ERROR CLEANUP IMMEDIATELY AFTER ALLOCATION!
  */
-int ialloc_add_chunk(gs_ref_memory_t *, ulong, client_name_t);
+void ialloc_free_state(gs_ref_memory_t *);
+
+/*
+ * Add a clump to an externally controlled allocator.  Such allocators
+ * allocate all objects as immovable, are not garbage-collected, and
+ * don't attempt to acquire additional memory (or free clumps) on their own.
+ */
+int ialloc_add_clump(gs_ref_memory_t *, ulong, client_name_t);
 
 /* ------ Internal routines ------ */
 

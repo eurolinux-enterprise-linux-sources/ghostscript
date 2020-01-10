@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -67,14 +67,14 @@ scan_number(const byte * str, const byte * end, int sign,
 #define WOULD_OVERFLOW(val, d, maxv)\
   (val >= maxv / 10 && (val > maxv / 10 || d > (int64_t)(maxv % 10)))
 
-    GET_NEXT(c, sp, return_error(e_syntaxerror));
+    GET_NEXT(c, sp, return_error(gs_error_syntaxerror));
     if (!IS_DIGIT(d, c)) {
         if (c != '.')
-            return_error(e_syntaxerror);
+            return_error(gs_error_syntaxerror);
         /* Might be a number starting with '.'. */
-        GET_NEXT(c, sp, return_error(e_syntaxerror));
+        GET_NEXT(c, sp, return_error(gs_error_syntaxerror));
         if (!IS_DIGIT(d, c))
-            return_error(e_syntaxerror);
+            return_error(gs_error_syntaxerror);
         ival = 0;
         goto i2r;
     }
@@ -125,7 +125,7 @@ scan_number(const byte * str, const byte * end, int sign,
                     break;
                 }
             } else
-                dval = ival;
+                dval = (double)ival;
             goto l2d;
         }
     }
@@ -144,7 +144,7 @@ scan_number(const byte * str, const byte * end, int sign,
         case 'E':
             if (sign < 0)
                 ival = -ival;
-            dval = ival;
+            dval = (double)ival;
             exp10 = 0;
             goto fe;
         case '#':
@@ -153,7 +153,7 @@ scan_number(const byte * str, const byte * end, int sign,
                 ps_int uval = 0, imax;
 
                 if (sign || radix < min_radix || radix > max_radix)
-                    return_error(e_syntaxerror);
+                    return_error(gs_error_syntaxerror);
                 /* Avoid multiplies for power-of-2 radix. */
                 if (!(radix & (radix - 1))) {
                     int shift;
@@ -175,7 +175,7 @@ scan_number(const byte * str, const byte * end, int sign,
                             shift = 5, imax = MAX_PS_UINT >> 5;
                             break;
                         default:	/* can't happen */
-                            return_error(e_rangecheck);
+                            return_error(gs_error_rangecheck);
                     }
                     for (;; uval = (uval << shift) + d) {
                         GET_NEXT(c, sp, break);
@@ -186,7 +186,7 @@ scan_number(const byte * str, const byte * end, int sign,
                             break;
                         }
                         if (uval > imax)
-                            return_error(e_limitcheck);
+                            return_error(gs_error_limitcheck);
                     }
                 } else {
                     ps_int irem = MAX_PS_UINT % radix;
@@ -203,7 +203,7 @@ scan_number(const byte * str, const byte * end, int sign,
                         if (uval >= imax &&
                             (uval > imax || d > irem)
                             )
-                            return_error(e_limitcheck);
+                            return_error(gs_error_limitcheck);
                     }
                 }
                 if (scanner_options & SCAN_CPSI_MODE) {
@@ -253,7 +253,7 @@ l2d:
             exp10 = 0;
             goto fs;
         case '#':
-            return_error(e_syntaxerror);
+            return_error(gs_error_syntaxerror);
     }
 
     /* We saw a '.' while accumulating an integer in ival. */
@@ -276,7 +276,7 @@ i2r:
             break;
         }
         if (WOULD_OVERFLOW(ival, d, max_int)) {
-            dval = ival;
+            dval = (double)ival;
             goto fd;
         }
         ival = ival * 10 + d;
@@ -292,7 +292,7 @@ i2r:
         make_real(pref, ival * neg_powers_10[-exp10]);
         return code;
     }
-    dval = ival;
+    dval = (double)ival;
     goto fe;
 
     /* Now we are accumulating a double in dval. */
@@ -314,16 +314,17 @@ fe:
                 int esign = 0;
                 int iexp;
 
-                GET_NEXT(c, sp, return_error(e_syntaxerror));
+                GET_NEXT(c, sp, return_error(gs_error_syntaxerror));
                 switch (c) {
                     case '-':
                         esign = 1;
+                        /* fall through */
                     case '+':
-                        GET_NEXT(c, sp, return_error(e_syntaxerror));
+                        GET_NEXT(c, sp, return_error(gs_error_syntaxerror));
                 }
                 /* Scan the exponent.  We limit it arbitrarily to 999. */
                 if (!IS_DIGIT(d, c))
-                    return_error(e_syntaxerror);
+                    return_error(gs_error_syntaxerror);
                 iexp = d;
                 for (;; iexp = iexp * 10 + d) {
                     GET_NEXT(c, sp, break);
@@ -333,7 +334,7 @@ fe:
                         break;
                     }
                     if (iexp > 99)
-                        return_error(e_limitcheck);
+                        return_error(gs_error_limitcheck);
                 }
                 if (esign)
                     exp10 -= iexp;
@@ -368,10 +369,10 @@ fe:
      */
     if (dval >= 0) {
         if (dval > MAX_FLOAT)
-            return_error(e_limitcheck);
+            return_error(gs_error_limitcheck);
     } else {
         if (dval < -MAX_FLOAT)
-            return_error(e_limitcheck);
+            return_error(gs_error_limitcheck);
     }
 rret:
     make_real(pref, dval);

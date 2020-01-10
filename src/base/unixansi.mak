@@ -1,4 +1,4 @@
-# Copyright (C) 2001-2012 Artifex Software, Inc.
+# Copyright (C) 2001-2018 Artifex Software, Inc.
 # All Rights Reserved.
 #
 # This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
 # of the license contained in the file LICENSE in this distribution.
 #
 # Refer to licensing information at http://www.artifex.com or contact
-# Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-# CA  94903, U.S.A., +1(415)492-9861, for further information.
+# Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+# CA 94945, U.S.A., +1(415)492-9861, for further information.
 #
 # makefile for Unix/ANSI C/X11 configuration.
 
@@ -24,8 +24,11 @@
 
 BINDIR=./$(BUILDDIRPREFIX)bin
 GLSRCDIR=./base
+DEVSRCDIR=./devices
 GLGENDIR=./$(BUILDDIRPREFIX)obj
 GLOBJDIR=./$(BUILDDIRPREFIX)obj
+DEVGENDIR=./$(BUILDDIRPREFIX)obj
+DEVOBJDIR=./$(BUILDDIRPREFIX)obj
 AUXDIR=$(GLGENDIR)/aux
 PSSRCDIR=./psi
 PSLIBDIR=./lib
@@ -148,6 +151,7 @@ LIBPNG_NAME=png
 
 SHARE_LIBTIFF=0
 TIFFSRCDIR=tiff
+TIFFCONFDIR=tiff
 TIFFPLATFORM=unix
 TIFFCONFIG_SUFFIX=.unix
 LIBTIFF_NAME=tiff
@@ -174,7 +178,7 @@ JBIG2SRCDIR=jbig2dec
 # See lcms.mak for more information
 
 SHARE_LCMS=0
-LCMSSRCDIR=lcms
+LCMS2MTSRCDIR=lcms2mt
 
 # Define the directory where the lcms2 source is stored.
 # See lcms2.mak for more information
@@ -182,9 +186,9 @@ LCMSSRCDIR=lcms
 LCMS2SRCDIR=lcms2
 
 # Which CMS are we using?
-# Options are currently lcms or lcms2
+# Options are currently lcms2mt or lcms2
 
-WHICH_CMS=lcms2
+WHICH_CMS=lcms2mt
 
 # Define the directory where the ijs source is stored,
 # and the process forking method to use for the server.
@@ -244,6 +248,10 @@ CFLAGS=$(CFLAGS_STANDARD) $(XCFLAGS)
 XLDFLAGS=
 
 LDFLAGS=$(XLDFLAGS)
+
+GS_LDFLAGS=$(LDFLAGS)
+PCL_LDFLAGS=$(LDFLAGS)
+XPS_LDFLAGS=$(LDFLAGS)
 
 # Define any extra libraries to link into the executable.
 # ISC Unix 2.2 wants -linet.
@@ -348,18 +356,18 @@ DEVICE_DEVS7=$(DD)faxg3.dev $(DD)faxg32d.dev $(DD)faxg4.dev
 DEVICE_DEVS8=$(DD)pcxmono.dev $(DD)pcxgray.dev $(DD)pcx16.dev $(DD)pcx256.dev $(DD)pcx24b.dev $(DD)pcxcmyk.dev
 DEVICE_DEVS9=$(DD)pbm.dev $(DD)pbmraw.dev $(DD)pgm.dev $(DD)pgmraw.dev $(DD)pgnm.dev $(DD)pgnmraw.dev
 DEVICE_DEVS10=$(DD)tiffcrle.dev $(DD)tiffg3.dev $(DD)tiffg32d.dev $(DD)tiffg4.dev $(DD)tifflzw.dev $(DD)tiffpack.dev
-DEVICE_DEVS11=$(DD)tiff12nc.dev $(DD)tiff24nc.dev $(DD)tiffgray.dev $(DD)tiff32nc.dev $(DD)tiffsep.dev $(DD)tiffsep1.dev $(DD)tiffscaled.dev $(DD)tiffscaled8.dev $(DD)tiffscaled24.dev $(DD)tiffscaled4.dev
-DEVICE_DEVS12=$(DD)psmono.dev $(DD)psgray.dev $(DD)psrgb.dev $(DD)bit.dev $(DD)bitrgb.dev $(DD)bitcmyk.dev
+DEVICE_DEVS11=$(DD)tiff12nc.dev $(DD)tiff24nc.dev $(DD)tiffgray.dev $(DD)tiff32nc.dev $(DD)tiffsep.dev $(DD)tiffsep1.dev $(DD)tiffscaled.dev $(DD)tiffscaled8.dev $(DD)tiffscaled24.dev $(DD)tiffscaled32.dev $(DD)tiffscaled4.dev
+DEVICE_DEVS12=$(DD)bit.dev $(DD)bitrgb.dev $(DD)bitcmyk.dev
 DEVICE_DEVS13=$(DD)pngmono.dev $(DD)pngmonod.dev $(DD)pnggray.dev $(DD)png16.dev $(DD)png256.dev $(DD)png16m.dev $(DD)pngalpha.dev
 DEVICE_DEVS14=$(DD)jpeg.dev $(DD)jpeggray.dev $(DD)jpegcmyk.dev
-DEVICE_DEVS15=$(DD)pdfwrite.dev $(DD)pswrite.dev $(DD)ps2write.dev $(DD)epswrite.dev $(DD)txtwrite.dev $(DD)pxlmono.dev $(DD)pxlcolor.dev
-DEVICE_DEVS16=$(DD)bbox.dev $(DD)inkcov.dev
+DEVICE_DEVS15=$(DD)pdfwrite.dev $(DD)ps2write.dev $(DD)eps2write.dev $(DD)txtwrite.dev $(DD)pxlmono.dev $(DD)pxlcolor.dev
+DEVICE_DEVS16=$(DD)bbox.dev $(DD)inkcov.dev $(DD)ink_cov.dev $(DD)pdfimage8.dev $(DD)pdfimage24.dev $(DD)pdfimage32.dev $(DD)PCLm.dev
 # Overflow from DEVS9
 DEVICE_DEVS17=$(DD)pnm.dev $(DD)pnmraw.dev $(DD)ppm.dev $(DD)ppmraw.dev $(DD)pkm.dev $(DD)pkmraw.dev $(DD)pksm.dev $(DD)pksmraw.dev $(DD)pamcmyk32.dev
 DEVICE_DEVS18=
 DEVICE_DEVS19=
 DEVICE_DEVS20=
-DEVICE_DEVS21=$(DD)spotcmyk.dev $(DD)devicen.dev $(DD)xcf.dev $(DD)bmpsep1.dev $(DD)bmpsep8.dev $(DD)bmp16m.dev $(DD)bmp32b.dev $(DD)psdcmyk.dev $(DD)psdrgb.dev $(DD)pamcmyk32.dev
+DEVICE_DEVS21=$(DD)spotcmyk.dev $(DD)devicen.dev $(DD)xcf.dev $(DD)bmpsep1.dev $(DD)bmpsep8.dev $(DD)bmp16m.dev $(DD)bmp32b.dev $(DD)psdcmyk.dev $(DD)psdrgb.dev $(DD)pamcmyk32.dev $(DD)psdcmykog.dev $(DD)fpng.dev
 
 # ---------------------------- End of options --------------------------- #
 

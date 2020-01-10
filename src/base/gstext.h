@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -90,6 +90,8 @@
 #define TEXT_RETURN_WIDTH         0x20000
         /* PDF mode "3 Tr" */
 #define TEXT_RENDER_MODE_3        0x40000
+/* Do not pull a glyph from the glyph cache */
+#define TEXT_NO_CACHE             0x80000
 
 /*
  * Define the structure of parameters passed in for text display.
@@ -149,9 +151,9 @@ typedef struct gs_text_enum_s gs_text_enum_t;
 #  define gx_device_DEFINED
 typedef struct gx_device_s gx_device;
 #endif
-#ifndef gs_imager_state_DEFINED
-#  define gs_imager_state_DEFINED
-typedef struct gs_imager_state_s gs_imager_state;
+#ifndef gs_gstate_DEFINED
+#  define gs_gstate_DEFINED
+typedef struct gs_gstate_s gs_gstate;
 #endif
 #ifndef gx_device_color_DEFINED
 #  define gx_device_color_DEFINED
@@ -176,7 +178,7 @@ typedef struct gx_clip_path_s gx_clip_path;
  */
 #define dev_t_proc_text_begin(proc, dev_t)\
   int proc(dev_t *dev,\
-    gs_imager_state *pis,\
+    gs_gstate *pgs,\
     const gs_text_params_t *text,\
     gs_font *font,\
     gx_path *path,			/* unless DO_NONE */\
@@ -194,53 +196,53 @@ typedef struct gx_clip_path_s gx_clip_path;
 dev_proc_text_begin(gx_device_text_begin);
 
 /* Begin processing text with a graphics state. */
-#ifndef gs_state_DEFINED
-#  define gs_state_DEFINED
-typedef struct gs_state_s gs_state;
+#ifndef gs_gstate_DEFINED
+#  define gs_gstate_DEFINED
+typedef struct gs_gstate_s gs_gstate;
 #endif
-int gs_text_begin(gs_state * pgs, const gs_text_params_t * text,
+int gs_text_begin(gs_gstate * pgs, const gs_text_params_t * text,
                   gs_memory_t * mem, gs_text_enum_t ** ppenum);
 
 /*
  * Update the device color to be used with text (because a kshow or
  * cshow procedure may have changed the current color).
  */
-int gs_text_update_dev_color(gs_state * pgs, gs_text_enum_t * pte);
+int gs_text_update_dev_color(gs_gstate * pgs, gs_text_enum_t * pte);
 
 /* Begin the PostScript-equivalent text operators. */
 int
-gs_show_begin(gs_state *, const byte *, uint,
+gs_show_begin(gs_gstate *, const byte *, uint,
               gs_memory_t *, gs_text_enum_t **),
-    gs_ashow_begin(gs_state *, floatp, floatp, const byte *, uint,
+    gs_ashow_begin(gs_gstate *, double, double, const byte *, uint,
                    gs_memory_t *, gs_text_enum_t **),
-    gs_widthshow_begin(gs_state *, floatp, floatp, gs_char,
+    gs_widthshow_begin(gs_gstate *, double, double, gs_char,
                        const byte *, uint,
                        gs_memory_t *, gs_text_enum_t **),
-    gs_awidthshow_begin(gs_state *, floatp, floatp, gs_char,
-                        floatp, floatp, const byte *, uint,
+    gs_awidthshow_begin(gs_gstate *, double, double, gs_char,
+                        double, double, const byte *, uint,
                         gs_memory_t *, gs_text_enum_t **),
-    gs_kshow_begin(gs_state *, const byte *, uint,
+    gs_kshow_begin(gs_gstate *, const byte *, uint,
                    gs_memory_t *, gs_text_enum_t **),
-    gs_xyshow_begin(gs_state *, const byte *, uint,
+    gs_xyshow_begin(gs_gstate *, const byte *, uint,
                     const float *, const float *, uint,
                     gs_memory_t *, gs_text_enum_t **),
-    gs_glyphshow_begin(gs_state *, gs_glyph,
+    gs_glyphshow_begin(gs_gstate *, gs_glyph,
                        gs_memory_t *, gs_text_enum_t **),
-    gs_cshow_begin(gs_state *, const byte *, uint,
+    gs_cshow_begin(gs_gstate *, const byte *, uint,
                    gs_memory_t *, gs_text_enum_t **),
-    gs_stringwidth_begin(gs_state *, const byte *, uint,
+    gs_stringwidth_begin(gs_gstate *, const byte *, uint,
                          gs_memory_t *, gs_text_enum_t **),
-    gs_charpath_begin(gs_state *, const byte *, uint, bool,
+    gs_charpath_begin(gs_gstate *, const byte *, uint, bool,
                       gs_memory_t *, gs_text_enum_t **),
-    gs_glyphpath_begin(gs_state *, gs_glyph, bool,
+    gs_glyphpath_begin(gs_gstate *, gs_glyph, bool,
                        gs_memory_t *, gs_text_enum_t **),
-    gs_glyphwidth_begin(gs_state *, gs_glyph,
+    gs_glyphwidth_begin(gs_gstate *, gs_glyph,
                         gs_memory_t *, gs_text_enum_t **),
-    gs_charboxpath_begin(gs_state *, const byte *, uint, bool,
+    gs_charboxpath_begin(gs_gstate *, const byte *, uint, bool,
                          gs_memory_t *, gs_text_enum_t **);
 
 /* Compute the number of characters in a text. */
-int gs_text_size(gs_state * pgs, gs_text_params_t *text, gs_memory_t * mem);
+int gs_text_size(gs_gstate * pgs, gs_text_params_t *text, gs_memory_t * mem);
 /* Retrieve text params from enumerator. */
 gs_text_params_t *gs_get_text_params(gs_text_enum_t *pte);
 
@@ -328,6 +330,6 @@ int gs_text_retry(gs_text_enum_t *pte);
 void gs_text_release(gs_text_enum_t *pte, client_name_t cname);
 
 /* Compute the number of characters in a text. */
-int gs_text_count_chars(gs_state * pgs, gs_text_params_t *text, gs_memory_t * mem);
+int gs_text_count_chars(gs_gstate * pgs, gs_text_params_t *text, gs_memory_t * mem);
 
 #endif /* gstext_INCLUDED */

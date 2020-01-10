@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -34,8 +34,8 @@ static iodev_proc_open_device(null_open);
 const gx_io_device gs_iodev_null = {
     "%null%", "Special",
     {
-        iodev_no_init, null_open, iodev_no_open_file,
-        iodev_os_fopen, iodev_os_fclose,
+        iodev_no_init, iodev_no_finit, null_open, iodev_no_open_file,
+        iodev_os_gp_fopen, iodev_os_fclose,
         iodev_no_delete_file, iodev_no_rename_file, iodev_no_file_status,
         iodev_no_enumerate_files, NULL, NULL,
         iodev_no_get_params, iodev_no_put_params
@@ -47,11 +47,11 @@ null_open(gx_io_device * iodev, const char *access, stream ** ps,
           gs_memory_t * mem)
 {
     if (!streq1(access, 'w'))
-        return_error(e_invalidfileaccess);
+        return_error(gs_error_invalidfileaccess);
     return file_open_stream(gp_null_file_name,
                             strlen(gp_null_file_name),
                             access, 256 /* arbitrary */ , ps,
-                            iodev, iodev->procs.fopen, mem);
+                            iodev, iodev->procs.gp_fopen, mem);
 }
 
 /* ------ Operators ------ */
@@ -70,7 +70,7 @@ zgetdevparams(i_ctx_t *i_ctx_p)
     check_read_type(*op, t_string);
     iodev = gs_findiodevice(imemory, op->value.bytes, r_size(op));
     if (iodev == 0)
-        return_error(e_undefined);
+        return_error(gs_error_undefined);
     stack_param_list_write(&list, &o_stack, NULL, iimemory);
     if ((code = gs_getdevparams(iodev, plist)) < 0) {
         ref_stack_pop(&o_stack, list.count * 2);
@@ -95,7 +95,7 @@ zputdevparams(i_ctx_t *i_ctx_p)
     check_read_type(*op, t_string);
     iodev = gs_findiodevice(imemory, op->value.bytes, r_size(op));
     if (iodev == 0)
-        return_error(e_undefined);
+        return_error(gs_error_undefined);
     code = stack_param_list_read(&list, &o_stack, 1, NULL, false, iimemory);
     if (code < 0)
         return code;
@@ -106,7 +106,7 @@ zputdevparams(i_ctx_t *i_ctx_p)
     code = param_check_password(plist, &system_params_password);
     if (code != 0) {
         iparam_list_release(&list);
-        return_error(code < 0 ? code : e_invalidaccess);
+        return_error(code < 0 ? code : gs_error_invalidaccess);
     }
     code = gs_putdevparams(iodev, plist);
     iparam_list_release(&list);

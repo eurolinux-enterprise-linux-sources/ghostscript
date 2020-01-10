@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -161,7 +161,7 @@ int gx_path_new(gx_path *),
     gx_path_add_rectangle(gx_path *, fixed, fixed, fixed, fixed),
     gx_path_add_char_path(gx_path *, gx_path *, gs_char_path_mode),
     gx_path_add_curve_notes(gx_path *, fixed, fixed, fixed, fixed, fixed, fixed, segment_notes),
-    gx_path_add_partial_arc_notes(gx_path *, fixed, fixed, fixed, fixed, floatp, segment_notes),
+    gx_path_add_partial_arc_notes(gx_path *, fixed, fixed, fixed, fixed, double, segment_notes),
     gx_path_add_path(gx_path *, gx_path *),
     gx_path_close_subpath_notes(gx_path *, segment_notes),
           /* We have to remove the 'subpath' from the following name */
@@ -205,7 +205,7 @@ typedef enum {
 
 /* Path accessors */
 
-gx_path *gx_current_path(const gs_state *);
+gx_path *gx_current_path(const gs_gstate *);
 int gx_path_current_point(const gx_path *, gs_fixed_point *),
     gx_path_bbox(gx_path *, gs_fixed_rect *),
     gx_path_bbox_set(gx_path *, gs_fixed_rect *);
@@ -231,32 +231,54 @@ gx_path_is_rectangular(const gx_path *, gs_fixed_rect *);
 #define gx_path_is_null_inline(ppath)\
   (gx_path_is_void(ppath) && !path_position_valid(ppath))
 
+/* Macro to test if a curve is actually a line (i.e. that
+ * both control points are at one end or the other).
+ * (Yes, there are cases where the curve can be a line
+ * where this does not apply, but they are not trivial to
+ * to test for)
+ */
+#define gx_curve_is_really_line(x0, y0, seg)            \
+    (((((curve_segment *)seg)->p1.x == x0 &&            \
+       ((curve_segment *)seg)->p1.y == y0) ||           \
+      (((curve_segment *)seg)->p1.x == (seg)->pt.x &&   \
+       ((curve_segment *)seg)->p1.y == (seg)->pt.y)) && \
+     ((((curve_segment *)seg)->p2.x == x0 &&            \
+       ((curve_segment *)seg)->p2.y == y0) ||           \
+      (((curve_segment *)seg)->p2.x == (seg)->pt.x &&   \
+       ((curve_segment *)seg)->p2.y == (seg)->pt.y)))
+
+/* Macro to test if a curve is actually a point (i.e. that
+ * start/end and both control points are coincident).
+ */
+#define gx_curve_is_really_point(x0, y0, seg)           \
+    (x0 == (seg)->pt.y && y0 == (seg)->pt.y &&          \
+     ((curve_segment *)seg)->p1.x == x0 &&              \
+     ((curve_segment *)seg)->p1.y == y0 &&              \
+     ((curve_segment *)seg)->p2.x == x0 &&              \
+     ((curve_segment *)seg)->p2.y == y0)
+
 /* Path transformers */
 
-/* The imager state is only needed when flattening for stroke. */
-#ifndef gs_imager_state_DEFINED
-#  define gs_imager_state_DEFINED
-typedef struct gs_imager_state_s gs_imager_state;
+/* The gs_gstate is only needed when flattening for stroke. */
+#ifndef gs_gstate_DEFINED
+#  define gs_gstate_DEFINED
+typedef struct gs_gstate_s gs_gstate;
 #endif
 int gx_path_copy_reducing(const gx_path * ppath_old, gx_path * ppath_new,
-                          fixed fixed_flatness, const gs_imager_state *pis,
+                          fixed fixed_flatness, const gs_gstate *pgs,
                           gx_path_copy_options options);
 
 #define gx_path_copy(old, new)\
   gx_path_copy_reducing(old, new, max_fixed, NULL, pco_none)
-#define gx_path_add_flattened(old, new, flatness)\
-  gx_path_copy_reducing(old, new, float2fixed(flatness), NULL, pco_none)
 #define gx_path_add_flattened_accurate(old, new, flatness, accurate)\
   gx_path_copy_reducing(old, new, float2fixed(flatness), NULL,\
                         (accurate ? pco_accurate : pco_none))
-#define gx_path_add_flattened_for_stroke(old, new, flatness, pis)\
-  gx_path_copy_reducing(old, new, float2fixed(flatness), pis,\
-                        (pis->accurate_curves ?\
+#define gx_path_add_flattened_for_stroke(old, new, flatness, pgs)\
+  gx_path_copy_reducing(old, new, float2fixed(flatness), pgs,\
+                        (pgs->accurate_curves ?\
                          pco_accurate | pco_for_stroke : pco_for_stroke))
-#define gx_path_add_monotonized(old, new)\
-  gx_path_copy_reducing(old, new, max_fixed, NULL, pco_monotonize)
 int gx_path_add_dash_expansion(const gx_path * /*old*/, gx_path * /*new*/,
-                                  const gs_imager_state *),
+                                  const gs_gstate *),
       gx_path_copy_reversed(const gx_path * /*old*/, gx_path * /*new*/),
       gx_path_append_reversed(const gx_path * /*orig*/, gx_path * /*rev*/),
       gx_path_translate(gx_path *, fixed, fixed),
@@ -277,8 +299,8 @@ gx_path_enum_notes(const gs_path_enum *);
 bool gx_path_enum_backup(gs_path_enum *);
 
 /* An auxiliary function to add a path point with a specified transformation. */
-int gs_moveto_aux(gs_imager_state *pis, gx_path *ppath, floatp x, floatp y);
-int gx_setcurrentpoint_from_path(gs_imager_state *pis, gx_path *path);
+int gs_moveto_aux(gs_gstate *pgs, gx_path *ppath, double x, double y);
+int gx_setcurrentpoint_from_path(gs_gstate *pgs, gx_path *path);
 
 /* Path optimization for the filling algorithm. */
 
@@ -293,11 +315,11 @@ typedef struct gx_clip_path_s gx_clip_path;
 #endif
 
 /* Graphics state clipping */
-int gx_clip_to_rectangle(gs_state *, gs_fixed_rect *);
-int gx_clip_to_path(gs_state *);
-int gx_default_clip_box(const gs_state *, gs_fixed_rect *);
-int gx_effective_clip_path(gs_state *, gx_clip_path **);
-int gx_curr_bbox(gs_state * pgs, gs_rect *bbox, gs_bbox_comp_t comp_type);
+int gx_clip_to_rectangle(gs_gstate *, gs_fixed_rect *);
+int gx_clip_to_path(gs_gstate *);
+int gx_default_clip_box(const gs_gstate *, gs_fixed_rect *);
+int gx_effective_clip_path(gs_gstate *, gx_clip_path **);
+int gx_curr_bbox(gs_gstate * pgs, gs_rect *bbox, gs_bbox_comp_t comp_type);
  
 
 /* Opaque type for a clip list. */
@@ -356,22 +378,23 @@ int gx_cpath_assign_free(gx_clip_path * pcpto, gx_clip_path * pcpfrom);
 int
     gx_cpath_reset(gx_clip_path *),		/* from_rectangle ((0,0),(0,0)) */
     gx_cpath_from_rectangle(gx_clip_path *, gs_fixed_rect *),
-    gx_cpath_clip(gs_state *, gx_clip_path *, /*const*/ gx_path *, int),
+    gx_cpath_clip(gs_gstate *, gx_clip_path *, /*const*/ gx_path *, int),
     gx_cpath_intersect(gx_clip_path *, /*const*/ gx_path *, int,
-                       gs_imager_state *),
+                       gs_gstate *),
     gx_cpath_intersect_with_params(gx_clip_path *pcpath, /*const*/ gx_path *ppath_orig,
-                   int rule, gs_imager_state *pis, const gx_fill_params * params),
+                   int rule, gs_gstate *pgs, const gx_fill_params * params),
     gx_cpath_scale_exp2_shared(gx_clip_path *pcpath, int log2_scale_x,
                                int log2_scale_y, bool list_shared,
                                bool segments_shared),
     gx_cpath_to_path(gx_clip_path *, gx_path *),
     gx_cpath_to_path_synthesize(const gx_clip_path * pcpath, gx_path * ppath);
+int gx_cpath_ensure_path_list(gx_clip_path *pcpath);
 bool
     gx_cpath_inner_box(const gx_clip_path *, gs_fixed_rect *),
     gx_cpath_outer_box(const gx_clip_path *, gs_fixed_rect *),
     gx_cpath_includes_rectangle(const gx_clip_path *, fixed, fixed,
                                 fixed, fixed);
-const gs_fixed_rect *cpath_is_rectangle(const gx_clip_path * pcpath);
+gx_path_rectangular_type cpath_is_rectangle(const gx_clip_path * pcpath, gs_fixed_rect *rect);
 bool gx_cpath_rect_visible(gx_clip_path * pcpath, gs_int_rect *prect);
 int gx_cpath_copy(const gx_clip_path * from, gx_clip_path * pcpath);
 

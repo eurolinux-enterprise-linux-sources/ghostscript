@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -33,7 +33,7 @@
 /* Macro to ensure enough room on the operand stack */
 #define check_ostack(n)\
   if ( ostop - osp < (n) )\
-    { o_stack.requested = (n); return_error(e_stackoverflow); }
+    { o_stack.requested = (n); return_error(gs_error_stackoverflow); }
 
 /* Operand stack manipulation. */
 
@@ -41,7 +41,7 @@
 #define push(n)\
   BEGIN\
     if ( (op += (n)) > ostop )\
-      { o_stack.requested = (n); return_error(e_stackoverflow); }\
+      { o_stack.requested = (n); return_error(gs_error_stackoverflow); }\
     else osp = op;\
   END
 
@@ -68,7 +68,7 @@
  * operator's declared minimum number of entries.)
  */
 #define check_op(nargs)\
-  if ( op < osbot + ((nargs) - 1) ) return_error(e_stackunderflow)
+  if ( op < osbot + ((nargs) - 1) ) return_error(gs_error_stackunderflow)
 /*
  * Similarly, in order to simplify some overflow checks, we allocate
  * a few guard entries just above the top of the o-stack.

@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 /* Definitions and interface for PDF 1.4 rendering device */
@@ -58,7 +58,7 @@ typedef struct {
      * output device as an image.
      */
     int (* put_image)(gx_device * dev,
-                    gs_imager_state * pis, gx_device * target);
+                    gs_gstate * pgs, gx_device * target);
 } pdf14_procs_s;
 
 typedef pdf14_procs_s pdf14_procs_t;
@@ -111,7 +111,7 @@ struct pdf14_parent_color_s {
     byte depth;  /* used in clist writer cmd_put_color */
     uint max_gray;  /* Used to determine if device halftones */
     uint max_color; /* Causes issues if these are not maintained */
-    const gx_color_map_procs *(*get_cmap_procs)(const gs_imager_state *,
+    const gx_color_map_procs *(*get_cmap_procs)(const gs_gstate *,
                                                      const gx_device *);
     const gx_cm_color_map_procs *(*parent_color_mapping_procs)(const gx_device *);
     gx_color_index (*encode)(gx_device *, const gx_color_value value[]);
@@ -127,13 +127,13 @@ typedef struct pdf14_ctx_s pdf14_ctx;
 
 struct pdf14_buf_s {
     pdf14_buf *saved;
-
+    byte *backdrop;  /* This is needed for proper non-isolated knockout support */
     bool isolated;
     bool knockout;
     byte alpha;
     byte shape;
     gs_blend_mode_t blend_mode;
-
+    int num_spots;  /* helpful when going between Gray+spots, RGB+spots, CMYK+spots */
     bool has_alpha_g;
     bool has_shape;
     bool has_tags;
@@ -146,10 +146,12 @@ struct pdf14_buf_s {
 
     int rowstride;
     int planestride;
-    int n_chan; /* number of pixel planes including alpha */
+    int n_chan;   /* number of pixel planes including alpha */
     int n_planes; /* total number of planes including alpha, shape, alpha_g */
     byte *data;
     byte *transfer_fn;
+    int matte_num_comps;
+    byte *matte;		/* actually floats */
     gs_int_rect dirty;
     pdf14_mask_t *mask_stack;
     bool idle;
@@ -160,6 +162,7 @@ struct pdf14_buf_s {
     pdf14_parent_color_t *parent_color_info_procs;
 
     gs_transparency_color_t color_space;  /* Different groups can have different spaces for blending */
+    gs_memory_t *memory;
 };
 
 typedef struct pdf14_smaskcolor_s {
@@ -183,9 +186,9 @@ struct pdf14_ctx_s {
 typedef struct gs_devn_params_s gs_devn_params;
 #endif
 
-#ifndef gs_imager_state_DEFINED
-#  define gs_imager_state_DEFINED
-typedef struct gs_imager_state_s gs_imager_state;
+#ifndef gs_gstate_DEFINED
+#  define gs_gstate_DEFINED
+typedef struct gs_gstate_s gs_gstate;
 #endif
 
 #ifndef gx_device_DEFINED
@@ -224,11 +227,13 @@ typedef struct pdf14_device_s {
     bool text_knockout;
     bool overprint;
     bool overprint_mode;
-    bool blendspot;
+    int text_group;
     gx_color_index drawn_comps;		/* Used for overprinting.  Passed from overprint compositor */
     gx_device * pclist_device;
-    bool free_devicen;                  /* Used to avoid freeing a deviceN parameter from target clist device */
-    const gx_color_map_procs *(*save_get_cmap_procs)(const gs_imager_state *,
+    bool free_devicen;              /* Used to avoid freeing a deviceN parameter from target clist device */
+    bool sep_device;
+    bool using_blend_cs;
+    const gx_color_map_procs *(*save_get_cmap_procs)(const gs_gstate *,
                                                      const gx_device *);
     gx_device_color_info saved_target_color_info;
     dev_proc_encode_color(*saved_target_encode_color);
@@ -255,7 +260,7 @@ typedef	struct pdf14_device_s pdf14_clist_device;
 /*
  * Send a PDF 1.4 transparency compositor action to the specified device.
  */
-int send_pdf14trans(gs_imager_state * pis, gx_device * dev,
+int send_pdf14trans(gs_gstate * pgs, gx_device * dev,
     gx_device * * pcdev, gs_pdf14trans_params_t * pparams, gs_memory_t * mem);
 
 /*
@@ -281,5 +286,13 @@ int pdf14_get_buffer_information(const gx_device * dev,
 
 /* Not static due to call from pattern logic */
 int pdf14_disable_device(gx_device * dev);
+
+/* Needed so that we can set the monitoring in the target device */
+int gs_pdf14_device_color_mon_set(gx_device *pdev, bool monitoring);
+
+/* When playing back the clist, we need to know if the buffer device is compatible */
+/* with the pdf14 compositor that was used when writing the clist. Colorspace and  */
+/* depth are critical since these must match when reading back colors.             */
+bool pdf14_ok_to_optimize(gx_device *bdev);
 
 #endif /* gdevp14_INCLUDED */

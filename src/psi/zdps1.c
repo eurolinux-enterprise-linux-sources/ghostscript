@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -21,6 +21,7 @@
 #include "gspath.h"
 #include "gspath2.h"
 #include "gsstate.h"
+#include "gxgstate.h"
 #include "ialloc.h"
 #include "igstate.h"
 #include "ivmspace.h"
@@ -99,7 +100,7 @@ gstate_check_space(i_ctx_t *i_ctx_p, int_gstate *isp, uint space)
      */
 #if 1				/* ****** WORKAROUND ****** */
     if (space != avm_local && imemory_save_level(iimemory) > 0)
-        return_error(e_invalidaccess);
+        return_error(gs_error_invalidaccess);
 #endif				/* ****** END ****** */
 #define gsref_check(p) store_check_space(space, p)
     int_gstate_map_refs(isp, gsref_check);
@@ -115,18 +116,18 @@ zgstate(i_ctx_t *i_ctx_p)
 
     int code = gstate_check_space(i_ctx_p, istate, icurrent_space);
     igstate_obj *pigo;
-    gs_state *pnew;
+    gs_gstate *pnew;
     int_gstate *isp;
 
     if (code < 0)
         return code;
     pigo = ialloc_struct(igstate_obj, &st_igstate_obj, "gstate");
     if (pigo == 0)
-        return_error(e_VMerror);
-    pnew = gs_state_copy(igs, imemory);
+        return_error(gs_error_VMerror);
+    pnew = gs_gstate_copy(igs, imemory);
     if (pnew == 0) {
         ifree_object(pigo, "gstate");
-        return_error(e_VMerror);
+        return_error(gs_error_VMerror);
     }
     isp = gs_int_gstate(pnew);
     int_gstate_map_refs(isp, ref_mark_new);
@@ -153,8 +154,8 @@ zcopy_gstate(i_ctx_t *i_ctx_p)
 {
     os_ptr op = osp;
     os_ptr op1 = op - 1;
-    gs_state *pgs;
-    gs_state *pgs1;
+    gs_gstate *pgs;
+    gs_gstate *pgs1;
     int_gstate *pistate;
     gs_memory_t *mem;
     int code;
@@ -174,9 +175,9 @@ zcopy_gstate(i_ctx_t *i_ctx_p)
 #define gsref_save(p) ref_save(op, p, "copygstate")
     int_gstate_map_refs(pistate, gsref_save);
 #undef gsref_save
-    mem = gs_state_swap_memory(pgs, imemory);
+    mem = gs_gstate_swap_memory(pgs, imemory);
     code = gs_copygstate(pgs, pgs1);
-    gs_state_swap_memory(pgs, mem);
+    gs_gstate_swap_memory(pgs, mem);
     if (code < 0)
         return code;
     int_gstate_map_refs(pistate, ref_mark_new);
@@ -190,7 +191,7 @@ int
 zcurrentgstate(i_ctx_t *i_ctx_p)
 {
     os_ptr op = osp;
-    gs_state *pgs;
+    gs_gstate *pgs;
     int_gstate *pistate;
     int code;
     gs_memory_t *mem;
@@ -208,9 +209,9 @@ zcurrentgstate(i_ctx_t *i_ctx_p)
 #define gsref_save(p) ref_save(op, p, "currentgstate")
     int_gstate_map_refs(pistate, gsref_save);
 #undef gsref_save
-    mem = gs_state_swap_memory(pgs, imemory);
+    mem = gs_gstate_swap_memory(pgs, imemory);
     code = gs_currentgstate(pgs, igs);
-    gs_state_swap_memory(pgs, mem);
+    gs_gstate_swap_memory(pgs, mem);
     if (code < 0)
         return code;
     int_gstate_map_refs(pistate, ref_mark_new);
@@ -364,7 +365,7 @@ rect_get(local_rects_t * plr, os_ptr op, gs_memory_t *mem)
             format = code;
             count = num_array_size(op, format);
             if (count % 4)
-                return_error(e_typecheck);
+                return_error(gs_error_typecheck);
             count /= 4;
             break;
         default:		/* better be 4 numbers */
@@ -384,7 +385,7 @@ rect_get(local_rects_t * plr, os_ptr op, gs_memory_t *mem)
         pr = (gs_rect *)gs_alloc_byte_array(mem, count, sizeof(gs_rect),
                                             "rect_get");
         if (pr == 0)
-            return_error(e_VMerror);
+            return_error(gs_error_VMerror);
     }
     plr->pr = pr;
     for (n = 0; n < count; n++, pr++) {
@@ -396,7 +397,7 @@ rect_get(local_rects_t * plr, os_ptr op, gs_memory_t *mem)
                                  (n << 2) + i, &rnum);
             switch (code) {
                 case t_integer:
-                    rv[i] = rnum.value.intval;
+                    rv[i] = (double)rnum.value.intval;
                     break;
                 case t_real:
                     rv[i] = rnum.value.realval;
@@ -470,16 +471,16 @@ gstate_unshare(i_ctx_t *i_ctx_p)
 {
     os_ptr op = osp;
     ref *pgsref = &r_ptr(op, igstate_obj)->gstate;
-    gs_state *pgs = r_ptr(pgsref, gs_state);
-    gs_state *pnew;
+    gs_gstate *pgs = r_ptr(pgsref, gs_gstate);
+    gs_gstate *pnew;
     int_gstate *isp;
 
     if (!ref_must_save(pgsref))
         return 0;
     /* Copy the gstate. */
-    pnew = gs_gstate(pgs);
+    pnew = gs_gstate_copy(pgs, pgs->memory);
     if (pnew == 0)
-        return_error(e_VMerror);
+        return_error(gs_error_VMerror);
     isp = gs_int_gstate(pnew);
     int_gstate_map_refs(isp, ref_mark_new);
     ref_do_save(op, pgsref, "gstate_unshare");

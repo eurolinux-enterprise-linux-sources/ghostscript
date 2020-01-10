@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -25,6 +25,7 @@
 #include "gdevprn.h"            /* for BLS_force_memory */
 #include "gxcldev.h"
 #include "gxfmap.h"
+#include "gxpcolor.h"		/* for gx_device_is_pattern_clist */
 
 /*
  * Define when, if ever, to write character bitmaps in all bands.
@@ -126,7 +127,7 @@ cmd_put_bits(gx_device_clist_writer * cldev, gx_clist_state * pcls,
     uint uncompressed_size =
     clist_bitmap_bytes(width_bits, height, compression_mask,
                        &uncompressed_raster, &full_raster);
-    uint max_size = cbuf_size - op_size;
+    uint max_size = data_bits_size - op_size;
     gs_memory_t *mem = cldev->memory;
     byte *dp;
     int compress = 0;
@@ -152,8 +153,8 @@ cmd_put_bits(gx_device_clist_writer * cldev, gx_clist_state * pcls,
 
         *psize = try_size;
         code = (pcls != 0 ?
-                set_cmd_put_op(dp, cldev, pcls, 0, try_size) :
-                set_cmd_put_all_op(dp, cldev, 0, try_size));
+                set_cmd_put_op(&dp, cldev, pcls, 0, try_size) :
+                set_cmd_put_all_op(&dp, cldev, 0, try_size));
         if (code < 0)
             return code;
         cmd_uncount_op(0, try_size);
@@ -224,8 +225,8 @@ cmd_put_bits(gx_device_clist_writer * cldev, gx_clist_state * pcls,
     else {
         *psize = op_size + short_size;
         code = (pcls != 0 ?
-                set_cmd_put_op(dp, cldev, pcls, 0, *psize) :
-                set_cmd_put_all_op(dp, cldev, 0, *psize));
+                set_cmd_put_op(&dp, cldev, pcls, 0, *psize) :
+                set_cmd_put_all_op(&dp, cldev, 0, *psize));
         if (code < 0)
             return code;
         cmd_uncount_op(0, *psize);
@@ -238,9 +239,11 @@ cmd_put_bits(gx_device_clist_writer * cldev, gx_clist_state * pcls,
         *psize = op_size + 1;
         dp[op_size] = code;
         compress = cmd_compress_const;
-    } else
-        bytes_copy_rectangle(dp + op_size, short_raster, data, raster,
-                             short_raster, height);
+    } else {
+        uint copy_bytes = (width_bits + 7) >> 3;
+        bytes_copy_rectangle_zero_padding(dp + op_size, short_raster, data, raster,
+                             copy_bytes, height);
+    }
 out:
     *pdp = dp;
     return compress;
@@ -301,12 +304,12 @@ cmd_put_tile_index(gx_device_clist_writer *cldev, gx_clist_state *pcls,
     int code;
 
     if (!(idelta & ~15)) {
-        code = set_cmd_put_op(dp, cldev, pcls,
+        code = set_cmd_put_op(&dp, cldev, pcls,
                               cmd_op_delta_tile_index + idelta, 1);
         if (code < 0)
             return code;
     } else {
-        code = set_cmd_put_op(dp, cldev, pcls,
+        code = set_cmd_put_op(&dp, cldev, pcls,
                               cmd_op_set_tile_index + (indx >> 8), 2);
         if (code < 0)
             return code;
@@ -328,7 +331,7 @@ cmd_put_color_map(gx_device_clist_writer * cldev, cmd_map_index map_index,
     if (map == 0) {
         if (pid && *pid == gs_no_id)
             return 0;	/* no need to write */
-        code = set_cmd_put_all_op(dp, cldev, cmd_opv_set_misc, 3);
+        code = set_cmd_put_all_op(&dp, cldev, cmd_opv_set_misc, 3);
         if (code < 0)
             return code;
         dp[1] = cmd_set_misc_map + (cmd_map_none << 4) + map_index;
@@ -339,13 +342,13 @@ cmd_put_color_map(gx_device_clist_writer * cldev, cmd_map_index map_index,
         if (pid && map->id == *pid)
             return 0;	/* no need to write */
         if (map->proc == gs_identity_transfer) {
-            code = set_cmd_put_all_op(dp, cldev, cmd_opv_set_misc, 3);
+            code = set_cmd_put_all_op(&dp, cldev, cmd_opv_set_misc, 3);
             if (code < 0)
                 return code;
             dp[1] = cmd_set_misc_map + (cmd_map_identity << 4) + map_index;
             dp[2] = comp_num;
         } else {
-            code = set_cmd_put_all_op(dp, cldev, cmd_opv_set_misc,
+            code = set_cmd_put_all_op(&dp, cldev, cmd_opv_set_misc,
                                       3 + sizeof(map->values));
             if (code < 0)
                 return code;
@@ -410,7 +413,7 @@ clist_delete_tile(gx_device_clist_writer * cldev, tile_slot * slot)
     if_debug2m('L', cldev->memory, "[L]deleting index=%u, offset=%lu\n",
                index, (ulong) ((byte *) slot - cldev->data));
     gx_bits_cache_free(&cldev->bits, (gx_cached_bits_head *) slot,
-                       &cldev->chunk);
+                       cldev->cache_chunk);
     table[index].offset = 0;
     /* Delete the entry from the hash table. */
     /* We'd like to move up any later entries, so that we don't need */
@@ -428,7 +431,7 @@ clist_delete_tile(gx_device_clist_writer * cldev, tile_slot * slot)
                        index, offset);
             gx_bits_cache_free(&cldev->bits,
                              (gx_cached_bits_head *) (cldev->data + offset),
-                               &cldev->chunk);
+                               cldev->cache_chunk);
             table[index].offset = 0;
         }
     }
@@ -452,11 +455,11 @@ clist_add_tile(gx_device_clist_writer * cldev, const gx_strip_bitmap * tiles,
     if (cldev->bits.csize == cldev->tile_max_count) {	/* Don't let the hash table get too full: delete an entry. */
         /* Since gx_bits_cache_alloc returns an entry to delete when */
         /* it fails, just force it to fail. */
-        gx_bits_cache_alloc(&cldev->bits, (ulong) cldev->chunk.size,
+        gx_bits_cache_alloc(&cldev->bits, (ulong) cldev->cache_chunk->size,
                             &slot_head);
         if (slot_head == 0) {	/* Wrap around and retry. */
             cldev->bits.cnext = 0;
-            gx_bits_cache_alloc(&cldev->bits, (ulong) cldev->chunk.size,
+            gx_bits_cache_alloc(&cldev->bits, (ulong) cldev->cache_chunk->size,
                                 &slot_head);
 #ifdef DEBUG
             if (slot_head == 0) {
@@ -546,7 +549,7 @@ clist_new_tile_params(gx_strip_bitmap * new_tile, const gx_strip_bitmap * tiles,
     if (tiles->num_planes != 1)
         depth /= tiles->num_planes;
     rep_width_bits = rep_width * depth;
-    max_bytes = cldev->chunk.size / (rep_width_bits * rep_height);
+    max_bytes = cldev->cache_chunk->size / (rep_width_bits * rep_height);
 
     max_bytes -= min(max_bytes, tile_overhead);
     if (max_bytes > max_tile_bytes)
@@ -600,7 +603,7 @@ clist_change_tile(gx_device_clist_writer * cldev, gx_clist_state * pcls,
         int band_index = pcls - cldev->states;
         byte *bptr = ts_mask(loc.tile) + (band_index >> 3);
         byte bmask = 1 << (band_index & 7);
-        bool for_pattern = IS_CLIST_FOR_PATTERN(cldev);
+        bool for_pattern = gx_device_is_pattern_clist((gx_device *)cldev);
 
         if (*bptr & bmask) {	/* Already known.  Just set the index. */
             if (pcls->tile_index == loc.index)
@@ -646,7 +649,7 @@ clist_change_tile(gx_device_clist_writer * cldev, gx_clist_state * pcls,
                                  * compatible with those stored in the device
                                  * (cldev->tile_params).
                                  */
-                ulong offset = (byte *) loc.tile - cldev->chunk.data;
+                ulong offset = (byte *) loc.tile - cldev->cache_chunk->data;
                 uint rsize =
                     extra + 1 + cmd_size_w(loc.index) + cmd_size_w(offset);
                 byte *dp;
@@ -733,7 +736,7 @@ clist_change_bits(gx_device_clist_writer * cldev, gx_clist_state * pcls,
         } else {		/* Not known yet.  Output the bits. */
             /* Note that the offset we write is the one used by */
             /* the reading phase, not the writing phase. */
-            ulong offset = (byte *) loc.tile - cldev->chunk.data;
+            ulong offset = (byte *) loc.tile - cldev->cache_chunk->data;
             uint rsize = 2 + cmd_size_w(loc.tile->width) +
             cmd_size_w(loc.tile->height) + cmd_size_w(loc.index) +
             cmd_size_w(offset);
@@ -751,7 +754,7 @@ clist_change_bits(gx_device_clist_writer * cldev, gx_clist_state * pcls,
                                 loc.tile->width * pdepth,
                                 loc.tile->height * loc.tile->num_planes, loc.tile->cb_raster,
                                 rsize,
-                              decompress_elsewhere | (((gx_device_printer *)cldev->target)->BLS_force_memory ? (1 << cmd_compress_cfe) : 0),
+                              decompress_elsewhere | (cldev->target->BLS_force_memory ? (1 << cmd_compress_cfe) : 0),
                                 &dp, &csize);
 
             if (code < 0)

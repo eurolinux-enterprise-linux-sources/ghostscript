@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -140,7 +140,7 @@ typedef struct patch_color_s patch_color_t;
 /* Initialize a packed value stream. */
 void shade_next_init(shade_coord_stream_t * cs,
                      const gs_shading_mesh_params_t * params,
-                     const gs_imager_state * pis);
+                     const gs_gstate * pgs);
 
 /* Get the next flag value. */
 int shade_next_flag(shade_coord_stream_t * cs, int BitsPerFlag);
@@ -194,12 +194,13 @@ int shade_next_vertex(shade_coord_stream_t * cs, shading_vertex_t * vertex,
  */
 #define shading_fill_state_common\
   gx_device *dev;\
-  gs_imager_state *pis;\
+  gs_gstate *pgs;\
   const gs_color_space *direct_space;\
   int num_components;		/* # of color components in direct_space */\
   float cc_max_error[GS_CLIENT_COLOR_MAX_COMPONENTS];\
   gx_device *trans_device;\
-  gsicc_link_t *icclink
+  gsicc_link_t *icclink;\
+  bool cs_always_linear
 
 typedef struct shading_fill_state_s {
     shading_fill_state_common;
@@ -208,7 +209,7 @@ typedef struct shading_fill_state_s {
 /* Initialize the common parts of the recursion state. */
 int shade_init_fill_state(shading_fill_state_t * pfs,
                           const gs_shading_t * psh, gx_device * dev,
-                          gs_imager_state * pis);
+                          gs_gstate * pgs);
 
 /* Fill one piece of a shading. */
 #ifndef gx_device_color_DEFINED

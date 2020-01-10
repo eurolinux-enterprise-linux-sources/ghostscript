@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -74,16 +74,16 @@ charstring_font_get_refs(const_os_ptr op, charstring_font_refs_t *pfr)
     if (dict_find_string(op, "Private", &pfr->Private) <= 0 ||
         !r_has_type(pfr->Private, t_dictionary)
         )
-        return_error(e_invalidfont);
+        return_error(gs_error_invalidfont);
     make_empty_array(&pfr->no_subrs, 0);
     if (dict_find_string(pfr->Private, "OtherSubrs", &pfr->OtherSubrs) > 0) {
         if (!r_is_array(pfr->OtherSubrs))
-            return_error(e_typecheck);
+            return_error(gs_error_typecheck);
     } else
         pfr->OtherSubrs = &pfr->no_subrs;
     if (dict_find_string(pfr->Private, "Subrs", &pfr->Subrs) > 0) {
         if (!r_is_array(pfr->Subrs))
-            return_error(e_typecheck);
+            return_error(gs_error_typecheck);
     } else
         pfr->Subrs = &pfr->no_subrs;
     pfr->GlobalSubrs = &pfr->no_subrs;
@@ -136,10 +136,10 @@ charstring_font_params(const gs_memory_t *mem,
     if ((code = dict_bool_param(pprivate, "RndStemUp", true, &pdata1->RndStemUp)) < 0)
         return code;
     if ((code = pdata1->StdHW.count = dict_float_array_check_param(mem, pprivate, "StdHW",
-                1, &pdata1->StdHW.values[0], NULL, 0, e_rangecheck)) < 0)
+                1, &pdata1->StdHW.values[0], NULL, 0, gs_error_rangecheck)) < 0)
         return code;
     if ((code = pdata1->StdVW.count = dict_float_array_check_param(mem, pprivate, "StdVW",
-                1, &pdata1->StdVW.values[0], NULL, 0, e_rangecheck)) < 0)
+                1, &pdata1->StdVW.values[0], NULL, 0, gs_error_rangecheck)) < 0)
         return code;
     if ((code = pdata1->StemSnapH.count = dict_float_array_param(mem, pprivate, "StemSnapH",
                 max_StemSnap, &pdata1->StemSnapH.values[0], NULL)) < 0)
@@ -303,6 +303,21 @@ same_font_dict(const font_data *pdata, const font_data *podata,
     return (present == opresent &&
             (present <= 0 || obj_eq(dict_mem(pdict), pvalue, povalue)));
 }
+static bool z1_check_data_procs_equal(const gs_type1_data_procs_t *p1, const gs_type1_data_procs_t *p2)
+{
+    if (p1->glyph_data != p2->glyph_data)
+        return false;
+    if (p1->subr_data != p2->subr_data)
+        return false;
+    if (p1->seac_data != p2->seac_data)
+        return false;
+    if (p1->push_values != p2->push_values)
+        return false;
+    if (p1->pop_value != p2->pop_value)
+        return false;
+    return true;
+}
+
 static int
 z1_same_font(const gs_font *font, const gs_font *ofont, int mask)
 {
@@ -321,9 +336,10 @@ z1_same_font(const gs_font *font, const gs_font *ofont, int mask)
         const font_data *const pdata = pfont_data(pfont1);
         const gs_font_type1 *pofont1 = (const gs_font_type1 *)ofont;
         const font_data *const podata = pfont_data(pofont1);
+        bool same_data_procs = z1_check_data_procs_equal(&pofont1->data.procs, &z1_data_procs);
 
-        if ((check & (FONT_SAME_OUTLINES | FONT_SAME_METRICS)) &&
-            !memcmp(&pofont1->data.procs, &z1_data_procs, sizeof(z1_data_procs)) &&
+
+        if ((check & (FONT_SAME_OUTLINES | FONT_SAME_METRICS)) && same_data_procs &&
             obj_eq(font->memory, &pdata->CharStrings, &podata->CharStrings) &&
             /*
              * We use same_font_dict for convenience: we know that
@@ -333,8 +349,7 @@ z1_same_font(const gs_font *font, const gs_font *ofont, int mask)
             )
             same |= FONT_SAME_OUTLINES;
 
-        if ((check & FONT_SAME_METRICS) && (same & FONT_SAME_OUTLINES) &&
-            !memcmp(&pofont1->data.procs, &z1_data_procs, sizeof(z1_data_procs)) &&
+        if ((check & FONT_SAME_METRICS) && (same & FONT_SAME_OUTLINES) && same_data_procs  &&
             /* Metrics may be affected by CDevProc, Metrics, Metrics2. */
             same_font_dict(pdata, podata, "Metrics") &&
             same_font_dict(pdata, podata, "Metrics2") &&

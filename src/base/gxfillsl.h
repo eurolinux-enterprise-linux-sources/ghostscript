@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -151,7 +151,6 @@ TEMPLATE_spot_into_scanlines (line_list *ll, fixed band_mask)
 
                 if_debug4m('Q', ll->memory, "[Qr]draw 0x%lx: [%d,%d),%d\n", (ulong)pcr,
                            x0, x1, y0);
-                VD_RECT(x0, y0, x1 - x0, 1, VD_TRAP_COLOR);
                 code = LOOP_FILL_RECTANGLE_DIRECT(&fo, x0, y0, x1 - x0, 1);
                 if_debug3m('F', ll->memory, "[F]drawing [%d:%d),%d\n", x0, x1, y0);
                 if (code < 0)

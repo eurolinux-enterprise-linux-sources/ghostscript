@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -30,7 +30,7 @@
 #include "gxfarith.h"
 #include "gxfrac.h"
 #include "gxcmap.h"
-#include "gxistate.h"
+#include "gxgstate.h"
 #include "gscoord.h"
 #include "gzstate.h"
 #include "gxdevcli.h"
@@ -40,6 +40,9 @@
 #include "gsicc_manage.h"
 #include "gsicc.h"
 #include "gsicc_cache.h"
+#include "gxdevice.h"
+#include "gxcie.h"
+#include "gxdevsop.h"
 
 /* ---------------- Color space ---------------- */
 
@@ -61,6 +64,8 @@ static cs_proc_install_cspace(gx_install_DeviceN);
 static cs_proc_set_overprint(gx_set_overprint_DeviceN);
 static cs_proc_final(gx_final_DeviceN);
 static cs_proc_serialize(gx_serialize_DeviceN);
+static cs_proc_polarity(gx_polarity_DeviceN);
+
 const gs_color_space_type gs_color_space_type_DeviceN = {
     gs_color_space_index_DeviceN, true, false,
     &st_color_space_DeviceN, gx_num_components_DeviceN,
@@ -71,7 +76,7 @@ const gs_color_space_type gs_color_space_type_DeviceN = {
     gx_set_overprint_DeviceN,
     gx_final_DeviceN, gx_no_adjust_color_count,
     gx_serialize_DeviceN,
-    gx_cspace_is_linear_default
+    gx_cspace_is_linear_default, gx_polarity_DeviceN
 };
 
 /* GC procedures */
@@ -176,7 +181,7 @@ alloc_device_n_map(gs_device_n_map ** ppmap, gs_memory_t * mem,
  * in the next gstate down in the gstate list (pgs->saved).
  */
 int
-gs_attachattributecolorspace(gs_separation_name sep_name, gs_state * pgs)
+gs_attachattributecolorspace(gs_separation_name sep_name, gs_gstate * pgs)
 {
     gs_color_space * pdevncs;
     gs_device_n_attributes * patt;
@@ -213,7 +218,7 @@ int
 gs_cspace_set_devn_proc(gs_color_space * pcspace,
                         int (*proc)(const float *,
                                     float *,
-                                    const gs_imager_state *,
+                                    const gs_gstate *,
                                     void *
                                     ),
                         void *proc_data
@@ -235,7 +240,7 @@ gs_cspace_set_devn_proc(gs_color_space * pcspace,
  * Check if we are using the alternate color space.
  */
 bool
-using_alt_color_space(const gs_state * pgs)
+using_alt_color_space(const gs_gstate * pgs)
 {
     return (pgs->color_component_map.use_alt_cspace);
 }
@@ -243,7 +248,7 @@ using_alt_color_space(const gs_state * pgs)
 /* Map a DeviceN color using a Function. */
 int
 map_devn_using_function(const float *in, float *out,
-                        const gs_imager_state *pis, void *data)
+                        const gs_gstate *pgs, void *data)
 
 {
     gs_function_t *const pfn = data;
@@ -294,6 +299,18 @@ gx_num_components_DeviceN(const gs_color_space * pcs)
     return pcs->params.device_n.num_components;
 }
 
+/* Determine best guess of polarity */
+static gx_color_polarity_t
+gx_polarity_DeviceN(const gs_color_space * pcs)
+{
+    /* DeviceN initializes to 1.0 like a separation so
+       for now, treat this as subtractive.  It is possible
+       that we may have to do a special test for Red, Green
+       and Blue but for now, I believe the following is
+       correct */
+    return GX_CINFO_POLARITY_SUBTRACTIVE;
+}
+
 /* Initialize a DeviceN color. */
 static void
 gx_init_DeviceN(gs_client_color * pcc, const gs_color_space * pcs)
@@ -311,7 +328,7 @@ gx_restrict_DeviceN(gs_client_color * pcc, const gs_color_space * pcs)
     uint i;
 
     for (i = 0; i < pcs->params.device_n.num_components; ++i) {
-        floatp value = pcc->paint.values[i];
+        double value = pcc->paint.values[i];
         pcc->paint.values[i] = (value <= 0 ? 0 : value >= 1 ? 1 : value);
     }
 }
@@ -319,29 +336,29 @@ gx_restrict_DeviceN(gs_client_color * pcc, const gs_color_space * pcs)
 /* Remap a DeviceN color. */
 static const gs_color_space *
 gx_concrete_space_DeviceN(const gs_color_space * pcs,
-                          const gs_imager_state * pis)
+                          const gs_gstate * pgs)
 {
     bool is_lab = false;
 #ifdef DEBUG
     /*
-     * Verify that the color space and imager state info match.
+     * Verify that the color space and gs_gstate info match.
      */
-    if (pcs->id != pis->color_component_map.cspace_id)
-        dmprintf(pis->memory, "gx_concrete_space_DeviceN: color space id mismatch");
+    if (pcs->id != pgs->color_component_map.cspace_id)
+        dmprintf(pgs->memory, "gx_concrete_space_DeviceN: color space id mismatch");
 #endif
     /*
      * Check if we are using the alternate color space.
      */
-    if (pis->color_component_map.use_alt_cspace) {
+    if (pgs->color_component_map.use_alt_cspace) {
         /* Need to handle PS CIE space */
         if (gs_color_space_is_PSCIE(pcs->base_space)) {
             if (pcs->base_space->icc_equivalent == NULL) {
-                gs_colorspace_set_icc_equivalent(pcs->base_space,
-                                                    &is_lab, pis->memory);
+                (void)gs_colorspace_set_icc_equivalent(pcs->base_space,
+                                                    &is_lab, pgs->memory);
             }
             return (pcs->base_space->icc_equivalent);
         }
-        return cs_concrete_space(pcs->base_space, pis);
+        return cs_concrete_space(pcs->base_space, pgs);
     }
     /*
      * DeviceN color spaces are concrete (when not using alt. color space).
@@ -351,34 +368,49 @@ gx_concrete_space_DeviceN(const gs_color_space * pcs,
 
 static int
 gx_remap_DeviceN(const gs_client_color * pcc, const gs_color_space * pcs,
-        gx_device_color * pdc, const gs_imager_state * pis, gx_device * dev,
+        gx_device_color * pdc, const gs_gstate * pgs, gx_device * dev,
                        gs_color_select_t select)
 {
     frac conc[GS_CLIENT_COLOR_MAX_COMPONENTS];
     const gs_color_space *pconcs;
     int i = pcs->type->num_components(pcs),k;
-    int code;
+    int code = 0;
     const gs_color_space *pacs = pcs->base_space;
     gs_client_color temp;
+    bool mapped = false;
 
-    if ( pcs->cmm_icc_profile_data != NULL && pis->color_component_map.use_alt_cspace) {
-        /* If needed, reorganize the data.  The ICC colorants tag drives the
-           the laydown order */
+    if ( pcs->cmm_icc_profile_data != NULL && pgs->color_component_map.use_alt_cspace) {
+        /* This is the case where we have placed a N-CLR source profile for
+           this color space */
         if (pcs->cmm_icc_profile_data->devicen_permute_needed) {
             for ( k = 0; k < i; k++) {
                 temp.paint.values[k] = pcc->paint.values[pcs->cmm_icc_profile_data->devicen_permute[k]];
             }
-            code = pacs->type->remap_color(&temp, pacs, pdc, pis, dev, select);
+            code = pacs->type->remap_color(&temp, pacs, pdc, pgs, dev, select);
         } else {
-            code = pacs->type->remap_color(pcc, pacs, pdc, pis, dev, select);
+            code = pacs->type->remap_color(pcc, pacs, pdc, pgs, dev, select);
         }
         return(code);
     } else {
-        code = (*pcs->type->concretize_color)(pcc, pcs, conc, pis, dev);
-        if (code < 0)
-            return code;
-        pconcs = cs_concrete_space(pcs, pis);
-        code = (*pconcs->type->remap_concrete_color)(conc, pconcs, pdc, pis, dev, select);
+        /* Check if we are doing any named color management.  This check happens
+           regardless if we are doing the alternate tint transform or not.  If
+           desired, that check could be made in gsicc_transform_named_color and
+           a decision made to return true or false */
+        if (pgs->icc_manager->device_named != NULL) {
+            /* Try to apply the direct replacement */
+            mapped = gx_remap_named_color(pcc, pcs, pdc, pgs, dev, select);
+        }
+        if (!mapped) {
+            cmm_dev_profile_t *dev_profile;
+            code = dev_proc(dev, get_profile)(dev, &dev_profile);
+            if (code < 0)
+                return code;
+            code = (*pcs->type->concretize_color)(pcc, pcs, conc, pgs, dev);
+            if (code < 0)
+                return code;
+            pconcs = cs_concrete_space(pcs, pgs);
+            code = (*pconcs->type->remap_concrete_color)(pconcs, conc, pdc, pgs, dev, select, dev_profile);
+        }
         /* Save original color space and color info into dev color */
         i = any_abs(i);
         for (i--; i >= 0; i--)
@@ -390,24 +422,20 @@ gx_remap_DeviceN(const gs_client_color * pcc, const gs_color_space * pcs,
 
 static int
 gx_concretize_DeviceN(const gs_client_color * pc, const gs_color_space * pcs,
-                      frac * pconc, const gs_imager_state * pis, gx_device *dev)
+                      frac * pconc, const gs_gstate * pgs, gx_device *dev)
 {
     int code, tcode = 0;
     gs_client_color cc;
     gs_color_space *pacs = (gs_color_space*) (pcs->base_space);
     gs_device_n_map *map = pcs->params.device_n.map;
     bool is_lab;
-    int k;
-    int num_des_comps = dev->color_info.num_components;
-    gsicc_namedcolor_t *named_color;
-    const gs_separation_name *names = pcs->params.device_n.names;
     int num_src_comps = pcs->params.device_n.num_components;
 
 #ifdef DEBUG
     /*
-     * Verify that the color space and imager state info match.
+     * Verify that the color space and gs_gstate info match.
      */
-    if (pcs->id != pis->color_component_map.cspace_id)
+    if (pcs->id != pgs->color_component_map.cspace_id)
         dmprintf(dev->memory, "gx_concretize_DeviceN: color space id mismatch");
 #endif
 
@@ -416,50 +444,7 @@ gx_concretize_DeviceN(const gs_client_color * pc, const gs_color_space * pcs,
      * We must preserve tcode for implementing a semi-hack in the interpreter.
      */
 
-    if (pis->color_component_map.use_alt_cspace) {
-        /* First see if we have a named color object that we can use to try
-           to map from the spot color into device values.  */
-        if (pis->icc_manager->device_named != NULL) {
-            /* There is a table present.  If we have the colorant name
-               then get the device values */
-            gx_color_value device_values[GX_DEVICE_COLOR_MAX_COMPONENTS];
-            byte *pname;
-            uint name_size;
-            gsicc_rendering_param_t rendering_params;
-
-            /* Define the rendering intents. */
-            rendering_params.black_point_comp = pis->blackptcomp;
-            rendering_params.graphics_type_tag = dev->graphics_type_tag;
-            rendering_params.override_icc = false;
-            rendering_params.preserve_black = gsBKPRESNOTSPECIFIED;
-            rendering_params.rendering_intent = pis->renderingintent;
-            rendering_params.cmm = gsCMM_DEFAULT;
-
-            /* Allocate and initialize name structure */
-            named_color = 
-                (gsicc_namedcolor_t*) gs_alloc_bytes(dev->memory,
-                    num_src_comps * sizeof(gsicc_namedcolor_t),
-                    "gx_remap_concrete_DeviceN");
-
-            for (k = 0; k < num_src_comps; k++) {
-                pcs->params.device_n.get_colorname_string(dev->memory, names[k], 
-                                                          &pname, &name_size);
-                named_color[k].colorant_name = (char*) pname;
-                named_color[k].name_size = name_size;
-            }
-            code = gsicc_transform_named_color(pc->paint.values, named_color,
-                                               num_src_comps, device_values, 
-                                               pis, dev, NULL, 
-                                               &rendering_params);
-            gs_free_object(dev->memory, named_color, 
-                           "gx_remap_concrete_DeviceN");
-            if (code == 0) {
-                for (k = 0; k < num_des_comps; k++){
-                    pconc[k] = float2frac(((float) device_values[k])/65535.0);
-                }
-                return(0);
-            }
-        }
+    if (pgs->color_component_map.use_alt_cspace) {
         /* Check the 1-element cache first. */
         if (map->cache_valid) {
             int i;
@@ -478,27 +463,32 @@ gx_concretize_DeviceN(const gs_client_color * pc, const gs_color_space * pcs,
         }
         tcode = (*pcs->params.device_n.map->tint_transform)
              (pc->paint.values, &cc.paint.values[0],
-             pis, pcs->params.device_n.map->tint_transform_data);
+             pgs, pcs->params.device_n.map->tint_transform_data);
         (*pacs->type->restrict_color)(&cc, pacs);
         if (tcode < 0)
             return tcode;
         /* First check if this was PS based. */
         if (gs_color_space_is_PSCIE(pacs)) {
-            /* If we have not yet create the profile do that now */
+            /* We may have to rescale data to 0 to 1 range */
+            rescale_cie_colors(pacs, &cc);
+            /* If we have not yet created the profile do that now */
             if (pacs->icc_equivalent == NULL) {
-                gs_colorspace_set_icc_equivalent(pacs, &(is_lab), pis->memory);
+                code = gs_colorspace_set_icc_equivalent(pacs, &(is_lab), pgs->memory);
+                if (code < 0)
+                   return code;
             }
             /* Use the ICC equivalent color space */
             pacs = pacs->icc_equivalent;
         }
-        if (pacs->cmm_icc_profile_data->data_cs == gsCIELAB ||
-            pacs->cmm_icc_profile_data->islab) {
+        if (pacs->cmm_icc_profile_data &&
+            (pacs->cmm_icc_profile_data->data_cs == gsCIELAB ||
+            pacs->cmm_icc_profile_data->islab)) {
             /* Get the data in a form that is concrete for the CMM */
             cc.paint.values[0] /= 100.0;
             cc.paint.values[1] = (cc.paint.values[1]+128)/255.0;
             cc.paint.values[2] = (cc.paint.values[2]+128)/255.0;
         }
-        code = cs_concretize_color(&cc, pacs, pconc, pis, dev);
+        code = cs_concretize_color(&cc, pacs, pconc, pgs, dev);
     }
     else {
         int i;
@@ -511,42 +501,39 @@ gx_concretize_DeviceN(const gs_client_color * pc, const gs_color_space * pcs,
 }
 
 static int
-gx_remap_concrete_DeviceN(const frac * pconc, const gs_color_space * pcs,
-        gx_device_color * pdc, const gs_imager_state * pis, gx_device * dev,
-                          gs_color_select_t select)
+gx_remap_concrete_DeviceN(const gs_color_space * pcs, const frac * pconc,
+                          gx_device_color * pdc, const gs_gstate * pgs,
+                          gx_device * dev, gs_color_select_t select,
+                          const cmm_dev_profile_t *dev_profile)
 {
-    int code;
+    int code = 0;
 
 #ifdef DEBUG
     /*
-     * Verify that the color space and imager state info match.
+     * Verify that the color space and gs_gstate info match.
      */
-    if (pcs->id != pis->color_component_map.cspace_id)
-        dmprintf(pis->memory, "gx_remap_concrete_DeviceN: color space id mismatch");
+    if (pcs->id != pgs->color_component_map.cspace_id)
+        dmprintf(pgs->memory, "gx_remap_concrete_DeviceN: color space id mismatch");
 #endif
-    if (pis->color_component_map.use_alt_cspace) {
+    if (pgs->color_component_map.use_alt_cspace) {
         const gs_color_space *pacs = pcs->base_space;
-
         return (*pacs->type->remap_concrete_color)
-                                (pconc, pacs, pdc, pis, dev, select);
-    }
-    else {
+                                (pacs, pconc, pdc, pgs, dev, select, dev_profile);
+    } else {
     /* If we are going DeviceN out to real sep device that understands these,
-       and if the destination profile is DeviceN, we print the colors directly. 
+       and if the destination profile is DeviceN, we print the colors directly.
        Make sure to disable the DeviceN profile color map so that is does not
        get used in gx_remap_concrete_devicen.  We probably should pass something
        through here but it is a pain due to the change in the proc. */
-        cmm_dev_profile_t *dev_profile;
         bool temp_val;
 
-        code = dev_proc(dev, get_profile)(dev, &dev_profile);
-        if (dev_profile->spotnames != NULL) {
+        if (dev_profile->spotnames != NULL && code >= 0) {
             temp_val = dev_profile->spotnames->equiv_cmyk_set;
             dev_profile->spotnames->equiv_cmyk_set = false;
-            gx_remap_concrete_devicen(pconc, pdc, pis, dev, select);
+            gx_remap_concrete_devicen(pconc, pdc, pgs, dev, select);
             dev_profile->spotnames->equiv_cmyk_set = temp_val;
         } else {
-            gx_remap_concrete_devicen(pconc, pdc, pis, dev, select);
+            gx_remap_concrete_devicen(pconc, pdc, pgs, dev, select);
         }
         return 0;
     }
@@ -558,7 +545,7 @@ gx_remap_concrete_DeviceN(const frac * pconc, const gs_color_space * pcs,
  * structure.
  */
 static int
-check_DeviceN_component_names(const gs_color_space * pcs, gs_state * pgs)
+check_DeviceN_component_names(const gs_color_space * pcs, gs_gstate * pgs)
 {
     const gs_separation_name *names = pcs->params.device_n.names;
     int num_comp = pcs->params.device_n.num_components;
@@ -577,15 +564,24 @@ check_DeviceN_component_names(const gs_color_space * pcs, gs_state * pgs)
     pcolor_component_map->sep_type = SEP_OTHER;
     /*
      * Always use the alternate color space if the current device is
-     * using an additive color model.
+     * using an additive color model. The exception is if we have a separation
+     * device and we are doing transparency blending in an additive color
+     * space.  In that case, the spots are kept separated and blended
+     * individually per the PDF specification.  However, if any of the spots are
+     * CMYK process colors, we use the alternate color space.  This matches AR.
      */
-    if (dev->color_info.polarity == GX_CINFO_POLARITY_ADDITIVE) {
+    if (!(dev_proc(dev, dev_spec_op)(dev, gxdso_supports_devn, NULL, 0) &&
+        dev_proc(dev, dev_spec_op)(dev, gxdso_is_pdf14_device, NULL, 0)) &&
+        dev->color_info.polarity == GX_CINFO_POLARITY_ADDITIVE) {
         pcolor_component_map->use_alt_cspace = true;
         return 0;
     }
     /*
-     * Now check the names of the color components.
+     * Now check the names of the color components.  If any of the colorants
+     * come back as process type (i.e. CMYK) and we are drawing in a pdf14
+     * additive color space then use the alternate tint transform.
      */
+
     non_match = false;
     for(i = 0; i < num_comp; i++ ) {
         /*
@@ -608,11 +604,11 @@ check_DeviceN_component_names(const gs_color_space * pcs, gs_state * pgs)
             if (strncmp((char *) pname, "None", name_size) != 0) {
                     non_match = true;
             } else {
-                /* Device N includes one or more None Entries. We can't reduce 
+                /* Device N includes one or more None Entries. We can't reduce
                    the number of components in the list count, since the None Name(s)
                    are present in the list and GCd and we may need the None
                    entries in the alternate tint trasform calcuation.
-                   So we will detect the presence of them by setting 
+                   So we will detect the presence of them by setting
                    pcolor_component_map->color_map[i] = -1 and watching
                    for this case later during the remap operation. */
                 pcolor_component_map->color_map[i] = -1;
@@ -625,7 +621,7 @@ check_DeviceN_component_names(const gs_color_space * pcs, gs_state * pgs)
 
 /* Install a DeviceN color space. */
 static int
-gx_install_DeviceN(gs_color_space * pcs, gs_state * pgs)
+gx_install_DeviceN(gs_color_space * pcs, gs_gstate * pgs)
 {
     int code;
     code = check_DeviceN_component_names(pcs, pgs);
@@ -637,9 +633,9 @@ gx_install_DeviceN(gs_color_space * pcs, gs_state * pgs)
         /* An nclr profile is in the manager.  Grab one that matches. */
         cmm_profile_t *profdata = gsicc_finddevicen(pcs, pgs->icc_manager);
         if (profdata != NULL)
-            rc_increment(profdata);
+            gsicc_adjust_profile_rc(profdata, 1, "gx_install_DeviceN");
         if (pcs->cmm_icc_profile_data != NULL)
-            rc_decrement(pcs->cmm_icc_profile_data, "gx_install_DeviceN");
+            gsicc_adjust_profile_rc(pcs->cmm_icc_profile_data, -1, "gx_install_DeviceN");
         pcs->cmm_icc_profile_data = profdata;
     }
     /* {csrc} was pgs->color_space->params.device_n.use_alt_cspace */
@@ -654,33 +650,32 @@ gx_install_DeviceN(gs_color_space * pcs, gs_state * pgs)
         /* Need to install the nclr cspace */
         code = gs_cspace_build_ICC(&nclr_pcs, NULL, pgs->memory);
         nclr_pcs->cmm_icc_profile_data = pcs->cmm_icc_profile_data;
-        rc_increment(pcs->cmm_icc_profile_data);
-        rc_increment_cs(nclr_pcs); // Suspicious - RJW
-        rc_decrement_cs(pcs->base_space, "gx_install_DeviceN");
+        gsicc_adjust_profile_rc(pcs->cmm_icc_profile_data, 1, "gx_install_DeviceN");
+        rc_increment(nclr_pcs);				/* FIXME: Suspicious - RJW */
+        rc_decrement(pcs->base_space, "gx_install_DeviceN");
         pcs->base_space = nclr_pcs;
     }
     /*
      * Give the device an opportunity to capture equivalent colors for any
      * spot colors which might be present in the color space.
      */
-    if (code >= 0)
-        code = dev_proc(pgs->device, update_spot_equivalent_colors)
+    if (code >= 0) {
+        if (dev_proc(pgs->device, update_spot_equivalent_colors))
+            code = dev_proc(pgs->device, update_spot_equivalent_colors)
                                                         (pgs->device, pgs);
+    }
     return code;
 }
 
 /* Set overprint information for a DeviceN color space */
 static int
-gx_set_overprint_DeviceN(const gs_color_space * pcs, gs_state * pgs)
+gx_set_overprint_DeviceN(const gs_color_space * pcs, gs_gstate * pgs)
 {
     gs_devicen_color_map *  pcmap = &pgs->color_component_map;
     int code;
-    gx_device *dev = pgs->device;
-    cmm_dev_profile_t *dev_profile;
-    
-    dev_proc(dev, get_profile)(dev, &(dev_profile));
+
     /* It is possible that the color map information in the graphic state
-       is not current due to save/restore and or if we are coming from 
+       is not current due to save/restore and or if we are coming from
        a color space that is inside a PatternType 2 */
     code = check_DeviceN_component_names(pcs, pgs);
     if (code < 0)
@@ -688,15 +683,11 @@ gx_set_overprint_DeviceN(const gs_color_space * pcs, gs_state * pgs)
     if (pcmap->use_alt_cspace) {
         const gs_color_space_type* base_type = pcs->base_space->type;
 
-        if (dev_profile->sim_overprint)
-            return gx_simulated_set_overprint(pcs->base_space, pgs);
-        else {
-            /* If the base space is DeviceCMYK, handle overprint as DeviceCMYK */
-            if ( base_type->index == gs_color_space_index_DeviceCMYK )
-                    return base_type->set_overprint( pcs->base_space, pgs );
-            else
-                    return gx_spot_colors_set_overprint( pcs->base_space, pgs);
-        }
+        /* If the base space is DeviceCMYK, handle overprint as DeviceCMYK */
+        if ( base_type->index == gs_color_space_index_DeviceCMYK )
+            return base_type->set_overprint( pcs->base_space, pgs );
+        else
+            return gx_spot_colors_set_overprint( pcs->base_space, pgs);
     }
     else {
         gs_overprint_params_t   params;
@@ -706,18 +697,16 @@ gx_set_overprint_DeviceN(const gs_color_space * pcs, gs_state * pgs)
 
             params.retain_spot_comps = false;
             params.drawn_comps = 0;
-            params.k_value = 0;
-            params.blendspot = false;
             for (i = 0; i < ncomps; i++) {
-                int     mcomp = pcmap->color_map[i];
-
+                int mcomp = pcmap->color_map[i];
                 if (mcomp >= 0)
                     gs_overprint_set_drawn_comp( params.drawn_comps, mcomp);
             }
         }
 
+        /* Only DeviceCMYK can use overprint mode */
         pgs->effective_overprint_mode = 0;
-        return gs_state_update_overprint(pgs, &params);
+        return gs_gstate_update_overprint(pgs, &params);
     }
 }
 

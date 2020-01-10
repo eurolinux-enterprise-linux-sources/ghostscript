@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -131,6 +131,7 @@ void
 gx_make_clip_device_on_stack(gx_device_clip * dev, const gx_clip_path *pcpath, gx_device *target)
 {
     gx_device_init_on_stack((gx_device *)dev, (const gx_device *)&gs_clip_device, target->memory);
+    dev->cpath = pcpath;
     dev->list = *gx_cpath_list(pcpath);
     dev->translation.x = 0;
     dev->translation.y = 0;
@@ -138,9 +139,19 @@ gx_make_clip_device_on_stack(gx_device_clip * dev, const gx_clip_path *pcpath, g
     dev->HWResolution[1] = target->HWResolution[1];
     dev->sgr = target->sgr;
     dev->target = target;
+    dev->pad = target->pad;
+    dev->log2_align_mod = target->log2_align_mod;
+    dev->is_planar = target->is_planar;
     dev->graphics_type_tag = target->graphics_type_tag;	/* initialize to same as target */
     /* There is no finalization for device on stack so no rc increment */
     (*dev_proc(dev, open_device)) ((gx_device *)dev);
+}
+
+void
+gx_destroy_clip_device_on_stack(gx_device_clip * dev)
+{
+    if (dev->cpath)
+        ((gx_clip_path *)dev->cpath)->cached = (dev->current == &dev->list.single ? NULL : dev->current); /* Cast away const */
 }
 
 gx_device *
@@ -155,17 +166,14 @@ gx_make_clip_device_on_stack_if_needed(gx_device_clip * dev, const gx_clip_path 
         rect->p.y = pcpath->outer_box.p.y;
     if (rect->q.y > pcpath->outer_box.q.y)
         rect->q.y = pcpath->outer_box.q.y;
+    /* Check for area being trivially clipped away. */
+    if (rect->p.x >= rect->q.x || rect->p.y >= rect->q.y)
+        return NULL;
     if (pcpath->inner_box.p.x <= rect->p.x && pcpath->inner_box.p.y <= rect->p.y &&
         pcpath->inner_box.q.x >= rect->q.x && pcpath->inner_box.q.y >= rect->q.y)
     {
         /* Area is trivially included. No need for clip. */
         return target;
-    }
-    else
-    {
-        /* Check for area being trivially clipped away. */
-        if (rect->p.x >= rect->q.x || rect->p.y >= rect->q.y)
-            return NULL;
     }
     gx_device_init_on_stack((gx_device *)dev, (const gx_device *)&gs_clip_device, target->memory);
     dev->list = *gx_cpath_list(pcpath);
@@ -175,6 +183,9 @@ gx_make_clip_device_on_stack_if_needed(gx_device_clip * dev, const gx_clip_path 
     dev->HWResolution[1] = target->HWResolution[1];
     dev->sgr = target->sgr;
     dev->target = target;
+    dev->pad = target->pad;
+    dev->log2_align_mod = target->log2_align_mod;
+    dev->is_planar = target->is_planar;
     dev->graphics_type_tag = target->graphics_type_tag;	/* initialize to same as target */
     /* There is no finalization for device on stack so no rc increment */
     (*dev_proc(dev, open_device)) ((gx_device *)dev);
@@ -191,6 +202,9 @@ gx_make_clip_device_in_heap(gx_device_clip * dev, const gx_clip_path *pcpath, gx
     dev->HWResolution[0] = target->HWResolution[0];
     dev->HWResolution[1] = target->HWResolution[1];
     dev->sgr = target->sgr;
+    dev->pad = target->pad;
+    dev->log2_align_mod = target->log2_align_mod;
+    dev->is_planar = target->is_planar;
     gx_device_set_target((gx_device_forward *)dev, target);
     gx_device_retain((gx_device *)dev, true); /* will free explicitly */
     (*dev_proc(dev, open_device)) ((gx_device *)dev);
@@ -214,6 +228,8 @@ static const uint clip_interval = 10000;
 /*
  * Enumerate the rectangles of the x,w,y,h argument that fall within
  * the clipping region.
+ * NB: if the clip list is transposed, then x, y, xe, and ye are already
+ *     transposed and will need to be switched for the call to "process"
  */
 static int
 clip_enumerate_rest(gx_device_clip * rdev,
@@ -238,8 +254,6 @@ clip_enumerate_rest(gx_device_clip * rdev,
                   stats_clip.no_x);
     }
 #endif
-    pccd->x = x, pccd->y = y;
-    pccd->w = xe - x, pccd->h = ye - y;
     /*
      * Warp the cursor forward or backward to the first rectangle row
      * that could include a given y value.  Assumes rptr is set, and
@@ -311,7 +325,10 @@ clip_enumerate_rest(gx_device_clip * rdev,
 #else
                 rptr = rptr->next;
 #endif
-                code = process(pccd, xc, yc, xec, yec);
+                if (rdev->list.transpose)
+                    code = process(pccd, yc, xc, yec, xec);
+                else
+                    code = process(pccd, xc, yc, xec, yec);
                 if (code < 0)
                     return code;
             } else {
@@ -341,12 +358,25 @@ clip_enumerate(gx_device_clip * rdev, int x, int y, int w, int h,
     xe = x + w;
     y += rdev->translation.y;
     ye = y + h;
+    /* pccd is non-transposed */
+    pccd->x = x, pccd->y = y;
+    pccd->w = w, pccd->h = h;
+    /* transpose x, y, xe, ye for clip checking */
+    if (rdev->list.transpose) {
+        x = pccd->y;
+        y = pccd->x;
+        xe = x + h;
+        ye = y + w;
+    }
     /* Check for the region being entirely within the current rectangle. */
     if (y >= rptr->ymin && ye <= rptr->ymax &&
         x >= rptr->xmin && xe <= rptr->xmax
         ) {
-        pccd->x = x, pccd->y = y, pccd->w = w, pccd->h = h;
-        return INCR_THEN(in, process(pccd, x, y, xe, ye));
+        if (rdev->list.transpose) {
+            return INCR_THEN(in, process(pccd, y, x, ye, xe));
+        } else {
+            return INCR_THEN(in, process(pccd, x, y, xe, ye));
+        }
     }
     return clip_enumerate_rest(rdev, x, y, xe, ye, process, pccd);
 }
@@ -360,7 +390,7 @@ clip_open(gx_device * dev)
 
     /* Initialize the cursor. */
     rdev->current =
-        (rdev->list.head == 0 ? &rdev->list.single : rdev->list.head);
+        (rdev->list.head == 0 ? &rdev->list.single : (rdev->cpath && rdev->cpath->cached ? rdev->cpath->cached : rdev->list.head));
     rdev->color_info = tdev->color_info;
     rdev->cached_colors = tdev->cached_colors;
     rdev->width = tdev->width;
@@ -379,8 +409,8 @@ clip_call_fill_rectangle(clip_callback_data_t * pccd, int xc, int yc, int xec, i
         (pccd->tdev, xc, yc, xec - xc, yec - yc, pccd->color[0]);
 }
 static int
-clip_fill_rectangle(gx_device * dev, int x, int y, int w, int h,
-                    gx_color_index color)
+clip_fill_rectangle_t0(gx_device * dev, int x, int y, int w, int h,
+                       gx_color_index color)
 {
     gx_device_clip *rdev = (gx_device_clip *) dev;
     clip_callback_data_t ccdata;
@@ -395,6 +425,9 @@ clip_fill_rectangle(gx_device * dev, int x, int y, int w, int h,
     xe = x + w;
     y += rdev->translation.y;
     ye = y + h;
+    /* ccdata is non-transposed */
+    ccdata.x = x, ccdata.y = y;
+    ccdata.w = w, ccdata.h = h;
     /* We open-code the most common cases here. */
     if ((y >= rptr->ymin && ye <= rptr->ymax) ||
         ((rptr = rptr->next) != 0 &&
@@ -414,15 +447,141 @@ clip_fill_rectangle(gx_device * dev, int x, int y, int w, int h,
                 x = rptr->xmin;
             if (xe > rptr->xmax)
                 xe = rptr->xmax;
-            return
-                (x >= xe ? 0 :
-                 dev_proc(tdev, fill_rectangle)(tdev, x, y, xe - x, h, color));
+            if (x >= xe)
+                 return 0;
+            return dev_proc(tdev, fill_rectangle)(tdev, x, y, xe - x, h, color);
         }
     }
     ccdata.tdev = tdev;
     ccdata.color[0] = color;
-    return clip_enumerate_rest(rdev, x, y, xe, ye,
-                               clip_call_fill_rectangle, &ccdata);
+    return clip_enumerate_rest(rdev, x, y, xe, ye, clip_call_fill_rectangle, &ccdata);
+}
+
+static int
+clip_fill_rectangle_t1(gx_device * dev, int x, int y, int w, int h,
+                       gx_color_index color)
+{
+    gx_device_clip *rdev = (gx_device_clip *) dev;
+    clip_callback_data_t ccdata;
+    /* We handle the fastest cases in-line here. */
+    gx_device *tdev = rdev->target;
+    /*const*/ gx_clip_rect *rptr = rdev->current;
+    int xe, ye;
+
+    if (w <= 0 || h <= 0)
+        return 0;
+    x += rdev->translation.x;
+    y += rdev->translation.y;
+    /* ccdata is non-transposed */
+    ccdata.x = x, ccdata.y = y;
+    ccdata.w = w, ccdata.h = h;
+    x = ccdata.y;
+    y = ccdata.x;
+    xe = x + h;
+    ye = y + w;
+    /* We open-code the most common cases here. */
+    if ((y >= rptr->ymin && ye <= rptr->ymax) ||
+        ((rptr = rptr->next) != 0 &&
+         y >= rptr->ymin && ye <= rptr->ymax)
+        ) {
+        rdev->current = rptr;	/* may be redundant, but awkward to avoid */
+        INCR(in_y);
+        if (x >= rptr->xmin && xe <= rptr->xmax) {
+            INCR(in);
+            return dev_proc(tdev, fill_rectangle)(tdev, x, y, w, h, color);
+        }
+        else if ((rptr->prev == 0 || rptr->prev->ymax != rptr->ymax) &&
+                 (rptr->next == 0 || rptr->next->ymax != rptr->ymax)
+                 ) {
+            INCR(in1);
+            if (x < rptr->xmin)
+                x = rptr->xmin;
+            if (xe > rptr->xmax)
+                xe = rptr->xmax;
+            if (x >= xe)
+                 return 0;
+            return dev_proc(tdev, fill_rectangle)(tdev, y, x, h, xe - x, color);
+        }
+    }
+    ccdata.tdev = tdev;
+    ccdata.color[0] = color;
+    return clip_enumerate_rest(rdev, x, y, xe, ye, clip_call_fill_rectangle, &ccdata);
+}
+
+static int
+clip_fill_rectangle_s0(gx_device * dev, int x, int y, int w, int h,
+                       gx_color_index color)
+{
+    gx_device_clip *rdev = (gx_device_clip *) dev;
+    gx_device *tdev = rdev->target;
+
+    if (w <= 0 || h <= 0)
+        return 0;
+    x += rdev->translation.x;
+    w += x;
+    y += rdev->translation.y;
+    h += y;
+    if (x < rdev->list.single.xmin)
+        x = rdev->list.single.xmin;
+    if (w > rdev->list.single.xmax)
+        w = rdev->list.single.xmax;
+    if (y < rdev->list.single.ymin)
+        y = rdev->list.single.ymin;
+    if (h > rdev->list.single.ymax)
+        h = rdev->list.single.ymax;
+    w -= x;
+    h -= y;
+    if (w <= 0 || h <= 0)
+        return 0;
+    return dev_proc(tdev, fill_rectangle)(tdev, x, y, w, h, color);
+}
+
+static int
+clip_fill_rectangle_s1(gx_device * dev, int x, int y, int w, int h,
+                       gx_color_index color)
+{
+    gx_device_clip *rdev = (gx_device_clip *) dev;
+    gx_device *tdev = rdev->target;
+
+    if (w <= 0 || h <= 0)
+        return 0;
+    x += rdev->translation.x;
+    w += x;
+    y += rdev->translation.y;
+    h += y;
+    /* Now, treat x/w as y/h and vice versa as transposed. */
+    if (x < rdev->list.single.ymin)
+        x = rdev->list.single.ymin;
+    if (w > rdev->list.single.ymax)
+        w = rdev->list.single.ymax;
+    if (y < rdev->list.single.xmin)
+        y = rdev->list.single.xmin;
+    if (h > rdev->list.single.xmax)
+        h = rdev->list.single.xmax;
+    w -= x;
+    h -= y;
+    if (w <= 0 || h <= 0)
+        return 0;
+    return dev_proc(tdev, fill_rectangle)(tdev, y, x, h, w, color);
+}
+static int
+clip_fill_rectangle(gx_device * dev, int x, int y, int w, int h,
+                    gx_color_index color)
+{
+    gx_device_clip *rdev = (gx_device_clip *) dev;
+
+    if (rdev->list.transpose) {
+        if (rdev->list.count == 1)
+            dev_proc(rdev, fill_rectangle) = clip_fill_rectangle_s1;
+        else
+            dev_proc(rdev, fill_rectangle) = clip_fill_rectangle_t1;
+    } else {
+        if (rdev->list.count == 1)
+            dev_proc(rdev, fill_rectangle) = clip_fill_rectangle_s0;
+        else
+            dev_proc(rdev, fill_rectangle) = clip_fill_rectangle_t0;
+    }
+    return dev_proc(rdev, fill_rectangle)(dev, x, y, w, h, color);
 }
 
 int
@@ -436,12 +595,12 @@ clip_call_fill_rectangle_hl_color(clip_callback_data_t * pccd, int xc, int yc,
     rect.q.x = int2fixed(xec);
     rect.q.y = int2fixed(yec);
     return (*dev_proc(pccd->tdev, fill_rectangle_hl_color))
-        (pccd->tdev, &rect, pccd->pis, pccd->pdcolor, pccd->pcpath);
+        (pccd->tdev, &rect, pccd->pgs, pccd->pdcolor, pccd->pcpath);
 }
 
 static int
-clip_fill_rectangle_hl_color(gx_device *dev, const gs_fixed_rect *rect,
-    const gs_imager_state *pis, const gx_drawing_color *pdcolor,
+clip_fill_rectangle_hl_color_t0(gx_device *dev, const gs_fixed_rect *rect,
+    const gs_gstate *pgs, const gx_drawing_color *pdcolor,
     const gx_clip_path *pcpath)
 {
     gx_device_clip *rdev = (gx_device_clip *) dev;
@@ -463,6 +622,9 @@ clip_fill_rectangle_hl_color(gx_device *dev, const gs_fixed_rect *rect,
     xe = x + w;
     y += rdev->translation.y;
     ye = y + h;
+    /* ccdata is non-transposed */
+    ccdata.x = x, ccdata.y = y;
+    ccdata.w = w, ccdata.h = h;
     /* We open-code the most common cases here. */
     if ((y >= rptr->ymin && ye <= rptr->ymax) ||
         ((rptr = rptr->next) != 0 &&
@@ -476,7 +638,7 @@ clip_fill_rectangle_hl_color(gx_device *dev, const gs_fixed_rect *rect,
             newrect.p.y = int2fixed(y);
             newrect.q.x = int2fixed(x + w);
             newrect.q.y = int2fixed(y + h);
-            return dev_proc(tdev, fill_rectangle_hl_color)(tdev, &newrect, pis,
+            return dev_proc(tdev, fill_rectangle_hl_color)(tdev, &newrect, pgs,
                                                            pdcolor, pcpath);
         }
         else if ((rptr->prev == 0 || rptr->prev->ymax != rptr->ymax) &&
@@ -494,17 +656,195 @@ clip_fill_rectangle_hl_color(gx_device *dev, const gs_fixed_rect *rect,
                 newrect.p.y = int2fixed(y);
                 newrect.q.x = int2fixed(xe);
                 newrect.q.y = int2fixed(y + h);
-                return dev_proc(tdev, fill_rectangle_hl_color)(tdev, &newrect, pis,
+                return dev_proc(tdev, fill_rectangle_hl_color)(tdev, &newrect, pgs,
                                                                pdcolor, pcpath);
             }
         }
     }
     ccdata.tdev = tdev;
     ccdata.pdcolor = pdcolor;
-    ccdata.pis = pis;
+    ccdata.pgs = pgs;
     ccdata.pcpath = pcpath;
     return clip_enumerate_rest(rdev, x, y, xe, ye,
                                clip_call_fill_rectangle_hl_color, &ccdata);
+}
+
+static int
+clip_fill_rectangle_hl_color_t1(gx_device *dev, const gs_fixed_rect *rect,
+    const gs_gstate *pgs, const gx_drawing_color *pdcolor,
+    const gx_clip_path *pcpath)
+{
+    gx_device_clip *rdev = (gx_device_clip *) dev;
+    clip_callback_data_t ccdata;
+    gx_device *tdev = rdev->target;
+    gx_clip_rect *rptr = rdev->current;
+    int xe, ye;
+    int w, h, x, y;
+    gs_fixed_rect newrect;
+
+    x = fixed2int(rect->p.x);
+    y = fixed2int(rect->p.y);
+    w = fixed2int(rect->q.x) - x;
+    h = fixed2int(rect->q.y) - y;
+
+    if (w <= 0 || h <= 0)
+        return 0;
+    x += rdev->translation.x;
+    y += rdev->translation.y;
+    /* ccdata is non-transposed */
+    ccdata.x = x, ccdata.y = y;
+    ccdata.w = w, ccdata.h = h;
+    /* transpose x, y, xe, ye for clip checking */
+    x = ccdata.y;
+    y = ccdata.x;
+    xe = x + h;
+    ye = y + w;
+    /* We open-code the most common cases here. */
+    if ((y >= rptr->ymin && ye <= rptr->ymax) ||
+        ((rptr = rptr->next) != 0 &&
+         y >= rptr->ymin && ye <= rptr->ymax)
+        ) {
+        rdev->current = rptr;	/* may be redundant, but awkward to avoid */
+        INCR(in_y);
+        if (x >= rptr->xmin && xe <= rptr->xmax) {
+            INCR(in);
+            newrect.p.x = int2fixed(y);
+            newrect.p.y = int2fixed(x);
+            newrect.q.x = int2fixed(y + h);
+            newrect.q.y = int2fixed(x + w);
+            return dev_proc(tdev, fill_rectangle_hl_color)(tdev, &newrect, pgs,
+                                                           pdcolor, pcpath);
+        }
+        else if ((rptr->prev == 0 || rptr->prev->ymax != rptr->ymax) &&
+                 (rptr->next == 0 || rptr->next->ymax != rptr->ymax)
+                 ) {
+            INCR(in1);
+            if (x < rptr->xmin)
+                x = rptr->xmin;
+            if (xe > rptr->xmax)
+                xe = rptr->xmax;
+            if (x >= xe)
+                return 0;
+            else {
+                newrect.p.x = int2fixed(y);
+                newrect.p.y = int2fixed(x);
+                newrect.q.x = int2fixed(y+h);
+                newrect.q.y = int2fixed(xe);
+                return dev_proc(tdev, fill_rectangle_hl_color)(tdev, &newrect, pgs,
+                                                               pdcolor, pcpath);
+            }
+        }
+    }
+    ccdata.tdev = tdev;
+    ccdata.pdcolor = pdcolor;
+    ccdata.pgs = pgs;
+    ccdata.pcpath = pcpath;
+    return clip_enumerate_rest(rdev, x, y, xe, ye,
+                               clip_call_fill_rectangle_hl_color, &ccdata);
+}
+
+static int
+clip_fill_rectangle_hl_color_s0(gx_device *dev, const gs_fixed_rect *rect,
+    const gs_gstate *pgs, const gx_drawing_color *pdcolor,
+    const gx_clip_path *pcpath)
+{
+    gx_device_clip *rdev = (gx_device_clip *) dev;
+    gx_device *tdev = rdev->target;
+    int w, h, x, y;
+    gs_fixed_rect newrect;
+
+    x = fixed2int(rect->p.x);
+    y = fixed2int(rect->p.y);
+    w = fixed2int(rect->q.x) - x;
+    h = fixed2int(rect->q.y) - y;
+
+    if (w <= 0 || h <= 0)
+        return 0;
+    x += rdev->translation.x;
+    w += x;
+    y += rdev->translation.y;
+    h += y;
+    if (x < rdev->list.single.xmin)
+        x = rdev->list.single.xmin;
+    if (w > rdev->list.single.xmax)
+        w = rdev->list.single.xmax;
+    if (y < rdev->list.single.ymin)
+        y = rdev->list.single.ymin;
+    if (h > rdev->list.single.ymax)
+        h = rdev->list.single.ymax;
+    w -= x;
+    h -= y;
+    if (w <= 0 || h <= 0)
+        return 0;
+    newrect.p.x = int2fixed(x);
+    newrect.p.y = int2fixed(y);
+    newrect.q.x = int2fixed(x + w);
+    newrect.q.y = int2fixed(y + h);
+    return dev_proc(tdev, fill_rectangle_hl_color)(tdev, &newrect, pgs,
+                                                   pdcolor, pcpath);
+}
+
+static int
+clip_fill_rectangle_hl_color_s1(gx_device *dev, const gs_fixed_rect *rect,
+    const gs_gstate *pgs, const gx_drawing_color *pdcolor,
+    const gx_clip_path *pcpath)
+{
+    gx_device_clip *rdev = (gx_device_clip *) dev;
+    gx_device *tdev = rdev->target;
+    int w, h, x, y;
+    gs_fixed_rect newrect;
+
+    x = fixed2int(rect->p.x);
+    y = fixed2int(rect->p.y);
+    w = fixed2int(rect->q.x) - x;
+    h = fixed2int(rect->q.y) - y;
+
+    if (w <= 0 || h <= 0)
+        return 0;
+    x += rdev->translation.x;
+    w += x;
+    y += rdev->translation.y;
+    h += y;
+    /* Now, treat x/w as y/h and vice versa as transposed. */
+    if (x < rdev->list.single.ymin)
+        x = rdev->list.single.ymin;
+    if (w > rdev->list.single.ymax)
+        w = rdev->list.single.ymax;
+    if (y < rdev->list.single.xmin)
+        y = rdev->list.single.xmin;
+    if (h > rdev->list.single.xmax)
+        h = rdev->list.single.xmax;
+    w -= x;
+    h -= y;
+    if (w <= 0 || h <= 0)
+        return 0;
+    newrect.p.x = int2fixed(y);
+    newrect.p.y = int2fixed(x);
+    newrect.q.x = int2fixed(y + h);
+    newrect.q.y = int2fixed(x + w);
+    return dev_proc(tdev, fill_rectangle_hl_color)(tdev, &newrect, pgs,
+                                                   pdcolor, pcpath);
+}
+
+static int
+clip_fill_rectangle_hl_color(gx_device *dev, const gs_fixed_rect *rect,
+    const gs_gstate *pgs, const gx_drawing_color *pdcolor,
+    const gx_clip_path *pcpath)
+{
+    gx_device_clip *rdev = (gx_device_clip *) dev;
+
+    if (rdev->list.transpose) {
+        if (rdev->list.count == 1)
+            dev_proc(rdev, fill_rectangle_hl_color) = clip_fill_rectangle_hl_color_s1;
+        else
+            dev_proc(rdev, fill_rectangle_hl_color) = clip_fill_rectangle_hl_color_t1;
+    } else {
+        if (rdev->list.count == 1)
+            dev_proc(rdev, fill_rectangle_hl_color) = clip_fill_rectangle_hl_color_s0;
+        else
+            dev_proc(rdev, fill_rectangle_hl_color) = clip_fill_rectangle_hl_color_t0;
+    }
+    return dev_proc(rdev, fill_rectangle_hl_color)(dev, rect, pgs, pdcolor, pcpath);
 }
 
 /* Copy a monochrome rectangle */
@@ -517,10 +857,10 @@ clip_call_copy_mono(clip_callback_data_t * pccd, int xc, int yc, int xec, int ye
          xc, yc, xec - xc, yec - yc, pccd->color[0], pccd->color[1]);
 }
 static int
-clip_copy_mono(gx_device * dev,
-               const byte * data, int sourcex, int raster, gx_bitmap_id id,
-               int x, int y, int w, int h,
-               gx_color_index color0, gx_color_index color1)
+clip_copy_mono_t0(gx_device * dev,
+                  const byte * data, int sourcex, int raster, gx_bitmap_id id,
+                  int x, int y, int w, int h,
+                  gx_color_index color0, gx_color_index color1)
 {
     gx_device_clip *rdev = (gx_device_clip *) dev;
     clip_callback_data_t ccdata;
@@ -535,12 +875,15 @@ clip_copy_mono(gx_device * dev,
     xe = x + w;
     y += rdev->translation.y;
     ye = y + h;
+    /* ccdata is non-transposed */
+    ccdata.x = x, ccdata.y = y;
+    ccdata.w = w, ccdata.h = h;
     if (y >= rptr->ymin && ye <= rptr->ymax) {
         INCR(in_y);
         if (x >= rptr->xmin && xe <= rptr->xmax) {
             INCR(in);
             return dev_proc(tdev, copy_mono)
-                (tdev, data, sourcex, raster, id, x, y, w, h, color0, color1);
+                    (tdev, data, sourcex, raster, id, x, y, w, h, color0, color1);
         }
     }
     ccdata.tdev = tdev;
@@ -548,6 +891,138 @@ clip_copy_mono(gx_device * dev,
     ccdata.color[0] = color0, ccdata.color[1] = color1;
     return clip_enumerate_rest(rdev, x, y, xe, ye,
                                clip_call_copy_mono, &ccdata);
+}
+static int
+clip_copy_mono_t1(gx_device * dev,
+                  const byte * data, int sourcex, int raster, gx_bitmap_id id,
+                  int x, int y, int w, int h,
+                  gx_color_index color0, gx_color_index color1)
+{
+    gx_device_clip *rdev = (gx_device_clip *) dev;
+    clip_callback_data_t ccdata;
+    /* We handle the fastest case in-line here. */
+    gx_device *tdev = rdev->target;
+    const gx_clip_rect *rptr = rdev->current;
+    int xe, ye;
+
+    if (w <= 0 || h <= 0)
+        return 0;
+    x += rdev->translation.x;
+    y += rdev->translation.y;
+    /* ccdata is non-transposed */
+    ccdata.x = x, ccdata.y = y;
+    ccdata.w = w, ccdata.h = h;
+    x = ccdata.y;
+    y = ccdata.x;
+    xe = x + h;
+    ye = y + w;
+    if (y >= rptr->ymin && ye <= rptr->ymax) {
+        INCR(in_y);
+        if (x >= rptr->xmin && xe <= rptr->xmax) {
+            INCR(in);
+            return dev_proc(tdev, copy_mono)
+                    (tdev, data, sourcex, raster, id, y, x, h, w, color0, color1);
+        }
+    }
+    ccdata.tdev = tdev;
+    ccdata.data = data, ccdata.sourcex = sourcex, ccdata.raster = raster;
+    ccdata.color[0] = color0, ccdata.color[1] = color1;
+    return clip_enumerate_rest(rdev, x, y, xe, ye,
+                               clip_call_copy_mono, &ccdata);
+}
+static int
+clip_copy_mono_s0(gx_device * dev,
+                  const byte * data, int sourcex, int raster, gx_bitmap_id id,
+                  int x, int y, int w, int h,
+                  gx_color_index color0, gx_color_index color1)
+{
+    gx_device_clip *rdev = (gx_device_clip *) dev;
+    gx_device *tdev = rdev->target;
+
+    if (w <= 0 || h <= 0)
+        return 0;
+    x += rdev->translation.x;
+    w += x;
+    y += rdev->translation.y;
+    h += y;
+    if (x < rdev->list.single.xmin)
+    {
+        sourcex += (rdev->list.single.xmin - x);
+        x = rdev->list.single.xmin;
+    }
+    if (w > rdev->list.single.xmax)
+        w = rdev->list.single.xmax;
+    if (y < rdev->list.single.ymin)
+    {
+        data += (rdev->list.single.ymin - y) * raster;
+        y = rdev->list.single.ymin;
+    }
+    if (h > rdev->list.single.ymax)
+        h = rdev->list.single.ymax;
+    w -= x;
+    h -= y;
+    if (w <= 0 || h <= 0)
+        return 0;
+    return dev_proc(tdev, copy_mono)
+                    (tdev, data, sourcex, raster, id, x, y, w, h, color0, color1);
+}
+static int
+clip_copy_mono_s1(gx_device * dev,
+                  const byte * data, int sourcex, int raster, gx_bitmap_id id,
+                  int x, int y, int w, int h,
+                  gx_color_index color0, gx_color_index color1)
+{
+    gx_device_clip *rdev = (gx_device_clip *) dev;
+    gx_device *tdev = rdev->target;
+
+    if (w <= 0 || h <= 0)
+        return 0;
+    x += rdev->translation.x;
+    w += x;
+    y += rdev->translation.y;
+    h += y;
+    /* Now, treat x/w as y/h and vice versa as transposed. */
+    if (x < rdev->list.single.ymin)
+    {
+        data += (rdev->list.single.ymin - x) * raster;
+        x = rdev->list.single.ymin;
+    }
+    if (w > rdev->list.single.ymax)
+        w = rdev->list.single.ymax;
+    if (y < rdev->list.single.xmin)
+    {
+        sourcex += (rdev->list.single.xmin - y);
+        y = rdev->list.single.xmin;
+    }
+    if (h > rdev->list.single.xmax)
+        h = rdev->list.single.xmax;
+    w -= x;
+    h -= y;
+    if (w <= 0 || h <= 0)
+        return 0;
+    return dev_proc(tdev, copy_mono)
+                    (tdev, data, sourcex, raster, id, y, x, h, w, color0, color1);
+}
+static int
+clip_copy_mono(gx_device * dev,
+               const byte * data, int sourcex, int raster, gx_bitmap_id id,
+               int x, int y, int w, int h,
+               gx_color_index color0, gx_color_index color1)
+{
+    gx_device_clip *rdev = (gx_device_clip *) dev;
+
+    if (rdev->list.transpose) {
+        if (rdev->list.count == 1)
+            dev_proc(rdev, copy_mono) = clip_copy_mono_s1;
+        else
+            dev_proc(rdev, copy_mono) = clip_copy_mono_t1;
+    } else {
+        if (rdev->list.count == 1)
+            dev_proc(rdev, copy_mono) = clip_copy_mono_s0;
+        else
+            dev_proc(rdev, copy_mono) = clip_copy_mono_t0;
+    }
+    return dev_proc(rdev, copy_mono)(dev, data, sourcex, raster, id, x, y, w, h, color0, color1);
 }
 
 /* Copy a plane */
@@ -560,9 +1035,9 @@ clip_call_copy_planes(clip_callback_data_t * pccd, int xc, int yc, int xec, int 
          xc, yc, xec - xc, yec - yc, pccd->plane_height);
 }
 static int
-clip_copy_planes(gx_device * dev,
-                 const byte * data, int sourcex, int raster, gx_bitmap_id id,
-                 int x, int y, int w, int h, int plane_height)
+clip_copy_planes_t0(gx_device * dev,
+                    const byte * data, int sourcex, int raster, gx_bitmap_id id,
+                    int x, int y, int w, int h, int plane_height)
 {
     gx_device_clip *rdev = (gx_device_clip *) dev;
     clip_callback_data_t ccdata;
@@ -577,12 +1052,15 @@ clip_copy_planes(gx_device * dev,
     xe = x + w;
     y += rdev->translation.y;
     ye = y + h;
+    /* ccdata is non-transposed */
+    ccdata.x = x, ccdata.y = y;
+    ccdata.w = w, ccdata.h = h;
     if (y >= rptr->ymin && ye <= rptr->ymax) {
         INCR(in_y);
         if (x >= rptr->xmin && xe <= rptr->xmax) {
             INCR(in);
             return dev_proc(tdev, copy_planes)
-                (tdev, data, sourcex, raster, id, x, y, w, h, plane_height);
+                    (tdev, data, sourcex, raster, id, x, y, w, h, plane_height);
         }
     }
     ccdata.tdev = tdev;
@@ -590,6 +1068,131 @@ clip_copy_planes(gx_device * dev,
     ccdata.plane_height = plane_height;
     return clip_enumerate_rest(rdev, x, y, xe, ye,
                                clip_call_copy_planes, &ccdata);
+}
+static int
+clip_copy_planes_t1(gx_device * dev,
+                    const byte * data, int sourcex, int raster, gx_bitmap_id id,
+                    int x, int y, int w, int h, int plane_height)
+{
+    gx_device_clip *rdev = (gx_device_clip *) dev;
+    clip_callback_data_t ccdata;
+    /* We handle the fastest case in-line here. */
+    gx_device *tdev = rdev->target;
+    const gx_clip_rect *rptr = rdev->current;
+    int xe, ye;
+
+    if (w <= 0 || h <= 0)
+        return 0;
+    x += rdev->translation.x;
+    y += rdev->translation.y;
+    /* ccdata is non-transposed */
+    ccdata.x = x, ccdata.y = y;
+    ccdata.w = w, ccdata.h = h;
+    /* transpose x, y, xe, ye for clip checking */
+    x = ccdata.y;
+    y = ccdata.x;
+    xe = x + h;
+    ye = y + w;
+    if (y >= rptr->ymin && ye <= rptr->ymax) {
+        INCR(in_y);
+        if (x >= rptr->xmin && xe <= rptr->xmax) {
+            INCR(in);
+            return dev_proc(tdev, copy_planes)
+                    (tdev, data, sourcex, raster, id, y, x, h, w, plane_height);
+        }
+    }
+    ccdata.tdev = tdev;
+    ccdata.data = data, ccdata.sourcex = sourcex, ccdata.raster = raster;
+    ccdata.plane_height = plane_height;
+    return clip_enumerate_rest(rdev, x, y, xe, ye,
+                               clip_call_copy_planes, &ccdata);
+}
+static int
+clip_copy_planes_s0(gx_device * dev,
+                    const byte * data, int sourcex, int raster, gx_bitmap_id id,
+                    int x, int y, int w, int h, int plane_height)
+{
+    gx_device_clip *rdev = (gx_device_clip *) dev;
+    gx_device *tdev = rdev->target;
+
+    x += rdev->translation.x;
+    w += x;
+    y += rdev->translation.y;
+    h += y;
+    if (x < rdev->list.single.xmin)
+    {
+        sourcex += rdev->list.single.xmin - x;
+        x = rdev->list.single.xmin;
+    }
+    if (w > rdev->list.single.xmax)
+        w = rdev->list.single.xmax;
+    if (y < rdev->list.single.ymin)
+    {
+        data += (rdev->list.single.ymin - y) * raster;
+        y = rdev->list.single.ymin;
+    }
+    if (h > rdev->list.single.ymax)
+        h = rdev->list.single.ymax;
+    w -= x;
+    h -= y;
+    if (w <= 0 || h <= 0)
+        return 0;
+    return dev_proc(tdev, copy_planes)
+                    (tdev, data, sourcex, raster, id, x, y, w, h, plane_height);
+}
+static int
+clip_copy_planes_s1(gx_device * dev,
+                    const byte * data, int sourcex, int raster, gx_bitmap_id id,
+                    int x, int y, int w, int h, int plane_height)
+{
+    gx_device_clip *rdev = (gx_device_clip *) dev;
+    gx_device *tdev = rdev->target;
+
+    x += rdev->translation.x;
+    w += x;
+    y += rdev->translation.y;
+    h += y;
+    /* Now, treat x/w as y/h and vice versa as transposed. */
+    if (x < rdev->list.single.ymin)
+    {
+        data += (rdev->list.single.ymin - x) * raster;
+        x = rdev->list.single.ymin;
+    }
+    if (w > rdev->list.single.ymax)
+        w = rdev->list.single.ymax;
+    if (y < rdev->list.single.xmin)
+    {
+        sourcex += rdev->list.single.xmin - y;
+        y = rdev->list.single.xmin;
+    }
+    if (h > rdev->list.single.xmax)
+        h = rdev->list.single.xmax;
+    w -= x;
+    h -= y;
+    if (w <= 0 || h <= 0)
+        return 0;
+    return dev_proc(tdev, copy_planes)
+                    (tdev, data, sourcex, raster, id, y, x, h, w, plane_height);
+}
+static int
+clip_copy_planes(gx_device * dev,
+                 const byte * data, int sourcex, int raster, gx_bitmap_id id,
+                 int x, int y, int w, int h, int plane_height)
+{
+    gx_device_clip *rdev = (gx_device_clip *) dev;
+
+    if (rdev->list.transpose) {
+        if (rdev->list.count == 1)
+            dev_proc(rdev, copy_planes) = clip_copy_planes_s1;
+        else
+            dev_proc(rdev, copy_planes) = clip_copy_planes_t1;
+    } else {
+        if (rdev->list.count == 1)
+            dev_proc(rdev, copy_planes) = clip_copy_planes_s0;
+        else
+            dev_proc(rdev, copy_planes) = clip_copy_planes_t0;
+    }
+    return dev_proc(rdev, copy_planes)(dev, data, sourcex, raster, id, x, y, w, h, plane_height);
 }
 
 /* Copy a color rectangle */
@@ -880,15 +1483,21 @@ clip_call_fill_path(clip_callback_data_t * pccd, int xc, int yc, int xec, int ye
     gx_clip_path cpath_intersection;
     gx_clip_path *pcpath = (gx_clip_path *)pccd->pcpath;
 
-    if (pcpath != NULL) {
+    /* Previously the code here tested for pcpath != NULL, but
+     * we can commonly (such as from clist_playback_band) be
+     * called with a non-NULL, but still invalid clip path.
+     * Detect this by the list having at least one entry in it. */
+    if (pcpath != NULL && pcpath->rect_list->list.count != 0) {
         gx_path rect_path;
-        code = gx_cpath_init_local_shared(&cpath_intersection, pcpath, pccd->ppath->memory);
+        code = gx_cpath_init_local_shared_nested(&cpath_intersection, pcpath, pccd->ppath->memory, 1);
         if (code < 0)
             return code;
         gx_path_init_local(&rect_path, pccd->ppath->memory);
-        gx_path_add_rectangle(&rect_path, int2fixed(xc), int2fixed(yc), int2fixed(xec), int2fixed(yec));
+        code = gx_path_add_rectangle(&rect_path, int2fixed(xc), int2fixed(yc), int2fixed(xec), int2fixed(yec));
+        if (code < 0)
+            return code;
         code = gx_cpath_intersect(&cpath_intersection, &rect_path,
-                                  gx_rule_winding_number, (gs_imager_state *)(pccd->pis));
+                                  gx_rule_winding_number, (gs_gstate *)(pccd->pgs));
         gx_path_free(&rect_path, "clip_call_fill_path");
     } else {
         gs_fixed_rect clip_box;
@@ -904,13 +1513,13 @@ clip_call_fill_path(clip_callback_data_t * pccd, int xc, int yc, int xec, int ye
     proc = dev_proc(tdev, fill_path);
     if (proc == NULL)
         proc = gx_default_fill_path;
-    code = (*proc)(pccd->tdev, pccd->pis, pccd->ppath, pccd->params,
+    code = (*proc)(pccd->tdev, pccd->pgs, pccd->ppath, pccd->params,
                    pccd->pdcolor, &cpath_intersection);
     gx_cpath_free(&cpath_intersection, "clip_call_fill_path");
     return code;
 }
 static int
-clip_fill_path(gx_device * dev, const gs_imager_state * pis,
+clip_fill_path(gx_device * dev, const gs_gstate * pgs,
                gx_path * ppath, const gx_fill_params * params,
                const gx_drawing_color * pdcolor,
                const gx_clip_path * pcpath)
@@ -919,7 +1528,7 @@ clip_fill_path(gx_device * dev, const gs_imager_state * pis,
     clip_callback_data_t ccdata;
     gs_fixed_rect box;
 
-    ccdata.pis = pis;
+    ccdata.pgs = pgs;
     ccdata.ppath = ppath;
     ccdata.params = params;
     ccdata.pdcolor = pdcolor;

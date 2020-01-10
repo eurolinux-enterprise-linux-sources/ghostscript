@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,16 +9,20 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
 /* VAX/VMS specific routines for Ghostscript */
 
+/* prevent gp.h from defining fopen */
+#define fopen fopen
+
 #include "string_.h"
 #include "memory_.h"
 #include "gx.h"
+
 #include "gp.h"
 #include "gpmisc.h"
 #include "gsstruct.h"
@@ -150,23 +154,6 @@ gp_get_usertime(long *pdt)
     gp_get_realtime(pdt);	/* Use an approximation for now.  */
 }
 
-/* ------ Persistent data cache ------*/
-
-/* insert a buffer under a (type, key) pair */
-int gp_cache_insert(int type, byte *key, int keylen, void *buffer, int buflen)
-{
-    /* not yet implemented */
-    return 0;
-}
-
-/* look up a (type, key) in the cache */
-int gp_cache_query(int type, byte* key, int keylen, void **buffer,
-    gp_cache_alloc alloc, void *userdata)
-{
-    /* not yet implemented */
-    return -1;
-}
-
 /* ------ Screen management ------ */
 
 /* Get the environment variable that specifies the display to use. */
@@ -259,7 +246,7 @@ gp_open_scratch_file(const gs_memory_t *mem,
         return 0;		/* file name too long */
     strcat(fname, "XXXXXX");
     mktemp(fname);
-    f = fopen(fname, mode);
+    f = gp_fopen(fname, mode);
 
     if (f == NULL)
         emprintf1(mem, "**** Could not open temporary file %s\n", fname);
@@ -281,6 +268,39 @@ gp_fopen(const char *fname, const char *mode)
             return fopen(fname, mode, "rfm=stmlf", "ctx=stm");
 #endif
     return fopen(fname, mode);
+}
+
+int gp_stat(const char *path, struct stat *buf)
+{
+    return stat(path, buf);
+}
+
+int gp_can_share_fdesc(void)
+{
+    return 0;
+}
+
+FILE *gp_open_scratch_file_rm(const gs_memory_t *mem,
+                              const char        *prefix,
+                                    char         fname[gp_file_name_sizeof],
+                              const char        *mode)
+{
+    return NULL;
+}
+
+FILE *gp_fdup(FILE *f, const char *mode)
+{
+    return NULL;
+}
+
+int gp_fpread(char *buf, uint count, int64_t offset, FILE *f)
+{
+    return -1;
+}
+
+int gp_fpwrite(char *buf, uint count, int64_t offset, FILE *f)
+{
+    return -1;
 }
 
 /* Set a file into binary or text mode. */
@@ -526,7 +546,7 @@ const char *gp_file_name_current(void)
 {   return "";
 }
 
-bool gp_file_name_is_partent_allowed(void)
+bool gp_file_name_is_parent_allowed(void)
 {   return false;
 }
 
@@ -645,7 +665,7 @@ gp_file_name_combine(const char *prefix, uint plen, const char *fname, uint flen
 bool
 gp_file_name_good_char(unsigned char c)
 {
-	return (c >= 'A' && c <= 'Z') || (c >='a' && c <= 'z') || (c >= '0' && c <= '9') || c == '$' || c = '-' || c == '_';
+        return (c >= 'A' && c <= 'Z') || (c >='a' && c <= 'z') || (c >= '0' && c <= '9') || c == '$' || c == '-' || c == '_';
 }
 
 
@@ -707,4 +727,19 @@ int gp_fseek_64(FILE *strm, int64_t offset, int origin)
     if (offset != offset1)
         return -1;
     return fseek(strm, offset1, origin);
+}
+
+bool gp_fseekable (FILE *f)
+{
+    struct stat s;
+    int fno;
+    
+    fno = fileno(f);
+    if (fno < 0)
+        return(false);
+    
+    if (fstat(fno, &s) < 0)
+        return(false);
+
+    return((bool)S_ISREG(s.st_mode));
 }

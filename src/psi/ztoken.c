@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -63,7 +63,7 @@ ztoken(i_ctx_t *i_ctx_p)
 
             /* Don't pop the operand in case of invalidaccess. */
             if (!r_has_attr(op, a_read))
-                return_error(e_invalidaccess);
+                return_error(gs_error_invalidaccess);
             code = gs_scan_string_token(i_ctx_p, op, &token);
             switch (code) {
             case scan_EOF:      /* no tokens */
@@ -107,6 +107,12 @@ token_continue(i_ctx_t *i_ctx_p, scanner_state * pstate, bool save)
     int code;
     ref token;
 
+    /* Since we might free pstate below, and we're dealing with
+     * gc memory referenced by the stack, we need to explicitly
+     * remove the reference to pstate from the stack, otherwise
+     * the garbager will fall over
+     */
+    make_null(osp);
     /* Note that gs_scan_token may change osp! */
     pop(1);                     /* remove the file or scanner state */
 again:
@@ -115,7 +121,7 @@ again:
     switch (code) {
         default:                /* error */
             if (code > 0)       /* comment, not possible */
-                code = gs_note_error(e_syntaxerror);
+                code = gs_note_error(gs_error_syntaxerror);
             gs_scanner_error_object(i_ctx_p, pstate, &i_ctx_p->error_object);
             break;
         case scan_BOS:
@@ -183,8 +189,14 @@ ztokenexec_continue(i_ctx_t *i_ctx_p)
 static int
 tokenexec_continue(i_ctx_t *i_ctx_p, scanner_state * pstate, bool save)
 {
-    os_ptr op;
+    os_ptr op = osp;
     int code;
+    /* Since we might free pstate below, and we're dealing with
+     * gc memory referenced by the stack, we need to explicitly
+     * remove the reference to pstate from the stack, otherwise
+     * the garbager will fall over
+     */
+    make_null(osp);
     /* Note that gs_scan_token may change osp! */
     pop(1);
 again:
@@ -255,7 +267,7 @@ ztoken_handle_comment(i_ctx_t *i_ctx_p, scanner_state *sstate,
         proc_name = "%ProcessDSCComment";
         break;
     default:
-        return_error(e_Fatal);  /* can't happen */
+        return_error(gs_error_Fatal);  /* can't happen */
     }
     /*
      * We can't use check_ostack here, because it returns on overflow.
@@ -274,7 +286,7 @@ ztoken_handle_comment(i_ctx_t *i_ctx_p, scanner_state *sstate,
         pstate = (scanner_state *)ialloc_struct(scanner_state_dynamic, &st_scanner_state_dynamic,
                                "ztoken_handle_comment");
         if (pstate == 0)
-            return_error(e_VMerror);
+            return_error(gs_error_VMerror);
         ((scanner_state_dynamic *)pstate)->mem = imemory;
         *pstate = *sstate;
     } else

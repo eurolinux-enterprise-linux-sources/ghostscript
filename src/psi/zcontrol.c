@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -48,7 +48,7 @@ zcond(i_ctx_t *i_ctx_p)
         return_op_typecheck(op);
     check_execute(*op);
     if ((r_size(op) & 1) != 0)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     if (r_size(op) == 0)
         return zpop(i_ctx_p);
     check_estack(3);
@@ -142,7 +142,7 @@ zexecn(i_ctx_t *i_ctx_p)
                 r_has_attr(rp, a_executable)
                 ) {
                 esp = esp_orig;
-                return_error(e_invalidaccess);
+                return_error(gs_error_invalidaccess);
             }
         }
         /* Executable nulls have a special meaning on the e-stack, */
@@ -239,8 +239,10 @@ end_runandhide(i_ctx_t *i_ctx_p)
 {
     int code;
 
-    if ((code = runandhide_restore_hidden(i_ctx_p, esp, esp - 1)) < 0)
+    if ((code = runandhide_restore_hidden(i_ctx_p, esp, esp - 1)) < 0) {
+        esp -= 2;
         return code;
+    }
     esp -= 2;		/* pop the hidden value and its atributes */
     return o_pop_estack;
 }
@@ -482,7 +484,7 @@ zrepeat(i_ctx_t *i_ctx_p)
     check_proc(*op);
     check_type(op[-1], t_integer);
     if (op[-1].value.intval < 0)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     check_estack(5);
     /* Push a mark, the count, and the procedure, and invoke */
     /* the continuation operator. */
@@ -558,7 +560,7 @@ zexit(i_ctx_t *i_ctx_p)
                         pop_estack(i_ctx_p, scanned + (used - count + 1));
                         return o_pop_estack;
                     case es_stopped:
-                        return_error(e_invalidexit);	/* not a loop */
+                        return_error(gs_error_invalidexit);	/* not a loop */
                 }
         scanned += used;
     } while (ref_stack_enum_next(&rsenum));
@@ -754,7 +756,7 @@ push_execstack(i_ctx_t *i_ctx_p, os_ptr op1, bool include_marks,
     size = r_size(op1);
     depth = count_exec_stack(i_ctx_p, include_marks);
     if (depth > size)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     check_write(*op1);
     {
         int code = ref_stack_store_check(&e_stack, op1, size, 0);
@@ -853,7 +855,7 @@ execstack2_continue(i_ctx_t *i_ctx_p)
 static int
 zneedinput(i_ctx_t *i_ctx_p)
 {
-    return e_NeedInput;		/* interpreter will exit to caller */
+    return gs_error_NeedInput;		/* interpreter will exit to caller */
 }
 
 /* <obj> <int> .quit - */
@@ -864,7 +866,7 @@ zquit(i_ctx_t *i_ctx_p)
 
     check_op(2);
     check_type(*op, t_integer);
-    return_error(e_Quit);	/* Interpreter will do the exit */
+    return_error(gs_error_Quit);	/* Interpreter will do the exit */
 }
 
 /* - currentfile <file> */
@@ -987,7 +989,7 @@ check_for_exec(const_os_ptr op)
         ref_type_uses_access(r_type(op)) &&
         (r_has_attr(op, a_executable) || !r_has_type(op, t_dictionary))
         ) {
-        return_error(e_invalidaccess);
+        return_error(gs_error_invalidaccess);
     }
     return 0;
 }
@@ -1081,6 +1083,6 @@ static int
 unmatched_exit(os_ptr op, op_proc_t opproc)
 {
     make_oper(op - 1, 0, opproc);
-    make_int(op, e_invalidexit);
-    return_error(e_Quit);
+    make_int(op, gs_error_invalidexit);
+    return_error(gs_error_Quit);
 }

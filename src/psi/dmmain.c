@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -38,10 +38,6 @@
 #define GSREVISION gs_revision
 #include "ierrors.h"
 #include "iapi.h"
-
-#if DEBUG
-#include "vdtrace.h"
-#endif
 
 #include "gdevdsp.h"
 
@@ -142,7 +138,7 @@ static int GSDLLCALL gsdll_poll(void *handle)
     while (WaitNextEvent(everyEvent, &eventStructure, 0, NULL))
         doEvents(&eventStructure);
 
-    return (gDone ? e_Fatal : 0);
+    return (gDone ? gs_error_Fatal : 0);
 }
 /*********************************************************************/
 
@@ -222,7 +218,7 @@ static int display_presize(void *handle, void *device, int width, int height,
     {
         printf("DisplayFormat has been set to an incompatible value.\n");
         fflush(stdout);
-        return e_rangecheck;
+        return gs_error_rangecheck;
     }
 
     return 0;
@@ -248,7 +244,7 @@ static int display_size(void *handle, void *device, int width, int height,
            DisposePixMap(img->pixmapHdl);
            img->pixmapHdl = NULL;
        }
-       return e_rangecheck;
+       return gs_error_rangecheck;
     }
 
     /* Create the PixMap */
@@ -644,8 +640,8 @@ void main(void)
     argv[1] = ddevice;
     argv[2] = dformat;
 
-        sprintf(ddevice, "-sDEVICE=display");
-    sprintf(dformat, "-dDisplayFormat=%d", display_format);
+    gs_sprintf(ddevice, "-sDEVICE=display");
+    gs_sprintf(dformat, "-dDisplayFormat=%d", display_format);
 
     /* Run Ghostscript */
     if (gsapi_new_instance(&instance, NULL) < 0)
@@ -653,11 +649,6 @@ void main(void)
        printf("Can't create Ghostscript instance\n");
        return;
     }
-
-#ifdef DEBUG
-    visual_tracer_init();
-    set_visual_tracer(&visual_tracer);
-#endif
 
     gsapi_set_stdio(instance, gsdll_stdin, gsdll_stdout, gsdll_stderr);
     gsapi_set_poll(instance, gsdll_poll);
@@ -679,10 +670,6 @@ void main(void)
     }
 
     gsapi_delete_instance(instance);
-
-#ifdef DEBUG
-    visual_tracer_close();
-#endif
 
     /* Ghostscript has finished - let user see output before quitting */
     WriteCharsToConsole("\r[Finished - hit any key to quit]", 33);

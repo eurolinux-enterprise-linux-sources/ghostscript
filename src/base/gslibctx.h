@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -23,6 +23,10 @@
 
 typedef struct name_table_s *name_table_ptr;
 
+/* Opaque type for root pointer here, because including gsstruct.h for the
+   original gs_gc_root_t definition resulted in a circular header dependency. */
+typedef struct gs_gc_root_s *gs_gc_root_ptr;
+
 #ifndef gs_fapi_server_DEFINED
 #define gs_fapi_server_DEFINED
 typedef struct gs_fapi_server_s gs_fapi_server;
@@ -32,6 +36,9 @@ typedef struct gs_fapi_server_s gs_fapi_server;
 #  define gs_font_dir_DEFINED
 typedef struct gs_font_dir_s gs_font_dir;
 #endif
+
+typedef int (*client_check_file_permission_t) (gs_memory_t *mem, const char *fname, const int len, const char *permission);
+
 typedef struct gs_lib_ctx_s
 {
     gs_memory_t *memory;  /* mem->gs_lib_ctx->memory == mem */
@@ -55,32 +62,53 @@ typedef struct gs_lib_ctx_s
     name_table_ptr gs_name_table;  /* hack this is the ps interpreters name table
                                     * doesn't belong here
                                     */
+    gs_gc_root_ptr name_table_root;
     /* Define whether dictionaries expand automatically when full. */
     bool dict_auto_expand;  /* ps dictionary: false level 1 true level 2 or 3 */
     /* A table of local copies of the IODevices */
     struct gx_io_device_s **io_device_table;
+    int io_device_table_count;
+    int io_device_table_size;
+    gs_gc_root_ptr io_device_table_root;
+    client_check_file_permission_t client_check_file_permission;
     /* Define the default value of AccurateScreens that affects setscreen
        and setcolorscreen. */
     bool screen_accurate_screens;
     uint screen_min_screen_levels;
+    /* Accuracy vs. performance for ICC color */
+    uint icc_color_accuracy;
     /* real time clock 'bias' value. Not strictly required, but some FTS
      * tests work better if realtime starts from 0 at boot time. */
     long real_time_0[2];
 
     /* font directory - see gsfont.h */
     gs_font_dir *font_dir;
+    gs_gc_root_ptr font_dir_root;
     /* True if we are emulating CPSI. Ideally this would be in the imager
      * state, but this can't be done due to problems detecting changes in it
      * for the clist based devices. */
     bool CPSI_mode;
-    /* Keep the path for the ICCProfiles here so devices and the icc_manager 
+    /* Keep the path for the ICCProfiles here so devices and the icc_manager
      * can get to it. Prevents needing two copies, one in the icc_manager
      * and one in the device */
     char *profiledir;               /* Directory used in searching for ICC profiles */
     int profiledir_len;             /* length of directory name (allows for Unicode) */
     void *cms_context;  /* Opaque context pointer from underlying CMS in use */
     gs_fapi_server **fapi_servers;
+    char *default_device_list;
+    int gcsignal;
+    int scanconverter;
+    void *sjpxd_private; /* optional for use of jpx codec */
 } gs_lib_ctx_t;
+
+enum {
+    GS_SCANCONVERTER_OLD = 0,
+    GS_SCANCONVERTER_DEFAULT = 1,
+    GS_SCANCONVERTER_EDGEBUFFER = 2,
+
+    /* And finally a flag to let us know which is the default */
+    GS_SCANCONVERTER_DEFAULT_IS_EDGEBUFFER = 1
+};
 
 /** initializes and stores itself in the given gs_memory_t pointer.
  * it is the responsibility of the gs_memory_t objects to copy
@@ -105,7 +133,31 @@ void gs_lib_ctx_set_cms_context( const gs_memory_t *mem, void *cms_context );
 gs_memory_t * gs_lib_ctx_get_non_gc_memory_t(void);
 #endif
 
-void gs_lib_ctx_set_icc_directory(const gs_memory_t *mem_gc, const char* pname,
-                        int dir_namelen);
+int gs_lib_ctx_set_icc_directory(const gs_memory_t *mem_gc, const char* pname,
+                                 int dir_namelen);
+
+
+/* Sets/Gets the string containing the list of device names we should search
+ * to find a suitable default
+ */
+int
+gs_lib_ctx_set_default_device_list(const gs_memory_t *mem, const char* dev_list_str,
+                        int list_str_len);
+
+/* Returns a pointer to the string not a new string */
+int
+gs_lib_ctx_get_default_device_list(const gs_memory_t *mem, char** dev_list_str,
+                        int *list_str_len);
+
+int
+gs_check_file_permission (gs_memory_t *mem, const char *fname, const int len, const char *permission);
+
+#define IS_LIBCTX_STDOUT(mem, f) (f == mem->gs_lib_ctx->fstdout)
+#define IS_LIBCTX_STDERR(mem, f) (f == mem->gs_lib_ctx->fstderr)
+
+/* Functions to init/fin JPX decoder libctx entry */
+int sjpxd_create(gs_memory_t *mem);
+
+void sjpxd_destroy(gs_memory_t *mem);
 
 #endif /* GSLIBCTX_H */

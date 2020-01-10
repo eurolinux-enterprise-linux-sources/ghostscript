@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -176,7 +176,7 @@ typedef struct {
 int mesh_init_fill_state(mesh_fill_state_t * pfs,
                           const gs_shading_mesh_t * psh,
                           const gs_fixed_rect * rect_clip,
-                          gx_device * dev, gs_imager_state * pis);
+                          gx_device * dev, gs_gstate * pgs);
 
 int init_patch_fill_state(patch_fill_state_t *pfs);
 bool term_patch_fill_state(patch_fill_state_t *pfs);
@@ -191,7 +191,7 @@ int mesh_padding(patch_fill_state_t *pfs, const gs_fixed_point *p0, const gs_fix
 int patch_fill(patch_fill_state_t * pfs, const patch_curve_t curve[4],
            const gs_fixed_point interior[4],
            void (*transform) (gs_fixed_point *, const patch_curve_t[4],
-                              const gs_fixed_point[4], floatp, floatp));
+                              const gs_fixed_point[4], double, double));
 
 int constant_color_quadrangle(patch_fill_state_t *pfs, const quadrangle_patch *p, bool self_intersecting);
 

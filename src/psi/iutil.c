@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -257,8 +257,8 @@ obj_ident_eq(const gs_memory_t *mem, const ref * pref1, const ref * pref2)
 
 /*
  * Set *pchars and *plen to point to the data of a name or string, and
- * return 0.  If the object isn't a name or string, return e_typecheck.
- * If the object is a string without read access, return e_invalidaccess.
+ * return 0.  If the object isn't a name or string, return gs_error_typecheck.
+ * If the object is a string without read access, return gs_error_invalidaccess.
  */
 int
 obj_string_data(const gs_memory_t *mem, const ref *op, const byte **pchars, uint *plen)
@@ -278,19 +278,19 @@ obj_string_data(const gs_memory_t *mem, const ref *op, const byte **pchars, uint
         *plen = r_size(op);
         return 0;
     default:
-        return_error(e_typecheck);
+        return_error(gs_error_typecheck);
     }
 }
 
 /*
  * Create a printable representation of an object, a la cvs and =
  * (full_print = 0), == (full_print = 1), or === (full_print = 2).  Return 0
- * if OK, 1 if the destination wasn't large enough, e_invalidaccess if the
+ * if OK, 1 if the destination wasn't large enough, gs_error_invalidaccess if the
  * object's contents weren't readable.  If the return value is 0 or 1,
  * *prlen contains the amount of data returned.  start_pos is the starting
  * output position -- the first start_pos bytes of output are discarded.
  *
- * When (restart = false) return e_rangecheck the when destination wasn't
+ * When (restart = false) return gs_error_rangecheck the when destination wasn't
  * large enough without modifying the destination. This is needed for
  * compatibility with Adobe implementation of cvs and cvrs, which don't
  * change the destination string on failure.
@@ -308,7 +308,7 @@ int
 obj_cvp(const ref * op, byte * str, uint len, uint * prlen,
         int full_print, uint start_pos, const gs_memory_t *mem, bool restart)
 {
-    char buf[50];  /* big enough for any float, double, or struct name */
+    char buf[256];  /* big enough for any float, double, or struct name */
     const byte *data = (const byte *)buf;
     uint size;
     int code;
@@ -340,10 +340,10 @@ obj_cvp(const ref * op, byte * str, uint len, uint * prlen,
             float value = op->value.realval;
             float scanned;
 
-            sprintf(buf, "%g", value);
+            gs_sprintf(buf, "%g", value);
             sscanf(buf, "%f", &scanned);
             if (scanned != value)
-                sprintf(buf, "%.9g", value);
+                gs_sprintf(buf, "%.9g", value);
             ensure_dot(buf);
             goto rs;
         }
@@ -365,7 +365,7 @@ obj_cvp(const ref * op, byte * str, uint len, uint * prlen,
             if (start_pos > 0)
                 return obj_cvp(op, str, len, prlen, 0, start_pos - 1, mem, restart);
             if (len < 1)
-                return_error(e_rangecheck);
+                return_error(gs_error_rangecheck);
             code = obj_cvp(op, str + 1, len - 1, prlen, 0, 0, mem, restart);
             if (code < 0)
                 return code;
@@ -390,7 +390,7 @@ obj_cvp(const ref * op, byte * str, uint len, uint * prlen,
 
                 if (start_pos == 0) {
                     if (len < 1)
-                        return_error(e_rangecheck);
+                        return_error(gs_error_rangecheck);
                     str[0] = '(';
                     skip = 0;
                     wstr = str + 1;
@@ -424,7 +424,7 @@ obj_cvp(const ref * op, byte * str, uint len, uint * prlen,
                 if (status == 0) {
 #ifdef DEBUG
                     if (skip > (truncate ? 4 : 1)) {
-                        return_error(e_Fatal);
+                        return_error(gs_error_Fatal);
                     }
 #endif
                 }
@@ -438,13 +438,15 @@ obj_cvp(const ref * op, byte * str, uint len, uint * prlen,
                 if (truncate) {
                     if (len - *prlen < 4 - skip)
                         return 1;
-                    memcpy(w.ptr + 1, "...)" + skip, 4 - skip);
+                    memcpy(w.ptr + 1, &"...)"[skip], 4 - skip);
                     *prlen += 4 - skip;
                 } else {
                     if (len - *prlen < 1 - skip)
                         return 1;
-                    memcpy(w.ptr + 1, ")" + skip, 1 - skip);
-                    *prlen += 1 - skip;
+                    if (!skip) {
+                        w.ptr[1] = ')';
+                        *prlen += 1;
+                    }
                 }
             }
             return 0;
@@ -466,8 +468,8 @@ obj_cvp(const ref * op, byte * str, uint len, uint * prlen,
             size = strlen((const char *)data);
             if (size > 4 && !memcmp(data + size - 4, "type", 4))
                 size -= 4;
-            if (size > sizeof(buf) - 2)
-                return_error(e_rangecheck);
+            if (size > sizeof(buf) - 3)
+                return_error(gs_error_rangecheck);
             buf[0] = '-';
             memcpy(buf + 1, data, size);
             buf[size + 1] = '-';
@@ -480,10 +482,10 @@ other:
                 int rtype = r_btype(op);
 
                 if (rtype >= countof(type_strings))
-                    return_error(e_rangecheck);
+                    return_error(gs_error_rangecheck);
                 data = (const byte *)type_strings[rtype];
                 if (data == 0)
-                    return_error(e_rangecheck);
+                    return_error(gs_error_rangecheck);
             }
             goto rs;
         }
@@ -494,7 +496,7 @@ other:
         data = (const byte *)(op->value.boolval ? "true" : "false");
         break;
     case t_integer:
-        sprintf(buf, "%"PRIpsint, op->value.intval);
+        gs_sprintf(buf, "%"PRIpsint, op->value.intval);
         break;
     case t_string:
         check_read(*op);
@@ -529,7 +531,7 @@ other:
             break;
         }
         /* Internal operator, no name. */
-        sprintf(buf, "@0x%lx", (ulong) op->value.opproc);
+        gs_sprintf(buf, "@0x%lx", (ulong) op->value.opproc);
         break;
     }
     case t_real:
@@ -542,7 +544,7 @@ other:
         if (op->value.realval == (float)0.0001) {
             strcpy(buf, "0.0001");
         } else {
-            sprintf(buf, "%g", op->value.realval);
+            gs_sprintf(buf, "%g", op->value.realval);
         }
         ensure_dot(buf);
         break;
@@ -551,9 +553,9 @@ other:
     }
 rs: size = strlen((const char *)data);
 nl: if (size < start_pos)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     if (!restart && size > len)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     size -= start_pos;
     *prlen = min(size, len);
     memmove(str, data + start_pos, *prlen);
@@ -573,9 +575,9 @@ ensure_dot(char *buf)
         sscanf(pe + 1, "%d", &i);
         /* MSVC .net 2005 express doesn't support "%+02d" */
         if (i >= 0)
-            sprintf(pe + 1, "+%02d", i);
+            gs_sprintf(pe + 1, "+%02d", i);
         else
-            sprintf(pe + 1, "-%02d", -i);
+            gs_sprintf(pe + 1, "-%02d", -i);
     } else if (strchr(buf, '.') == NULL) {
         strcat(buf, ".0");
     }
@@ -583,8 +585,8 @@ ensure_dot(char *buf)
 
 /*
  * Create a printable representation of an object, a la cvs and =.  Return 0
- * if OK, e_rangecheck if the destination wasn't large enough,
- * e_invalidaccess if the object's contents weren't readable.  If pchars !=
+ * if OK, gs_error_rangecheck if the destination wasn't large enough,
+ * gs_error_invalidaccess if the object's contents weren't readable.  If pchars !=
  * NULL, then if the object was a string or name, store a pointer to its
  * characters in *pchars even if it was too large; otherwise, set *pchars =
  * str.  In any case, store the length in *prlen.
@@ -598,7 +600,7 @@ obj_cvs(const gs_memory_t *mem, const ref * op, byte * str, uint len, uint * prl
     if (code == 1) {
         if (pchars)
             obj_string_data(mem, op, pchars, prlen);
-        return gs_note_error(e_rangecheck);
+        return gs_note_error(gs_error_rangecheck);
     } else {
         if (pchars)
           *pchars = str;
@@ -652,7 +654,7 @@ int
 array_get(const gs_memory_t *mem, const ref * aref, long index_long, ref * pref)
 {
     if ((ulong)index_long >= r_size(aref))
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     switch (r_type(aref)) {
         case t_array:
             {
@@ -679,7 +681,7 @@ array_get(const gs_memory_t *mem, const ref * aref, long index_long, ref * pref)
             }
             break;
         default:
-            return_error(e_typecheck);
+            return_error(gs_error_typecheck);
     }
     return 0;
 }
@@ -719,7 +721,7 @@ packed_get(const gs_memory_t *mem, const ref_packed * packed, ref * pref)
 
 /* Check to make sure an interval contains no object references */
 /* to a space younger than a given one. */
-/* Return 0 or e_invalidaccess. */
+/* Return 0 or gs_error_invalidaccess. */
 int
 refs_check_space(const ref * bot, uint size, uint space)
 {
@@ -781,13 +783,13 @@ num_params(const ref * op, int count, double *pval)
                 *--pval = op->value.realval;
                 break;
             case t_integer:
-                *--pval = op->value.intval;
+                *--pval = (double)op->value.intval;
                 mask++;
                 break;
             case t__invalid:
-                return_error(e_stackunderflow);
+                return_error(gs_error_stackunderflow);
             default:
-                return_error(e_typecheck);
+                return_error(gs_error_typecheck);
         }
         op--;
     }
@@ -808,9 +810,9 @@ float_params(const ref * op, int count, float *pval)
                 *--pval = (float)op->value.intval;
                 break;
             case t__invalid:
-                return_error(e_stackunderflow);
+                return_error(gs_error_stackunderflow);
             default:
-                return_error(e_typecheck);
+                return_error(gs_error_typecheck);
         }
     return 0;
 }
@@ -844,22 +846,22 @@ process_float_array(const gs_memory_t *mem, const ref * parray, int count, float
 }
 
 /* Get a single real parameter. */
-/* The only possible errors are e_typecheck and e_stackunderflow. */
+/* The only possible errors are gs_error_typecheck and gs_error_stackunderflow. */
 /* If an error is returned, the return value is not updated. */
 int
 real_param(const ref * op, double *pparam)
 {
     switch (r_type(op)) {
         case t_integer:
-            *pparam = op->value.intval;
+            *pparam = (double)op->value.intval;
             break;
         case t_real:
             *pparam = op->value.realval;
             break;
         case t__invalid:
-            return_error(e_stackunderflow);
+            return_error(gs_error_stackunderflow);
         default:
-            return_error(e_typecheck);
+            return_error(gs_error_typecheck);
     }
     return 0;
 }
@@ -887,7 +889,7 @@ int_param(const ref * op, int max_value, int *pparam)
 int
 make_reals(ref * op, const double *pval, int count)
 {
-    /* This should return e_limitcheck if any real is too large */
+    /* This should return gs_error_limitcheck if any real is too large */
     /* to fit into a float on the stack. */
     for (; count--; op++, pval++)
         make_real(op, *pval);
@@ -896,7 +898,7 @@ make_reals(ref * op, const double *pval, int count)
 int
 make_floats(ref * op, const float *pval, int count)
 {
-    /* This should return e_undefinedresult for infinities. */
+    /* This should return gs_error_undefinedresult for infinities. */
     for (; count--; op++, pval++)
         make_real(op, *pval);
     return 0;
@@ -910,14 +912,14 @@ check_proc_failed(const ref * pref)
 {
     if (r_is_array(pref)) {
         if (r_has_attr(pref, a_executable))
-            return e_invalidaccess;
+            return gs_error_invalidaccess;
         else
-            return e_typecheck;
+            return gs_error_typecheck;
     } else {
         if (r_has_type(pref, t__invalid))
-            return e_stackunderflow;
+            return gs_error_stackunderflow;
         else
-            return e_typecheck;
+            return gs_error_typecheck;
     }
 }
 
@@ -926,7 +928,7 @@ check_proc_failed(const ref * pref)
 int
 check_type_failed(const ref * op)
 {
-    return (r_has_type(op, t__invalid) ? e_stackunderflow : e_typecheck);
+    return (r_has_type(op, t__invalid) ? gs_error_stackunderflow : gs_error_typecheck);
 }
 
 /* ------ Matrix utilities ------ */
@@ -962,7 +964,7 @@ read_matrix(const gs_memory_t *mem, const ref * op, gs_matrix * pmat)
     }
     check_read(*op);
     if (r_size(op) != 6)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     code = float_params(pvalues + 5, 6, (float *)pmat);
     return (code < 0 ? code : 0);
 }
@@ -979,7 +981,7 @@ write_matrix_in(ref * op, const gs_matrix * pmat, gs_dual_memory_t *idmemory,
 
     check_write_type(*op, t_array);
     if (r_size(op) != 6)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     aptr = op->value.refs;
     pel = (const float *)pmat;
     for (i = 5; i >= 0; i--, aptr++, pel++) {

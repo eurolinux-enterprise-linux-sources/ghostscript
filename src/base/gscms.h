@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,10 +9,9 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
-
 
 /*  Data type definitions when using the gscms  */
 
@@ -24,12 +23,18 @@
 #include "gstypes.h"
 #include "gscspace.h"      /* for gs_color_space */
 #include "gsdevice.h"     /* Need to carry pointer to clist reader */
-#include "gxsync.h"       /* for semaphore and monitors */
+#include "gxsync.h"       /* for monitors */
 #include "stdint_.h"
 
 #define ICC_MAX_CHANNELS 15
 #define NUM_DEVICE_PROFILES 4
 #define NUM_SOURCE_PROFILES 3
+
+#define AB_NEUTRAL_8 5
+#define AB_NEUTRAL_16 5
+
+#define DEV_NEUTRAL_8 5
+#define DEV_NEUTRAL_16 5
 
 /* Define the preferred size of the output by the CMS */
 /* This can be different than the size of gx_color_value
@@ -68,7 +73,7 @@ typedef struct gsicc_device_cm_s {
 
 /*  The buffer description.  We handle a variety of different types */
 typedef enum {
-    gsUNDEFINED = 0, 
+    gsUNDEFINED = 0,
     gsGRAY,
     gsRGB,
     gsCMYK,
@@ -93,24 +98,30 @@ typedef struct gsicc_bufferdesc_s {
 
 /* Mapping procedures to allow easy vectoring depending upon if we are using
    the CMM or doing "dumb" color transforms */
-typedef void (*gscms_trans_color_proc_t) (gx_device * dev, gsicc_link_t *icclink, 
-                                          void *inputcolor, void *outputcolor,
-                                          int num_bytes);
+typedef int (*gscms_trans_color_proc_t) (gx_device * dev, gsicc_link_t *icclink,
+                                         void *inputcolor, void *outputcolor,
+                                         int num_bytes);
 
-typedef void (*gscms_trans_buffer_proc_t) (gx_device * dev, gsicc_link_t *icclink,
-                                           gsicc_bufferdesc_t *input_buff_desc,
-                                           gsicc_bufferdesc_t *output_buff_desc,
-                                           void *inputbuffer, void *outputbuffer);
+typedef int (*gscms_trans_buffer_proc_t) (gx_device * dev, gsicc_link_t *icclink,
+                                          gsicc_bufferdesc_t *input_buff_desc,
+                                          gsicc_bufferdesc_t *output_buff_desc,
+                                          void *inputbuffer, void *outputbuffer);
 
 typedef void (*gscms_link_free_proc_t) (gsicc_link_t *icclink);
+
+typedef bool (*gscms_monitor_proc_t) (void *inputcolor, int num_bytes);
 
 typedef struct gscms_procs_s {
     gscms_trans_buffer_proc_t map_buffer;
     gscms_trans_color_proc_t  map_color;
     gscms_link_free_proc_t free_link;
+    gscms_monitor_proc_t is_color;
 } gscms_procs_t;
 
-/* Enumerate the ICC rendering intents and other parameters.  A note on 
+/* Allow different methods for releasing the opaque profile contents */
+typedef void(*gscms_free_profile_proc_t) (void *profile_handle, gs_memory_t *memory);
+
+/* Enumerate the ICC rendering intents and other parameters.  A note on
    these.  0-3 are for different values.   4-7 are for Override cases
    where we are trying to override some value specified in the document.
    8 is reserved for not specified.  This is used in the case were we
@@ -123,23 +134,29 @@ typedef enum {
     gsRELATIVECOLORIMETRIC,
     gsSATURATION,
     gsABSOLUTECOLORIMETRIC,
-    gsPERCEPTUAL_OR,            /* These are needed for keeping track  */                                   
+    gsPERCEPTUAL_OR,            /* These are needed for keeping track  */
     gsRELATIVECOLORIMETRIC_OR,  /* of when the source ri is going to */
     gsSATURATION_OR,            /* override the destination profile intent */
     gsABSOLUTECOLORIMETRIC_OR,  /* in particular through the clist */
-    gsRINOTSPECIFIED = 8            /* Used to ignore value when source based setting */  
+    gsRINOTSPECIFIED = 8,       /* Used to ignore value when source based setting */
+
+    /* Stop modern C shrinking this enum to a byte */
+    gsicc_rendering_intent__FORCE_SIZE= 0x10000
 } gsicc_rendering_intents_t;
 
 /* We make an enumerated type in case someone wants to add different types
-   of black point compensation.  Like lcms provides the option for. If 
-   any are added, be sure to add in the regular and the source overide 
+   of black point compensation.  Like lcms provides the option for. If
+   any are added, be sure to add in the regular and the source overide
    option. Also not that we have at most 4 options due to gsBP_OVERRIDE  */
 typedef enum {
     gsBLACKPTCOMP_OFF = 0,
     gsBLACKPTCOMP_ON,
-    gsBLACKPTCOMP_OFF_OR = 4, /* These are needed for keeping track of the  */                                   
+    gsBLACKPTCOMP_OFF_OR = 4, /* These are needed for keeping track of the  */
     gsBLACKPTCOMP_ON_OR,      /* source blackpt is to overide dest. setting */
-    gsBPNOTSPECIFIED = 8     /* Used to ignore value when source based setting */  
+    gsBPNOTSPECIFIED = 8,    /* Used to ignore value when source based setting */
+
+    /* Stop modern C shrinking this enum to a byte */
+    gsicc_blackptcomp__FORCE_SIZE= 0x10000
 } gsicc_blackptcomp_t;
 
 /* This is used mainly for when the sourcegtag option specifies us to use no
@@ -150,17 +167,20 @@ typedef enum {
     gsCMM_REPLACE
 } gsicc_cmm_t;
 
-/* Since this is not specified by the source document we don't need to worry 
+/* Since this is not specified by the source document we don't need to worry
    about override values */
 typedef enum {
     gsBLACKPRESERVE_OFF = 0,
     gsBLACKPRESERVE_KONLY,
     gsBLACKPRESERVE_KPLANE,
-    gsBKPRESNOTSPECIFIED = 8   /* Used to ignore value when source based setting */  
+    gsBKPRESNOTSPECIFIED = 8,   /* Used to ignore value when source based setting */
+
+    /* Stop modern C shrinking this enum to a byte */
+    gsicc_blackpreserve__FORCE_SIZE= 0x10000
 } gsicc_blackpreserve_t;
-  
+
 #define gsRI_OVERRIDE 0x4
-#define gsBP_OVERRIDE 0x4 
+#define gsBP_OVERRIDE 0x4
 #define gsKP_OVERRIDE 0x4
 #define gsRI_MASK 0x3;
 #define gsBP_MASK 0x3;
@@ -174,7 +194,9 @@ typedef enum {
     gsTEXTPROFILE,
     gsPROOFPROFILE,
     gsLINKPROFILE,
-    gsOIPROFILE
+    gsOIPROFILE,
+    gsPRPROFILE,
+    gsBLENDPROFILE
 } gsicc_profile_types_t;
 
 typedef enum {
@@ -187,11 +209,11 @@ typedef enum {
 
 /* The default is "unknown" which has value 0 and by default devices don't encode tags */
 typedef enum {
-    GS_UNKNOWN_TAG = 0x0,
+    GS_UNTOUCHED_TAG = 0x0,	/* UNTOUCHED *must* be 0 -- transparency code relies on this */
     GS_TEXT_TAG = 0x1,
     GS_IMAGE_TAG = 0x2,
     GS_PATH_TAG = 0x4,
-    GS_UNTOUCHED_TAG = 0x8,
+    GS_UNKNOWN_TAG = 0x40,
     GS_DEVICE_ENCODES_TAGS = 0x80
 } gs_graphics_type_tag_t;
 
@@ -211,6 +233,8 @@ typedef struct cmm_srcgtag_profile_s {
     gsicc_rendering_param_t rgb_rend_cond[NUM_SOURCE_PROFILES];
     cmm_profile_t  *cmyk_profiles[NUM_SOURCE_PROFILES];
     gsicc_rendering_param_t cmyk_rend_cond[NUM_SOURCE_PROFILES];
+    cmm_profile_t  *gray_profiles[NUM_SOURCE_PROFILES];
+    gsicc_rendering_param_t gray_rend_cond[NUM_SOURCE_PROFILES];
     cmm_profile_t  *color_warp_profile;
     gs_memory_t *memory;
     int name_length;            /* Length of file name */
@@ -246,13 +270,17 @@ struct gsicc_namelist_s {
 };
 
 /* Destination profiles for different objects */
-typedef struct cmm_dev_profile_s {
+struct cmm_dev_profile_s {
         cmm_profile_t  *device_profile[NUM_DEVICE_PROFILES];
         cmm_profile_t  *proof_profile;
         cmm_profile_t  *link_profile;
         cmm_profile_t  *oi_profile;  /* output intent profile */
+        cmm_profile_t  *blend_profile; /* blending color space */
+        cmm_profile_t  *postren_profile;  /* Profile for use by devices post render */
         gsicc_rendering_param_t rendercond[NUM_DEVICE_PROFILES];
         bool devicegraytok;        /* Used for forcing gray to pure black */
+        bool graydetection;        /* Device param for monitoring for gray only page */
+        bool pageneutralcolor;      /* Only valid if graydetection true */
         bool usefastcolor;         /* Used when we want to use no cm */
         bool supports_devn;        /* If the target handles devn colors */
         bool sim_overprint;     /* Indicates we want to do overprint blending */
@@ -260,7 +288,7 @@ typedef struct cmm_dev_profile_s {
         bool prebandthreshold;     /* Used to indicate use of HT pre-clist */
         gs_memory_t *memory;
         rc_header rc;
-} cmm_dev_profile_t;
+};
 
 /*  Used so that we can specify if we want to link with Device input color spaces
     during the link creation process. For the DeviceN case, the DeviceN profile
@@ -289,6 +317,12 @@ typedef enum {
     CIE_DEFG,       /* Generated from PS CIEDEFG definition */
     CIE_CRD        /* Generated from PS CRD definition */
 } gsicc_profile_t;
+
+typedef enum {
+    ICCVERS_UNKNOWN,
+    ICCVERS_2,
+    ICCVERS_NOT2
+} gsicc_version_t;
 
 #define gsicc_serial_data\
     unsigned char num_comps;		/* number of device dependent values */\
@@ -320,19 +354,23 @@ typedef struct gsicc_serialized_profile_s {
  */
 struct cmm_profile_s {
     gsicc_serial_data;
-    byte *buffer;               /* A buffer with ICC profile content */
-    gx_device *dev;             /* A pointer to the clist device in which the ICC data may be contained */
-    gsicc_namelist_t *spotnames;  /* Used for profiles that have non-standard colorants */
-    void *profile_handle;       /* The profile handle */
-    rc_header rc;               /* Reference count.  So we know when to free */
-    int name_length;            /* Length of file name */
-    char *name;                 /* Name of file name (if there is one) where profile is found.
-                                 * If it was embedded in the stream, there will not be a file
-                                 * name.  This is primarily here for the system profiles, and
-                                 * so that we avoid resetting them everytime the user params
-                                 * are reloaded. */
-    gs_memory_t *memory;        /* In case we have some in non-gc and some in gc memory */
-    gx_monitor_t *lock;		/* handle for the monitor */
+    byte *buffer;                       /* A buffer with ICC profile content */
+    gx_device *dev;                     /* A pointer to the clist device in which the ICC data may be contained */
+    gsicc_namelist_t *spotnames;        /* Used for profiles that have non-standard colorants */
+    void *profile_handle;               /* The profile handle */
+    rc_header rc;                       /* Reference count.  So we know when to free */
+    int name_length;                    /* Length of file name */
+    char *name;                         /* Name of file name (if there is one) where profile is found.
+                                         * If it was embedded in the stream, there will not be a file
+                                         * name.  This is primarily here for the system profiles, and
+                                         * so that we avoid resetting them everytime the user params
+                                         * are reloaded. */
+    gsicc_version_t vers;               /* Is this profile V2 */
+    byte *v2_data;                      /* V2 data that is equivalent to this profile. Used for PDF-A1 support */
+    int v2_size;                        /* Number of bytes in v2_data */
+    gs_memory_t *memory;                /* In case we have some in non-gc and some in gc memory */
+    gx_monitor_t *lock;                 /* handle for the monitor */
+    gscms_free_profile_proc_t release;  /* Release the profile handle at CMM */
 };
 
 #ifndef cmm_profile_DEFINED
@@ -403,18 +441,23 @@ typedef struct gsicc_hashlink_s {
 } gsicc_hashlink_t;
 
 struct gsicc_link_s {
-    void *link_handle;
-    gscms_procs_t procs;   
+    void *link_handle;		/* the CMS decides what this is */
+    gs_memory_t *memory;
+    gscms_procs_t procs;
     gsicc_hashlink_t hashcode;
     struct gsicc_link_cache_s *icc_link_cache;
     int ref_count;
     gsicc_link_t *next;
-    gx_semaphore_t *wait;		/* semaphore used by waiting threads */
-    int num_waiting;
+    gx_monitor_t *lock;		/* lock used while changing contents */
     bool includes_softproof;
     bool includes_devlink;
     bool is_identity;  /* Used for noting that this is an identity profile */
     bool valid;		/* true once link is completely built and usable */
+    bool is_monitored;
+    gscms_procs_t orig_procs;  /* procs to use after monitoring */
+    gsicc_colorbuffer_t data_cs; /* needed for begin_monitor after end_monitor */
+    int num_input;  /* Need so we can monitor properly */
+    int num_output; /* Need so we can monitor properly */
 };
 
 /* ICC Cache. The size of the cache is limited by max_memory_size.
@@ -428,8 +471,6 @@ typedef struct gsicc_link_cache_s {
     rc_header rc;
     gs_memory_t *memory;
     gx_monitor_t *lock;		/* handle for the monitor */
-    gx_semaphore_t *wait;	/* somebody needs a link cache slot */
-    int num_waiting;		/* number of threads waiting */
 } gsicc_link_cache_t;
 
 /* A linked list structure to keep DeviceN ICC profiles
@@ -465,15 +506,15 @@ struct gsicc_devicen_s {
 };
 
 /* Had to add bool so that we know if things were swapped.
-   The reason is that if we are in a swapped state and 
-   there is a vmreclaim we then end up sending the user 
+   The reason is that if we are in a swapped state and
+   there is a vmreclaim we then end up sending the user
    params again and we will find that there is a mismatch */
 typedef struct gsicc_smask_s {
     cmm_profile_t *smask_gray;
     cmm_profile_t *smask_rgb;
     cmm_profile_t *smask_cmyk;
     gs_memory_t *memory;
-    bool swapped;  
+    bool swapped;
 } gsicc_smask_t;
 
 /* The manager object */
@@ -484,6 +525,7 @@ typedef struct gsicc_manager_s {
     cmm_profile_t *default_rgb;     /* Default RGB profile for device RGB */
     cmm_profile_t *default_cmyk;    /* Default CMYK profile for device CMKY */
     cmm_profile_t *lab_profile;     /* Colorspace type ICC profile from LAB to LAB */
+    cmm_profile_t *xyz_profile;     /* RGB based proflie that hands back CIEXYZ values */
     cmm_profile_t *graytok_profile; /* A specialized profile for mapping gray to K */
     gsicc_devicen_t *device_n;      /* A linked list of profiles used for DeviceN support */
     gsicc_smask_t *smask_profiles;  /* Profiles used when we are in a softmask group */

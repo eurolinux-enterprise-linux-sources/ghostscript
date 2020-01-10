@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -191,6 +191,7 @@ zcomposite(i_ctx_t *i_ctx_p)
 
     check_int_leu(*op, composite_last);
     params.op = (gs_composite_op_t) op->value.intval;
+    params.delta = 0; /* prevents a Coverity warning, delta is only used for Dissolve mode */
     return composite_image(i_ctx_p, &params);
 }
 
@@ -207,7 +208,7 @@ zdissolve(i_ctx_t *i_ctx_p)
     if (code < 0)
         return code;
     if (delta < 0 || delta > 1)
-        return_error(e_rangecheck);
+        return_error(gs_error_rangecheck);
     params.op = composite_Dissolve;
     params.delta = delta;
     return composite_image(i_ctx_p, &params);
@@ -235,8 +236,8 @@ zsizeimagebox(i_ctx_t *i_ctx_p)
     check_type(op[-3], t_integer);
     check_type(op[-2], t_integer);
     check_type(op[-1], t_integer);
-    srect.p.x = op[-4].value.intval;
-    srect.p.y = op[-3].value.intval;
+    srect.p.x = (double)op[-4].value.intval;
+    srect.p.y = (double)op[-3].value.intval;
     srect.q.x = srect.p.x + op[-2].value.intval;
     srect.q.y = srect.p.y + op[-1].value.intval;
     gs_currentmatrix(igs, &mat);
@@ -294,7 +295,7 @@ zsizeimageparams(i_ctx_t *i_ctx_p)
 {
     os_ptr op = osp;
     gx_device *dev = gs_currentdevice(igs);
-    int ncomp = dev->color_info.num_components;
+    uchar ncomp = dev->color_info.num_components;
     int bps;
 
     push(3);
@@ -310,7 +311,7 @@ zsizeimageparams(i_ctx_t *i_ctx_p)
              dev->color_info.max_gray :
              max(dev->color_info.max_gray, dev->color_info.max_color));
         static const gx_color_value sizes[] = {
-            1, 2, 4, 8, 12, sizeof(gx_max_color_value) * 8
+            1, 2, 4, 8, 12, gx_color_value_bits
         };
         int i;
 
@@ -369,7 +370,7 @@ begin_composite(i_ctx_t *i_ctx_p, alpha_composite_state_t * pcp)
         return code;
     pcp->orig_dev = pcp->cdev = dev;	/* for end_composite */
     code = (*dev_proc(dev, create_compositor))
-        (dev, &pcp->cdev, pcp->pcte, (gs_imager_state *)igs, imemory, NULL);
+        (dev, &pcp->cdev, pcp->pcte, igs, imemory, NULL);
     if (code < 0) {
         end_composite(i_ctx_p, pcp);
         return code;
@@ -399,7 +400,7 @@ end_composite(i_ctx_t *i_ctx_p, alpha_composite_state_t * pcp)
 static int
 device_is_true_color(gx_device * dev)
 {
-    int ncomp = dev->color_info.num_components;
+    uchar ncomp = dev->color_info.num_components;
     int depth = dev->color_info.depth;
     int i, max_v;
 

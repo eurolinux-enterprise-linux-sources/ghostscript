@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -106,6 +106,10 @@ typedef struct dsc_data_s {
 static void dsc_finalize(const gs_memory_t *cmem, void *vptr);
 gs_private_st_simple_final(st_dsc_data_t, dsc_data_t, "dsc_data_struct", dsc_finalize);
 
+static void *zDSC_memalloc (size_t size, void *closure_data);
+static void zDSC_memfree(void *ptr, void *closure_data);
+
+
 /* Define the key name for storing the instance pointer in a dictionary. */
 static const char * const dsc_dict_name = "DSC_struct";
 
@@ -122,6 +126,20 @@ dsc_error_handler(void *caller_data, CDSC *dsc, unsigned int explanation,
     return CDSC_OK;
 }
 
+static void *zDSC_memalloc (size_t size, void *closure_data)
+{
+    gs_memory_t *cmem = (gs_memory_t *)closure_data;
+
+    return(gs_alloc_bytes(cmem, size, "zDSC_memalloc: DSC parsing memory alloc"));
+}
+
+static void zDSC_memfree(void *ptr, void *closure_data)
+{
+    gs_memory_t *cmem = (gs_memory_t *)closure_data;
+
+    gs_free_object(cmem, ptr, "zDSC_memfree: DSC parsing memory free");
+}
+
 /*
  * This operator creates a new, initialized instance of the DSC parser.
  */
@@ -132,17 +150,27 @@ zinitialize_dsc_parser(i_ctx_t *i_ctx_p)
     ref local_ref;
     int code;
     os_ptr const op = osp;
-    dict * const pdict = op->value.pdict;
-    gs_memory_t * const mem = (gs_memory_t *)dict_memory(pdict);
-    dsc_data_t * const data =
-        gs_alloc_struct(mem, dsc_data_t, &st_dsc_data_t, "DSC parser init");
+    dict *pdict;
+    gs_memory_t *mem;
+    dsc_data_t *data;
 
+    if (ref_stack_count(&o_stack) < 1)
+        return_error(gs_error_stackunderflow);
+
+    check_read_type(*op, t_dictionary);
+
+    pdict = op->value.pdict;
+    mem = (gs_memory_t *)dict_memory(pdict);
+
+    data = gs_alloc_struct(mem, dsc_data_t, &st_dsc_data_t, "DSC parser init");
     if (!data)
-        return_error(e_VMerror);
+        return_error(gs_error_VMerror);
     data->document_level = 0;
-    data->dsc_data_ptr = dsc_init((void *) "Ghostscript DSC parsing");
+
+    data->dsc_data_ptr = dsc_init_with_alloc((void *) "Ghostscript DSC parsing",
+                           zDSC_memalloc, zDSC_memfree, (void *)mem->non_gc_memory);
     if (!data->dsc_data_ptr)
-        return_error(e_VMerror);
+        return_error(gs_error_VMerror);
     dsc_set_error_function(data->dsc_data_ptr, dsc_error_handler);
     make_astruct(&local_ref, a_readonly | r_space(op), (byte *) data);
     code = idict_put_string(op, dsc_dict_name, &local_ref);
@@ -418,6 +446,7 @@ zparse_dsc_comments(i_ctx_t *i_ctx_p)
      * is bad, so ...).
      */
     check_type(*opString, t_string);
+    check_type(*opDict, t_dictionary);
     check_dict_write(*opDict);
     ssize = r_size(opString);
     if (ssize > MAX_DSC_MSG_SIZE)   /* need room for EOL + \0 */

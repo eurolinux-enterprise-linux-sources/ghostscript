@@ -183,7 +183,7 @@ prn_flush(gx_device_printer *pdev)
 
 static void
 bj10v_output_run(byte *data, int dnum, int bytes,
-                                 char *mode, gx_device_printer *pdev)
+                 const char *mode, gx_device_printer *pdev)
 {
         prn_putc(pdev, '\033');
         prn_puts(pdev, mode);
@@ -198,7 +198,7 @@ bj10v_print_page(gx_device_printer *pdev, FILE *prn_stream)
 {	int line_size = gdev_prn_raster((gx_device *)pdev);
         int xres = pdev->x_pixels_per_inch;
         int yres = pdev->y_pixels_per_inch;
-        char *mode = (yres == 180 ?
+        const char *mode = (yres == 180 ?
                       (xres == 180 ? "\052\047" : "\052\050") :
                       "|*");
         int bits_per_column = 24 * (yres / 180);
@@ -223,7 +223,6 @@ bj10v_print_page(gx_device_printer *pdev, FILE *prn_stream)
            {	byte *out_beg;
                 byte *out_end;
                 byte *outl, *outp;
-                byte *zp;
                 int count, bnum;
 
                 /* Copy 1 scan line and test for all zero. */

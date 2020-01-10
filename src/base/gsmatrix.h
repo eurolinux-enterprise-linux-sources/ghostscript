@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -60,27 +60,27 @@ typedef struct gs_matrix_double_s gs_matrix_double;
 
 /* Matrix creation */
 void gs_make_identity(gs_matrix *);
-int gs_make_translation(floatp, floatp, gs_matrix *),
-    gs_make_scaling(floatp, floatp, gs_matrix *),
-    gs_make_rotation(floatp, gs_matrix *);
+int gs_make_translation(double, double, gs_matrix *),
+    gs_make_scaling(double, double, gs_matrix *),
+    gs_make_rotation(double, gs_matrix *);
 
 /* Matrix arithmetic */
 int gs_matrix_multiply(const gs_matrix *, const gs_matrix *, gs_matrix *),
     gs_matrix_multiply_double(const gs_matrix_double *, const gs_matrix *, gs_matrix_double *),
     gs_matrix_invert(const gs_matrix *, gs_matrix *),
     gs_matrix_invert_to_double(const gs_matrix *, gs_matrix_double *),
-    gs_matrix_translate(const gs_matrix *, floatp, floatp, gs_matrix *),
-    gs_matrix_scale(const gs_matrix *, floatp, floatp, gs_matrix *),
-    gs_matrix_rotate(const gs_matrix *, floatp, gs_matrix *);
+    gs_matrix_translate(const gs_matrix *, double, double, gs_matrix *),
+    gs_matrix_scale(const gs_matrix *, double, double, gs_matrix *),
+    gs_matrix_rotate(const gs_matrix *, double, gs_matrix *);
 
 /* Matrix comparison */
 int gs_matrix_compare(const gs_matrix *, const gs_matrix *);
 
 /* Coordinate transformation */
-int gs_point_transform(floatp, floatp, const gs_matrix *, gs_point *),
-    gs_point_transform_inverse(floatp, floatp, const gs_matrix *, gs_point *),
-    gs_distance_transform(floatp, floatp, const gs_matrix *, gs_point *),
-    gs_distance_transform_inverse(floatp, floatp, const gs_matrix *, gs_point *),
+int gs_point_transform(double, double, const gs_matrix *, gs_point *),
+    gs_point_transform_inverse(double, double, const gs_matrix *, gs_point *),
+    gs_distance_transform(double, double, const gs_matrix *, gs_point *),
+    gs_distance_transform_inverse(double, double, const gs_matrix *, gs_point *),
     gs_points_bbox(const gs_point[4], gs_rect *),
     gs_bbox_transform_only(const gs_rect *, const gs_matrix *, gs_point[4]),
     gs_bbox_transform(const gs_rect *, const gs_matrix *, gs_rect *),

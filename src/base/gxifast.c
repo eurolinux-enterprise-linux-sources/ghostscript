@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -29,7 +29,7 @@
 #include "gxdevice.h"
 #include "gxcmap.h"
 #include "gxdcolor.h"
-#include "gxistate.h"
+#include "gxgstate.h"
 #include "gxdevmem.h"
 #include "gdevmem.h"		/* for mem_mono_device */
 #include "gxcpath.h"
@@ -82,9 +82,6 @@ gs_image_class_1_simple(gx_image_enum * penum)
                     penum->line = gs_alloc_bytes(penum->memory,
                                             penum->line_size, "image line");
                     if (penum->line == 0) {
-                        gx_default_end_image(penum->dev,
-                                             (gx_image_enum_common_t *)penum,
-                                             false);
                         return 0;
                     }
                 }
@@ -118,6 +115,9 @@ gs_image_class_1_simple(gx_image_enum * penum)
                                          false);
                     return 0;
                 }
+#ifdef PACIFY_VALGRIND
+                memset(penum->line, 0, penum->line_size); /* For the number of scan lined < 8 */
+#endif
                 penum->xi_next = penum->line_xy = fixed2int_var_rounded(ox);
                 if_debug3m('b', penum->memory,
                            "[b]render=landscape, unpack=copy; rect.w=%d, dev_width=%ld, line_size=%ld\n",
@@ -315,12 +315,21 @@ image_simple_expand(byte * line, int line_x, uint raster,
     /* Pre-clear the row. */
     fill_row(line, line_x, raster, zero);
 
+
+    /* Extreme negative values of x_extent cause the xl0 calculation
+     * to explode. Workaround this here. */
+    if (x_extent < min_int + 0x100)
+      x_extent += 0x100;
+
     /* Set up the DDAs. */
     xl0 =
         (x_extent >= 0 ?
          fixed_fraction(fixed_pre_pixround(xcur)) :
          fixed_fraction(fixed_pre_pixround(xcur + x_extent)) - x_extent);
     xl0 += int2fixed(line_x);
+    /* We should never get a negative x10 here. If we do, all bets are off. */
+    if (xl0 < 0)
+        xl0 = 0, x_extent = 0;
     dda_init(xl, xl0, x_extent, w);
     dxx4 = xl.step;
     dda_step_add(dxx4, xl.step);
@@ -403,8 +412,9 @@ sw:	    if ((data = psrc[1]) != 0) {
             /*
              * We've scanned the last run of 0s.
              * Prepare to fill the final run of 1s.
+             * Use int64_t to avoid overflow.
              */
-            n = fixed2int(xl0 + x_extent) - x0;
+            n = fixed2int((int64_t)xl0 + (int64_t)x_extent) - x0;
         } else {		/* Scan a run of ones. */
             /* We know the current bit is a one. */
             data ^= 0xff;	/* un-invert */
@@ -550,9 +560,9 @@ image_render_simple(gx_image_enum * penum, const byte * buffer, int data_x,
     if (h == 0)
         return 0;
     if ((!DC_IS_NULL(pdc0) &&
-         (code = gx_color_load(pdc0, penum->pis, dev)) < 0) ||
+         (code = gx_color_load(pdc0, penum->pgs, dev)) < 0) ||
         (!DC_IS_NULL(pdc1) &&
-         (code = gx_color_load(pdc1, penum->pis, dev)) < 0)
+         (code = gx_color_load(pdc1, penum->pgs, dev)) < 0)
         )
         return code;
     if (penum->line == 0) {	/* A direct BitBlt is possible. */
@@ -607,8 +617,6 @@ image_render_simple(gx_image_enum * penum, const byte * buffer, int data_x,
             return 1;
         /****** MAY BE UNALIGNED ******/
         line = scan_line + (line_ix >> 3);
-        if (dxx < 0)
-            ix -= line_width;
         for (dy = 1; dy < ih; dy++) {
             int code = (*copy_mono)
                 (dev, line, line_x, line_size, gx_no_bitmap_id,

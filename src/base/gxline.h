@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -61,14 +61,14 @@ typedef struct gx_line_params_s {
   ((plp)->half_width = fabs(wid) / 2)
 #define gx_current_line_width(plp)\
   ((plp)->half_width * 2)
-int gx_set_miter_limit(gx_line_params *, floatp);
+int gx_set_miter_limit(gx_line_params *, double);
 
 #define gx_current_miter_limit(plp)\
   ((plp)->miter_limit)
-int gx_set_dash(gx_dash_params *, const float *, uint, floatp, gs_memory_t *);
+int gx_set_dash(gx_dash_params *, const float *, uint, double, gs_memory_t *);
 
 #define gx_set_dash_adapt(pdp, adpt) ((pdp)->adapt = (adpt))
-int gx_set_dot_length(gx_line_params *, floatp, bool);
+int gx_set_dot_length(gx_line_params *, double, bool);
 
 /* See gsline.c for the computation of miter_check. */
 #define gx_line_params_initial\

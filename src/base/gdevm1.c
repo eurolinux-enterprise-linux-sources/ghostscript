@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 /* Monobit "memory" (stored bitmap) device */
@@ -270,42 +270,44 @@ mem_mono_strip_copy_rop_dev(gx_device * dev, const byte * sdata,
             }
         } else {
             /* Use Rop run */
-            rop_get_run_op(&ropper, rop, 1, 0);
-            /* Loop over scan lines. */
-            for (; line_count-- > 0; drow += draster, srow += sraster) {
-                rop_set_s_bitmap_subbyte(&ropper, srow, sbit);
-                rop_run_subbyte(&ropper, drow, dbit, width);
+            if (rop_get_run_op(&ropper, rop, 1, 0)) {
+                /* Loop over scan lines. */
+                for (; line_count-- > 0; drow += draster, srow += sraster) {
+                    rop_set_s_bitmap_subbyte(&ropper, srow, sbit);
+                    rop_run_subbyte(&ropper, drow, dbit, width);
+                }
+                rop_release_run_op(&ropper);
             }
-            rop_release_run_op(&ropper);
         }
     } else if (textures->rep_width > 32) {
         /* Use Rop run */
-        rop_get_run_op(&ropper, rop, 1, 0);
-        /* Loop over scan lines. */
-        for (; line_count-- > 0; drow += draster, srow += sraster, ++ty) {
-            int sx = sourcex;
-            int dx = x;
-            int w = width;
-            const byte *trow = textures->data + (ty % textures->rep_height) * traster;
-            int xoff = x_offset(phase_x, ty, textures);
-            int nw;
-            int tx = (dx + xoff) % textures->rep_width;
+        if (rop_get_run_op(&ropper, rop, 1, 0)) {
+            /* Loop over scan lines. */
+            for (; line_count-- > 0; drow += draster, srow += sraster, ++ty) {
+                int sx = sourcex;
+                int dx = x;
+                int w = width;
+                const byte *trow = textures->data + (ty % textures->rep_height) * traster;
+                int xoff = x_offset(phase_x, ty, textures);
+                int nw;
+                int tx = (dx + xoff) % textures->rep_width;
 
-            /* Loop over (horizontal) copies of the tile. */
-            for (; w > 0; sx += nw, dx += nw, w -= nw, tx = 0) {
-                int dbit = dx & 7;
-                int sbit = sx & 7;
-                int tbit = tx & 7;
-                byte *dptr = drow + (dx >> 3);
-                const byte *sptr = srow + (sx >> 3);
-                const byte *tptr = trow + (tx >> 3);
-                nw = min(w, textures->size.x - tx);
-                rop_set_s_bitmap_subbyte(&ropper, sptr, sbit);
-                rop_set_t_bitmap_subbyte(&ropper, tptr, tbit);
-                rop_run_subbyte(&ropper, dptr, dbit, nw);
+                /* Loop over (horizontal) copies of the tile. */
+                for (; w > 0; sx += nw, dx += nw, w -= nw, tx = 0) {
+                    int dbit = dx & 7;
+                    int sbit = sx & 7;
+                    int tbit = tx & 7;
+                    byte *dptr = drow + (dx >> 3);
+                    const byte *sptr = srow + (sx >> 3);
+                    const byte *tptr = trow + (tx >> 3);
+                    nw = min(w, textures->size.x - tx);
+                    rop_set_s_bitmap_subbyte(&ropper, sptr, sbit);
+                    rop_set_t_bitmap_subbyte(&ropper, tptr, tbit);
+                    rop_run_subbyte(&ropper, dptr, dbit, nw);
+                }
             }
+            rop_release_run_op(&ropper);
         }
-        rop_release_run_op(&ropper);
     } else if (srow == NULL) {
         /* Do it the old, 'slow' way. rop runs of less than 1 word are
          * not likely to be a win with rop_run. */
@@ -497,7 +499,7 @@ mem_mono_fill_rectangle(gx_device * dev, int x, int y, int w, int h,
  */
 /* cshift = chunk_bits - shift. */
 #undef chunk
-#if arch_is_big_endian
+#if ARCH_IS_BIG_ENDIAN
 #  define chunk uint
 #  define CFETCH_RIGHT(cptr, shift, cshift)\
         (CFETCH_ALIGNED(cptr) >> shift)
@@ -699,7 +701,7 @@ mem_mono_copy_mono(gx_device * dev,
 #undef CINVERT
 #define CINVERT(bits) (bits)    /* pre-inverted here */
 
-#if arch_is_big_endian          /* no byte swapping */
+#if ARCH_IS_BIG_ENDIAN          /* no byte swapping */
 #  define WRITE_1TO2(wr_op)\
   for ( ; ; )\
    { register uint bits = CFETCH_ALIGNED(bptr) ^ invert;\
@@ -961,7 +963,7 @@ int tx, int y, int tw, int th, gx_color_index color0, gx_color_index color1,
 
         set_mono_left_mask(mask, dbit);
         set_mono_right_mask(rmask, wleft);
-#if arch_is_big_endian          /* no byte swapping */
+#if ARCH_IS_BIG_ENDIAN          /* no byte swapping */
 #undef CINVERT
 #define CINVERT(bits) (bits)    /* pre-inverted here */
         for (;;) {
@@ -1077,7 +1079,7 @@ int tx, int y, int tw, int th, gx_color_index color0, gx_color_index color1,
 /* Note that on a big-endian machine, this is the same as the */
 /* standard byte-oriented-device. */
 
-#if !arch_is_big_endian
+#if !ARCH_IS_BIG_ENDIAN
 
 /* Procedures */
 static dev_proc_copy_mono(mem1_word_copy_mono);
@@ -1134,4 +1136,4 @@ mem1_word_copy_mono(gx_device * dev,
     return 0;
 }
 
-#endif /* !arch_is_big_endian */
+#endif /* !ARCH_IS_BIG_ENDIAN */

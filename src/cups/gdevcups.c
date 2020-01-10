@@ -60,6 +60,9 @@
  *   cups_print_planar()     - Print a page of planar pixels.
  */
 
+/* prevent gp.h redefining fopen */
+#define sprintf sprintf
+
 /*
  * Include necessary headers...
  */
@@ -67,6 +70,7 @@
 #include "std.h"                /* to stop stdlib.h redefining types */
 #include "gdevprn.h"
 #include "gsparam.h"
+#include "gxdevsop.h"
 #include "arch.h"
 #include "gsicc_manage.h"
 
@@ -96,6 +100,70 @@ int gdev_prn_maybe_realloc_memory(gx_device_printer *pdev,
                                   int old_width, int old_height,
                                   bool old_page_uses_transparency);
 
+/* Strings for cups_put/get_params */
+static const char * const cups_Integer_strings[] =
+{
+  "cupsInteger0",
+  "cupsInteger1",
+  "cupsInteger2",
+  "cupsInteger3",
+  "cupsInteger4",
+  "cupsInteger5",
+  "cupsInteger6",
+  "cupsInteger7",
+  "cupsInteger8",
+  "cupsInteger9",
+  "cupsInteger10",
+  "cupsInteger11",
+  "cupsInteger12",
+  "cupsInteger13",
+  "cupsInteger14",
+  "cupsInteger15",
+  NULL
+};
+
+static const char * const cups_Real_strings[] =
+{
+  "cupsReal0",
+  "cupsReal1",
+  "cupsReal2",
+  "cupsReal3",
+  "cupsReal4",
+  "cupsReal5",
+  "cupsReal6",
+  "cupsReal7",
+  "cupsReal8",
+  "cupsReal9",
+  "cupsReal10",
+  "cupsReal11",
+  "cupsReal12",
+  "cupsReal13",
+  "cupsReal14",
+  "cupsReal15",
+  NULL
+};
+
+static const char * const cups_String_strings[] =
+{
+  "cupsString0",
+  "cupsString1",
+  "cupsString2",
+  "cupsString3",
+  "cupsString4",
+  "cupsString5",
+  "cupsString6",
+  "cupsString7",
+  "cupsString8",
+  "cupsString9",
+  "cupsString10",
+  "cupsString11",
+  "cupsString12",
+  "cupsString13",
+  "cupsString14",
+  "cupsString15",
+  NULL
+};
+
 /*
  * Check if we are compiling against CUPS 1.2.  If so, enable
  * certain extended attributes and use a different page header
@@ -106,10 +174,17 @@ int gdev_prn_maybe_realloc_memory(gx_device_printer *pdev,
 #  define cups_page_header_t cups_page_header2_t
 #  define cupsRasterWriteHeader cupsRasterWriteHeader2
 #else
-/* The RGBW colorspace is not defined until CUPS 1.2... */
+/* The RGBW, SW, SRGB, and ADOBERGB colorspaces is not defined until
+   CUPS 1.2... */
 #  define CUPS_CSPACE_RGBW 17
+#  define CUPS_CSPACE_SW 18
+#  define CUPS_CSPACE_SRGB 19
+#  define CUPS_CSPACE_ADOBERGB 20
 #endif /* CUPS_RASTER_SYNCv1 */
 
+#if !defined(CUPS_RASTER_WRITE_PWG)
+    #define CUPS_RASTER_WRITE_PWG 3
+#endif
 
 /*
  * CIE XYZ color constants...
@@ -172,11 +247,13 @@ private dev_proc_close_device(cups_close);
 private dev_proc_get_initial_matrix(cups_get_matrix);
 private int cups_get_params(gx_device *, gs_param_list *);
 private dev_proc_open_device(cups_open);
+private dev_proc_output_page(cups_output_page);
 private int cups_print_pages(gx_device_printer *, FILE *, int);
 private int cups_put_params(gx_device *, gs_param_list *);
 private int cups_set_color_info(gx_device *);
 private dev_proc_sync_output(cups_sync_output);
 private prn_dev_proc_get_space_params(cups_get_space_params);
+private int cups_spec_op(gx_device *dev_, int op, void *data, int datasize);
 
 #ifdef dev_t_proc_encode_color
 private cm_map_proc_gray(cups_map_gray);
@@ -239,7 +316,7 @@ private gx_device_procs	cups_procs =
    cups_open,
    cups_get_matrix,
    cups_sync_output,
-   gdev_prn_output_page,
+   cups_output_page,
    cups_close,
 #ifdef dev_t_proc_encode_color
    NULL,				/* map_rgb_color */
@@ -317,7 +394,7 @@ private gx_device_procs	cups_procs =
    NULL,				/* push_transparency_state */
    NULL,				/* pop_transparency_state */
    NULL,                                /* put_image */
-
+   cups_spec_op
 };
 
 #define prn_device_body_copies(dtype, procs, dname, w10, h10, xdpi, ydpi, lo, to, lm, bm, rm, tm, ncomp, depth, mg, mc, dg, dc, print_pages)\
@@ -332,109 +409,118 @@ private gx_device_procs	cups_procs =
 	),\
 	prn_device_body_copies_rest_(print_pages)
 
-gx_device_cups	gs_cups_device =
-{
-  prn_device_body_copies(gx_device_cups,/* type */
-                         cups_procs,	/* procedures */
-			 "cups",	/* device name */
-			 85,		/* initial width */
-			 110,		/* initial height */
-			 100,		/* initial x resolution */
-			 100,		/* initial y resolution */
-                         0,		/* initial left offset */
-			 0,		/* initial top offset */
-			 0,		/* initial left margin */
-			 0,		/* initial bottom margin */
-			 0,		/* initial right margin */
-			 0,		/* initial top margin */
-			 1,		/* number of color components */
-			 1,		/* number of color bits */
-			 1,		/* maximum gray value */
-			 0,		/* maximum color value */
-			 2,		/* number of gray values */
-			 0,		/* number of color values */
-			 cups_print_pages),
-					/* print procedure */
-  0,					/* page */
-  NULL,					/* stream */
-  {					/* header */
-    "",					/* MediaClass */
-    "",					/* MediaColor */
-    "",					/* MediaType */
-    "",					/* OutputType */
-    0,					/* AdvanceDistance */
-    CUPS_ADVANCE_NONE,			/* AdvanceMedia */
-    CUPS_FALSE,				/* Collate */
-    CUPS_CUT_NONE,			/* CutMedia */
-    CUPS_FALSE,				/* Duplex */
-    { 100, 100 },			/* HWResolution */
-    { 0, 0, 612, 792 },			/* ImagingBoundingBox */
-    CUPS_FALSE,				/* InsertSheet */
-    CUPS_JOG_NONE,			/* Jog */
-    CUPS_EDGE_TOP,			/* LeadingEdge */
-    { 0, 0 },				/* Margins */
-    CUPS_FALSE,				/* ManualFeed */
-    0,					/* MediaPosition */
-    0,					/* MediaWeight */
-    CUPS_FALSE,				/* MirrorPrint */
-    CUPS_FALSE,				/* NegativePrint */
-    1,					/* NumCopies */
-    CUPS_ORIENT_0,			/* Orientation */
-    CUPS_FALSE,				/* OutputFaceUp */
-    { 612, 792 },			/* PageSize */
-    CUPS_FALSE,				/* Separations */
-    CUPS_FALSE,				/* TraySwitch */
-    CUPS_FALSE,				/* Tumble */
-    850,				/* cupsWidth */
-    1100,				/* cupsHeight */
-    0,					/* cupsMediaType */
-    1,					/* cupsBitsPerColor */
-    1,					/* cupsBitsPerPixel */
-    107,				/* cupsBytesPerLine */
-    CUPS_ORDER_CHUNKED,			/* cupsColorOrder */
-    CUPS_CSPACE_K,			/* cupsColorSpace */
-    0,					/* cupsCompression */
-    0,					/* cupsRowCount */
-    0,					/* cupsRowFeed */
-    0					/* cupsRowStep */
+
+
 #ifdef CUPS_RASTER_SYNCv1
-    ,
-    1,                                  /* cupsNumColors */
-    1.0,                                /* cupsBorderlessScalingFactor */
-    { 612.0, 792.0 },                   /* cupsPageSize */
-    { 0.0, 0.0, 612.0, 792.0 },         /* cupsImagingBBox */
-    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, /* cupsInteger */
-    { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 }, /* cupsReal */
-    { "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "" },
-                                        /* cupsString */
-    "",                                 /* cupsMarkerType */
-    "",                                 /* cupsRenderingIntent */
+#define RASTER_SYNCv1_ENTRIES \
+    ,\
+    1,                                  /* cupsNumColors */\
+    1.0,                                /* cupsBorderlessScalingFactor */\
+    { 612.0, 792.0 },                   /* cupsPageSize */\
+    { 0.0, 0.0, 612.0, 792.0 },         /* cupsImagingBBox */\
+    { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, /* cupsInteger */\
+    { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,\
+      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 }, /* cupsReal */\
+    { "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "" },\
+                                        /* cupsString */\
+    "",                                 /* cupsMarkerType */\
+    "",                                 /* cupsRenderingIntent */\
     ""                                  /* cupsPageSizeName */
+#else
+#define RASTER_SYNCv1_ENTRIES
 #endif /* CUPS_RASTER_SYNCv1 */
-  },
-  0,                                    /* landscape */
-  0,                                    /* lastpage */
-  0,                                    /* HaveProfile */
-  NULL,                                 /* Profile */
-  NULL,                                 /* PPD */
-  { 0x00, 0x08, 0x04, 0x0c, 0x02, 0x0a, 0x06, 0x0e,
-    0x01, 0x09, 0x05, 0x0d, 0x03, 0x0b, 0x07, 0x0f },/* RevLower1 */
-  { 0x00, 0x80, 0x40, 0xc0, 0x20, 0xa0, 0x60, 0xe0,
-    0x10, 0x90, 0x50, 0xd0, 0x30, 0xb0, 0x70, 0xf0 },/* RevUpper1 */
-  { 0x00, 0x04, 0x08, 0x0c, 0x01, 0x05, 0x09, 0x0d,
-    0x02, 0x06, 0x0a, 0x0e, 0x03, 0x07, 0x0b, 0x0f },/* RevLower2 */
-  { 0x00, 0x40, 0x80, 0xc0, 0x10, 0x50, 0x90, 0xd0,
-    0x20, 0x60, 0xa0, 0xe0, 0x30, 0x70, 0xb0, 0xf0 },/* RevUpper2 */
-  {0x00},                                  /* DecodeLUT */
-  {0x00},                                  /* EncodeLUT */
-  {0x00},                                  /* Density */
-  {{{0x00},{0x00},{0x00}},
-   {{0x00},{0x00},{0x00}},
-   {{0x00},{0x00},{0x00}}},                /* Matrix */
-  0,                                       /* user_icc */
+
+#define gs_xxx_device(dname, mediaclass)\
+  prn_device_body_copies(gx_device_cups,/* type */\
+                         cups_procs,	/* procedures */\
+			 dname,		/* device name */\
+			 85,		/* initial width */\
+			 110,		/* initial height */\
+			 100,		/* initial x resolution */\
+			 100,		/* initial y resolution */\
+                         0,		/* initial left offset */\
+			 0,		/* initial top offset */\
+			 0,		/* initial left margin */\
+			 0,		/* initial bottom margin */\
+			 0,		/* initial right margin */\
+			 0,		/* initial top margin */\
+			 1,		/* number of color components */\
+			 1,		/* number of color bits */\
+			 1,		/* maximum gray value */\
+			 0,		/* maximum color value */\
+			 2,		/* number of gray values */\
+			 0,		/* number of color values */\
+			 cups_print_pages),\
+					/* print procedure */\
+  0,					/* page */\
+  NULL,					/* stream */\
+  {					/* header */\
+    mediaclass,				/* MediaClass */\
+    "",					/* MediaColor */\
+    "",					/* MediaType */\
+    "",					/* OutputType */\
+    0,					/* AdvanceDistance */\
+    CUPS_ADVANCE_NONE,			/* AdvanceMedia */\
+    CUPS_FALSE,				/* Collate */\
+    CUPS_CUT_NONE,			/* CutMedia */\
+    CUPS_FALSE,				/* Duplex */\
+    { 100, 100 },			/* HWResolution */\
+    { 0, 0, 612, 792 },			/* ImagingBoundingBox */\
+    CUPS_FALSE,				/* InsertSheet */\
+    CUPS_JOG_NONE,			/* Jog */\
+    CUPS_EDGE_TOP,			/* LeadingEdge */\
+    { 0, 0 },				/* Margins */\
+    CUPS_FALSE,				/* ManualFeed */\
+    0,					/* MediaPosition */\
+    0,					/* MediaWeight */\
+    CUPS_FALSE,				/* MirrorPrint */\
+    CUPS_FALSE,				/* NegativePrint */\
+    1,					/* NumCopies */\
+    CUPS_ORIENT_0,			/* Orientation */\
+    CUPS_FALSE,				/* OutputFaceUp */\
+    { 612, 792 },			/* PageSize */\
+    CUPS_FALSE,				/* Separations */\
+    CUPS_FALSE,				/* TraySwitch */\
+    CUPS_FALSE,				/* Tumble */\
+    850,				/* cupsWidth */\
+    1100,				/* cupsHeight */\
+    0,					/* cupsMediaType */\
+    1,					/* cupsBitsPerColor */\
+    1,					/* cupsBitsPerPixel */\
+    107,				/* cupsBytesPerLine */\
+    CUPS_ORDER_CHUNKED,			/* cupsColorOrder */\
+    CUPS_CSPACE_K,			/* cupsColorSpace */\
+    0,					/* cupsCompression */\
+    0,					/* cupsRowCount */\
+    0,					/* cupsRowFeed */\
+    0					/* cupsRowStep */\
+    RASTER_SYNCv1_ENTRIES, /* See above */\
+  },\
+  0,                                    /* landscape */\
+  0,                                    /* lastpage */\
+  0,                                    /* HaveProfile */\
+  NULL,                                 /* Profile */\
+  NULL,                                 /* PPD */\
+  { 0x00, 0x08, 0x04, 0x0c, 0x02, 0x0a, 0x06, 0x0e,\
+    0x01, 0x09, 0x05, 0x0d, 0x03, 0x0b, 0x07, 0x0f },/* RevLower1 */\
+  { 0x00, 0x80, 0x40, 0xc0, 0x20, 0xa0, 0x60, 0xe0,\
+    0x10, 0x90, 0x50, 0xd0, 0x30, 0xb0, 0x70, 0xf0 },/* RevUpper1 */\
+  { 0x00, 0x04, 0x08, 0x0c, 0x01, 0x05, 0x09, 0x0d,\
+    0x02, 0x06, 0x0a, 0x0e, 0x03, 0x07, 0x0b, 0x0f },/* RevLower2 */\
+  { 0x00, 0x40, 0x80, 0xc0, 0x10, 0x50, 0x90, 0xd0,\
+    0x20, 0x60, 0xa0, 0xe0, 0x30, 0x70, 0xb0, 0xf0 },/* RevUpper2 */\
+  {0x00},                                  /* DecodeLUT */\
+  {0x00},                                  /* EncodeLUT */\
+  {0x00},                                  /* Density */\
+  {{{0x00},{0x00},{0x00}},\
+   {{0x00},{0x00},{0x00}},\
+   {{0x00},{0x00},{0x00}}},                /* Matrix */\
+  0,                                       /* user_icc */\
   3                                     /* cupsRasterVersion */
-};
+
+gx_device_cups	gs_cups_device = { gs_xxx_device("cups", "") };
+gx_device_cups	gs_pwgraster_device = { gs_xxx_device("pwgraster",
+						      "PwgRaster") };
 
 /*
  * Local functions...
@@ -618,6 +704,7 @@ cups_get_color_comp_index(gx_device * pdev, const char * pname,
 	    return -1; /* Indicate that the component name is "unknown" */
         break;
     case CUPS_CSPACE_W :
+    case CUPS_CSPACE_SW :
     case CUPS_CSPACE_WHITE :
         if (compare_color_names(pname, name_size, "White") ||
 	    compare_color_names(pname, name_size, "Luminance") ||
@@ -632,6 +719,7 @@ cups_get_color_comp_index(gx_device * pdev, const char * pname,
 	    compare_color_names(pname, name_size, "Transparent") ||
 	    compare_color_names(pname, name_size, "Transparency"))
 	    return 3;
+        /* fall through */
     case CUPS_CSPACE_RGBW :
         if (compare_color_names(pname, name_size, "Red"))
 	    return 0;
@@ -645,6 +733,8 @@ cups_get_color_comp_index(gx_device * pdev, const char * pname,
 	    return -1;
         break;
     case CUPS_CSPACE_RGB :
+    case CUPS_CSPACE_SRGB :
+    case CUPS_CSPACE_ADOBERGB :
         if (compare_color_names(pname, name_size, "Red"))
 	    return 0;
 	if (compare_color_names(pname, name_size, "Green"))
@@ -674,6 +764,7 @@ cups_get_color_comp_index(gx_device * pdev, const char * pname,
 #  endif /* CUPS_RASTER_HAVE_COLORIMETRIC */
         if (compare_color_names(pname, name_size, "Black"))
 	    return 3;
+        /* fall through */
     case CUPS_CSPACE_CMY :
         if (compare_color_names(pname, name_size, "Cyan"))
 	    return 0;
@@ -688,13 +779,16 @@ cups_get_color_comp_index(gx_device * pdev, const char * pname,
         if (compare_color_names(pname, name_size, "Silver") ||
 	    compare_color_names(pname, name_size, "Silver Foil"))
 	    return 3;
+        /* fall through */
     case CUPS_CSPACE_GMCK :
         if (compare_color_names(pname, name_size, "Gold") ||
 	    compare_color_names(pname, name_size, "Gold Foil"))
 	    return 0;
+        /* fall through */
     case CUPS_CSPACE_YMCK :
         if (compare_color_names(pname, name_size, "Black"))
 	    return 3;
+        /* fall through */
     case CUPS_CSPACE_YMC :
 	if (compare_color_names(pname, name_size, "Yellow"))
 	    return 0;
@@ -847,13 +941,12 @@ private int				/* O - Error status */
 cups_get_params(gx_device     *pdev,	/* I - Device info */
                 gs_param_list *plist)	/* I - Parameter list */
 {
-#ifdef CUPS_RASTER_SYNCv1
-  int			i;		/* Looping var */
-  char			name[255];	/* Attribute name */
-#endif /* CUPS_RASTER_SYNCv1 */
   int			code;		/* Return code */
   gs_param_string	s;		/* Temporary string value */
   bool			b;		/* Temporary boolean value */
+#ifdef CUPS_RASTER_SYNCv1
+  int			i;		/* Looping var */
+#endif /* CUPS_RASTER_SYNCv1 */
 
 
 #ifdef CUPS_DEBUG2
@@ -869,7 +962,7 @@ cups_get_params(gx_device     *pdev,	/* I - Device info */
 #endif /* CUPS_DEBUG2 */
 
   if ((code = gdev_prn_get_params(pdev, plist)) < 0)
-    return (code);
+    goto done;
 
 #ifdef CUPS_DEBUG2
   dmprintf(pdev->memory, "DEBUG2: after gdev_prn_get_params()\n");
@@ -879,193 +972,192 @@ cups_get_params(gx_device     *pdev,	/* I - Device info */
   * Then write the CUPS parameters...
   */
 
-  param_string_from_string(s, cups->header.MediaClass);
+  param_string_from_transient_string(s, cups->header.MediaClass);
   if ((code = param_write_string(plist, "MediaClass", &s)) < 0)
-    return (code);
+    goto done;
 
-  param_string_from_string(s, cups->header.MediaColor);
+  param_string_from_transient_string(s, cups->header.MediaColor);
   if ((code = param_write_string(plist, "MediaColor", &s)) < 0)
-    return (code);
+    goto done;
 
-  param_string_from_string(s, cups->header.MediaType);
+  param_string_from_transient_string(s, cups->header.MediaType);
   if ((code = param_write_string(plist, "MediaType", &s)) < 0)
-    return (code);
+    goto done;
 
-  param_string_from_string(s, cups->header.OutputType);
+  param_string_from_transient_string(s, cups->header.OutputType);
   if ((code = param_write_string(plist, "OutputType", &s)) < 0)
-    return (code);
+    goto done;
 
   if ((code = param_write_int(plist, "AdvanceDistance",
                               (int *)&(cups->header.AdvanceDistance))) < 0)
-    return (code);
+    goto done;
 
   if ((code = param_write_int(plist, "AdvanceMedia",
                               (int *)&(cups->header.AdvanceMedia))) < 0)
-    return (code);
+    goto done;
 
   b = cups->header.Collate;
   if ((code = param_write_bool(plist, "Collate", &b)) < 0)
-    return (code);
+    goto done;
 
   if ((code = param_write_int(plist, "CutMedia",
                               (int *)&(cups->header.CutMedia))) < 0)
-    return (code);
+    goto done;
 
   b = cups->header.Duplex;
   if ((code = param_write_bool(plist, "Duplex", &b)) < 0)
-    return (code);
+    goto done;
 
   b = cups->header.InsertSheet;
   if ((code = param_write_bool(plist, "InsertSheet", &b)) < 0)
-    return (code);
+    goto done;
 
   if ((code = param_write_int(plist, "Jog",
                               (int *)&(cups->header.Jog))) < 0)
-    return (code);
+    goto done;
 
   if ((code = param_write_int(plist, "LeadingEdge",
                               (int *)&(cups->header.LeadingEdge))) < 0)
-    return (code);
+    goto done;
 
   b = cups->header.ManualFeed;
   if ((code = param_write_bool(plist, "ManualFeed", &b)) < 0)
-    return (code);
+    goto done;
 
   if ((code = param_write_int(plist, "MediaPosition",
                               (int *)&(cups->header.MediaPosition))) < 0)
-    return (code);
+    goto done;
 
   if ((code = param_write_int(plist, "MediaWeight",
                               (int *)&(cups->header.MediaWeight))) < 0)
-    return (code);
+    goto done;
 
   b = cups->header.MirrorPrint;
   if ((code = param_write_bool(plist, "MirrorPrint", &b)) < 0)
-    return (code);
+    goto done;
 
   b = cups->header.NegativePrint;
   if ((code = param_write_bool(plist, "NegativePrint", &b)) < 0)
-    return (code);
+    goto done;
 
   b = cups->header.OutputFaceUp;
   if ((code = param_write_bool(plist, "OutputFaceUp", &b)) < 0)
-    return (code);
+    goto done;
 
   b = cups->header.Separations;
   if ((code = param_write_bool(plist, "Separations", &b)) < 0)
-    return (code);
+    goto done;
 
   b = cups->header.TraySwitch;
   if ((code = param_write_bool(plist, "TraySwitch", &b)) < 0)
-    return (code);
+    goto done;
 
   b = cups->header.Tumble;
   if ((code = param_write_bool(plist, "Tumble", &b)) < 0)
-    return (code);
+    goto done;
 
 #if 0 /* Don't include read-only parameters... */
   if ((code = param_write_int(plist, "cupsWidth",
                               (int *)&(cups->header.cupsWidth))) < 0)
-    return (code);
+    goto done;
 
   if ((code = param_write_int(plist, "cupsHeight",
                               (int *)&(cups->header.cupsHeight))) < 0)
-    return (code);
+    goto done;
 
   if ((code = param_write_int(plist, "cupsBitsPerPixel",
                               (int *)&(cups->header.cupsBitsPerPixel))) < 0)
-    return (code);
+    goto done;
 
   if ((code = param_write_int(plist, "cupsBytesPerLine",
                               (int *)&(cups->header.cupsBytesPerLine))) < 0)
-    return (code);
+    goto done;
 #endif /* 0 */
 
   if ((code = param_write_int(plist, "cupsMediaType",
                               (int *)&(cups->header.cupsMediaType))) < 0)
-    return (code);
+    goto done;
 
   if ((code = param_write_int(plist, "cupsBitsPerColor",
                               (int *)&(cups->header.cupsBitsPerColor))) < 0)
-    return (code);
+    goto done;
 
   if ((code = param_write_int(plist, "cupsColorOrder",
                               (int *)&(cups->header.cupsColorOrder))) < 0)
-    return (code);
+    goto done;
 
   if ((code = param_write_int(plist, "cupsColorSpace",
                               (int *)&(cups->header.cupsColorSpace))) < 0)
-    return (code);
+    goto done;
 
   if ((code = param_write_int(plist, "cupsCompression",
                               (int *)&(cups->header.cupsCompression))) < 0)
-    return (code);
+    goto done;
 
   if ((code = param_write_int(plist, "cupsRowCount",
                               (int *)&(cups->header.cupsRowCount))) < 0)
-    return (code);
+    goto done;
 
   if ((code = param_write_int(plist, "cupsRowFeed",
                               (int *)&(cups->header.cupsRowFeed))) < 0)
-    return (code);
+    goto done;
 
   if ((code = param_write_int(plist, "cupsRowStep",
                               (int *)&(cups->header.cupsRowStep))) < 0)
-    return (code);
+    goto done;
 
 #ifdef CUPS_RASTER_SYNCv1
 #if 0 /* Don't include read-only parameters... */
   if ((code = param_write_int(plist, "cupsNumColors",
                               (int *)&(cups->header.cupsNumColors))) < 0)
-    return (code);
+    goto done;
 #endif /* 0 */
 
   if ((code = param_write_float(plist, "cupsBorderlessScalingFactor",
                         	&(cups->header.cupsBorderlessScalingFactor))) < 0)
-    return (code);
+    goto done;
 
-  for (i = 0; i < 16; i ++)
+  for (i = 0; cups_Integer_strings[i] != NULL; i ++)
   {
-    sprintf(name, "cupsInteger%d", i);
-    if ((code = param_write_int(plist, strdup(name),
+    if ((code = param_write_int(plist, cups_Integer_strings[i],
                         	(int *)(cups->header.cupsInteger + i))) < 0)
-      return (code);
+      goto done;
   }
 
-  for (i = 0; i < 16; i ++)
+  for (i = 0; cups_Real_strings[i] != NULL; i ++)
   {
-    sprintf(name, "cupsReal%d", i);
-    if ((code = param_write_float(plist, strdup(name),
+    if ((code = param_write_float(plist, cups_Real_strings[i],
                         	  cups->header.cupsReal + i)) < 0)
-      return (code);
+      goto done;
   }
 
-  for (i = 0; i < 16; i ++)
+  for (i = 0; cups_String_strings[i] != NULL; i ++)
   {
-    sprintf(name, "cupsString%d", i);
-    param_string_from_string(s, cups->header.cupsString[i]);
-    if ((code = param_write_string(plist, strdup(name), &s)) < 0)
-      return (code);
+    param_string_from_transient_string(s, cups->header.cupsString[i]);
+    if ((code = param_write_string(plist, cups_String_strings[i], &s)) < 0)
+      goto done;
   }
 
-  param_string_from_string(s, cups->header.cupsMarkerType);
+  param_string_from_transient_string(s, cups->header.cupsMarkerType);
   if ((code = param_write_string(plist, "cupsMarkerType", &s)) < 0)
-    return (code);
+    goto done;
 
-  param_string_from_string(s, cups->header.cupsRenderingIntent);
+  param_string_from_transient_string(s, cups->header.cupsRenderingIntent);
   if ((code = param_write_string(plist, "cupsRenderingIntent", &s)) < 0)
-    return (code);
+    goto done;
 
-  param_string_from_string(s, cups->header.cupsPageSizeName);
+  param_string_from_transient_string(s, cups->header.cupsPageSizeName);
   if ((code = param_write_string(plist, "cupsPageSizeName", &s)) < 0)
-    return (code);
+    goto done;
 #endif /* CUPS_RASTER_SYNCv1 */
+
+done:
 
 #ifdef CUPS_DEBUG2
   dmprintf(pdev->memory, "DEBUG2: Leaving cups_get_params()\n");
 #endif /* CUPS_DEBUG2 */
 
-  return (0);
+  return code;
 }
 
 
@@ -1177,8 +1269,9 @@ cups_map_cmyk(gx_device *pdev,		/* I - Device info */
   switch (cups->header.cupsColorSpace)
   {
     case CUPS_CSPACE_W :
+    case CUPS_CSPACE_SW :
         c0 = (c * 31 + m * 61 + y * 8) / 100 + k;
-	
+
 	if (c0 < 0)
 	  c0 = 0;
 	else if (c0 > frac_1)
@@ -1190,6 +1283,8 @@ cups_map_cmyk(gx_device *pdev,		/* I - Device info */
         out[3] = frac_1;
 
     case CUPS_CSPACE_RGB :
+    case CUPS_CSPACE_SRGB :
+    case CUPS_CSPACE_ADOBERGB :
     case CUPS_CSPACE_RGBW :
         c0 = c + k;
         c1 = m + k;
@@ -1228,8 +1323,6 @@ cups_map_cmyk(gx_device *pdev,		/* I - Device info */
 	    out[3] = frac_1;
 	  else if (c3 == frac_1)
 	    out[3] = 0;
-	  else
-	    out[3] = frac_1;
 	}
         break;
 
@@ -1642,7 +1735,7 @@ cups_map_gray(gx_device *pdev,		/* I - Device info */
 private void
 cups_map_rgb(gx_device             *pdev,
 					/* I - Device info */
-             const gs_imager_state *pis,/* I - Device state */
+             const gs_gstate        *pgs,/* I - Device state */
              frac                  r,	/* I - Red value */
 	     frac                  g,	/* I - Green value */
 	     frac                  b,	/* I - Blue value */
@@ -1655,7 +1748,7 @@ cups_map_rgb(gx_device             *pdev,
 
 #ifdef CUPS_DEBUG2
   dmprintf6(pdev->memory, "DEBUG2: cups_map_rgb(%p, %p, %d, %d, %d, %p)\n",
-            pdev, pis, r, g, b, out);
+            pdev, pgs, r, g, b, out);
 #endif /* CUPS_DEBUG2 */
 
  /*
@@ -1996,12 +2089,15 @@ cups_map_color_rgb(gx_device      *pdev,/* I - Device info */
         break;
 
     case CUPS_CSPACE_W :
+    case CUPS_CSPACE_SW :
         prgb[0] =
         prgb[1] =
         prgb[2] = cups->DecodeLUT[c3];
         break;
 
     case CUPS_CSPACE_RGB :
+    case CUPS_CSPACE_SRGB :
+    case CUPS_CSPACE_ADOBERGB :
         prgb[0] = cups->DecodeLUT[c1];
         prgb[1] = cups->DecodeLUT[c2];
         prgb[2] = cups->DecodeLUT[c3];
@@ -2268,10 +2364,13 @@ cups_map_rgb_color(gx_device      *pdev,/* I - Device info */
   switch (cups->header.cupsColorSpace)
   {
     case CUPS_CSPACE_W :
+    case CUPS_CSPACE_SW :
         i = cups->EncodeLUT[(r * 31 + g * 61 + b * 8) / 100];
         break;
 
     case CUPS_CSPACE_RGB :
+    case CUPS_CSPACE_SRGB :
+    case CUPS_CSPACE_ADOBERGB :
         ic = cups->EncodeLUT[r];
         im = cups->EncodeLUT[g];
         iy = cups->EncodeLUT[b];
@@ -2695,7 +2794,7 @@ cups_map_rgb_color(gx_device      *pdev,/* I - Device info */
               break;
 #ifdef GX_COLOR_INDEX_TYPE
 	  case 16 :
-	      i = (((((ic << 16) | im) << 16) | iy) << 16) | ik;
+	      i = (((ic << 16) | im) << 16) | iy;
 	      break;
 #endif /* GX_COLOR_INDEX_TYPE */
         }
@@ -2740,10 +2839,33 @@ cups_open(gx_device *pdev)		/* I - Device info */
   }
 
   if ((code = gdev_prn_open(pdev)) != 0)
-    return (code);
+    return(code);
 
   if (cups->PPD == NULL)
     cups->PPD = ppdOpenFile(getenv("PPD"));
+
+  return (0);
+}
+
+
+/*
+ * 'cups_output_page()' - Send one or more pages to the output file.
+ * The changes to the cups->page are done here for background printing
+ * but testing shows some regressions, so BGPrint is not used for now.
+ */
+
+private int				/* O - 0 if everything is OK */
+cups_output_page(gx_device *pdev, int num_copies, int flush)
+{
+  int		code = 0;		/* Error code */
+
+  /* FIXME: We would like to support BGPrint=true and call gdev_prn_bg_output_page */
+  /* but there must still be other things that prevent this. */
+  if ((code = gdev_prn_output_page(pdev, num_copies, flush)) < 0)
+      return code;
+
+  cups->page ++;
+  dmprintf1(pdev->memory, "INFO: Processing page %d...\n", cups->page);
 
   return (0);
 }
@@ -2840,7 +2962,7 @@ cups_print_pages(gx_device_printer *pdev,
 
   if (cups->stream == NULL)
   {
-    RasterVersion = ppdFindAttr(cups->PPD, "cupsRasterVersion", NULL); 
+    RasterVersion = ppdFindAttr(cups->PPD, "cupsRasterVersion", NULL);
     if (RasterVersion) {
 #ifdef CUPS_DEBUG2
       dmprintf1(pdev->memory, "DEBUG2: cupsRasterVersion = %s\n",
@@ -2854,10 +2976,25 @@ cups_print_pages(gx_device_printer *pdev,
 	return_error(gs_error_unknownerror);
       }
     }
+    /* NOTE: PWG Raster output is only available with shared CUPS CUPS and
+       CUPS image libraries as the built-in libraries of Ghostscript do not
+       contain the new code needed for PWG Raster output. This conditional
+       is a temporary workaround for the time being until up-to-date CUPS
+       libraries get included. */
     if ((cups->stream = cupsRasterOpen(fileno(cups->file),
+#if defined(CUPS_RASTER_HAVE_PWGRASTER)
+                                       (strcasecmp(cups->header.MediaClass,
+						   "PwgRaster") == 0 ?
+					CUPS_RASTER_WRITE_PWG :
+					(cups->cupsRasterVersion == 3 ?
+					 CUPS_RASTER_WRITE :
+					 CUPS_RASTER_WRITE_COMPRESSED)))) ==
+	NULL)
+#else
                                        (cups->cupsRasterVersion == 3 ?
 					CUPS_RASTER_WRITE :
 					CUPS_RASTER_WRITE_COMPRESSED))) == NULL)
+#endif
     {
       perror("ERROR: Unable to open raster stream - ");
       return_error(gs_error_ioerror);
@@ -2913,13 +3050,7 @@ cups_print_pages(gx_device_printer *pdev,
   gs_free(pdev->memory->non_gc_memory, (char *)src, srcbytes, 1, "cups_print_pages");
   gs_free(pdev->memory->non_gc_memory, (char *)dst, cups->header.cupsBytesPerLine, 1, "cups_print_pages");
 
-  if (code < 0)
-    return (code);
- 
-  cups->page ++;
-  dmprintf1(pdev->memory, "INFO: Processing page %d...\n", cups->page);
-
-  return (0);
+ return (code);
 }
 
 
@@ -2932,10 +3063,6 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
                 gs_param_list *plist)	/* I - Parameter list */
 {
   int			i;		/* Looping var */
-#ifdef CUPS_RASTER_SYNCv1
-  char			name[255];	/* Name of attribute */
-  float			sf;		/* cupsBorderlessScalingFactor */
-#endif /* CUPS_RASTER_SYNCv1 */
   float			margins[4];	/* Physical margins of print */
   ppd_size_t		*size;		/* Page size */
   int			code;		/* Error code */
@@ -2969,7 +3096,10 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
   gs_param_string icc_pro_dummy;
   int old_cmps = cups->color_info.num_components;
   int old_depth = cups->color_info.depth;
-  
+#ifdef CUPS_RASTER_SYNCv1
+  float			sf;		/* cupsBorderlessScalingFactor */
+#endif /* CUPS_RASTER_SYNCv1 */
+
 #ifdef CUPS_DEBUG
   dmprintf2(pdev->memory, "DEBUG2: cups_put_params(%p, %p)\n", pdev, plist);
 #endif /* CUPS_DEBUG */
@@ -2983,7 +3113,7 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
   { \
     dmprintf1(pdev->memory, "ERROR: Error setting %s...\n", sname);	      \
     param_signal_error(plist, sname, code); \
-    return (code); \
+    goto done; \
   } \
   else if (code == 0) \
   { \
@@ -2997,7 +3127,7 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
   { \
     dmprintf1(pdev->memory, "ERROR: Error setting %s ...\n", sname); \
     param_signal_error(plist, sname, code); \
-    return (code); \
+    goto done; \
   } \
   else if (code == 0) \
   { \
@@ -3009,7 +3139,7 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
   { \
     dmprintf1(pdev->memory, "ERROR: Error setting %s ...\n", sname); \
     param_signal_error(plist, sname, code); \
-    return (code); \
+    goto done; \
   } \
   else if (code == 0) \
   { \
@@ -3023,7 +3153,7 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
     { \
       dmprintf1(pdev->memory, "ERROR: Error setting %s ...\n", sname); \
       param_signal_error(plist, sname, code); \
-      return (code); \
+      goto done; \
     } \
     if (code == 0) \
       cups->header.name = CUPS_FALSE; \
@@ -3040,7 +3170,7 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
     { \
       dmprintf1(pdev->memory, "ERROR: Error setting %s...\n", sname); \
       param_signal_error(plist, sname, code); \
-      return (code); \
+      goto done; \
     } \
     if (code == 0) \
     { \
@@ -3069,14 +3199,6 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
       cups->user_icc = param_read_string(plist, "OutputICCProfile", &icc_pro_dummy) == 0;
   }
 
-  /* We set the old dimensions to 1 if we have a color depth change, so
-     that memory reallocation gets forced. This is perhaps not the correct
-     approach to prevent crashes like in bug 690435. We keep it for the
-     time being until we decide finally */
-  if (color_set) {
-    width_old = 1;
-    height_old = 1;
-  }
   /* We also recompute page size and margins if we simply get onto a new
      page without necessarily having a page size change in the PostScript
      code, as for some printers margins have to be flipped on the back sides of
@@ -3098,7 +3220,6 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
   arrayoption(ImagingBoundingBox, "ImagingBoundingBox", 4)
   booloption(InsertSheet, "InsertSheet")
   intoption(Jog, "Jog", cups_jog_t)
-  intoption(LeadingEdge, "LeadingEdge", cups_edge_t)
   arrayoption(Margins, "Margins", 2)
   booloption(ManualFeed, "ManualFeed")
   intoption(MediaPosition, "cupsMediaPosition", unsigned) /* Compatibility */
@@ -3120,6 +3241,23 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
   intoption(cupsRowFeed, "cupsRowFeed", unsigned)
   intoption(cupsRowStep, "cupsRowStep", unsigned)
 
+  /* Special handling of LeadingEdge to allow null as a valid value type */
+  if ((code = param_read_int(plist, "LeadingEdge", &intval)) < 0)
+  {
+    if ((code = param_read_null(plist, "LeadingEdge")) < 0)
+    {
+      dmprintf(pdev->memory, "ERROR: Error setting LeadingEdge ...\n");
+      param_signal_error(plist, "LeadingEdge", code);
+      goto done;
+    }
+    if (code == 0)
+      cups->header.LeadingEdge = CUPS_EDGE_TOP;
+  }
+  else if (code == 0)
+  {
+    cups->header.LeadingEdge = (cups_edge_t)intval;
+  }
+
 #ifdef GX_COLOR_INDEX_TYPE
  /*
   * Support cupsPreferredBitsPerColor - basically, allows you to
@@ -3134,22 +3272,19 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
 #ifdef CUPS_RASTER_SYNCv1
   floatoption(cupsBorderlessScalingFactor, "cupsBorderlessScalingFactor");
 
-  for (i = 0; i < 16; i ++)
+  for (i = 0; cups_Integer_strings[i] != NULL; i ++)
   {
-    sprintf(name, "cupsInteger%d", i);
-    intoption(cupsInteger[i],strdup(name), unsigned)
+    intoption(cupsInteger[i], cups_Integer_strings[i], unsigned)
   }
 
-  for (i = 0; i < 16; i ++)
+  for (i = 0; cups_Real_strings[i] != NULL; i ++)
   {
-    sprintf(name, "cupsReal%d", i);
-    floatoption(cupsReal[i], strdup(name))
+    floatoption(cupsReal[i], cups_Real_strings[i])
   }
 
-  for (i = 0; i < 16; i ++)
+  for (i = 0; cups_String_strings[i] != NULL; i ++)
   {
-    sprintf(name, "cupsString%d", i);
-    stringoption(cupsString[i], strdup(name))
+    stringoption(cupsString[i], cups_String_strings[i])
   }
 
   stringoption(cupsMarkerType, "cupsMarkerType");
@@ -3160,7 +3295,7 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
   if ((code = param_read_string(plist, "cupsProfile", &stringval)) < 0)
   {
     param_signal_error(plist, "cupsProfile", code);
-    return (code);
+    goto done;
   }
   else if (code == 0)
   {
@@ -3171,7 +3306,7 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
   }
 
   if ((code = cups_set_color_info(pdev)) < 0) {
-      return(code);
+      goto done;
   }
 
   /*
@@ -3179,7 +3314,7 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
   */
 
   if ((code = gdev_prn_put_params(pdev, plist)) < 0)
-    return (code);
+    goto done;
 
   /* If cups_set_color_info() changed the color model of the device we want to
    * force the raster memory to be recreated/reinitialized
@@ -3223,7 +3358,7 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
       dmprintf1(pdev->memory, "DEBUG2: cups->PPD = %p\n", cups->PPD);
 #endif /* CUPS_DEBUG */
 
-      backside = ppdFindAttr(cups->PPD, "cupsBackSide", NULL); 
+      backside = ppdFindAttr(cups->PPD, "cupsBackSide", NULL);
       if (backside) {
 #ifdef CUPS_DEBUG
         dmprintf1(pdev->memory, "DEBUG2: cupsBackSide = %s\n", backside->value);
@@ -3287,7 +3422,7 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
 		(cups->header.Tumble &&
 		 (backside && !strcasecmp(backside->value, "ManualTumble")))) &&
 	       !(cups->page & 1))
-      { 
+      {
 	xflip = 1;
 	if (backsiderequiresflippedmargins &&
 	    !strcasecmp(backsiderequiresflippedmargins->value, "True")) {
@@ -3431,18 +3566,32 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
 
 	cups->landscape = 0;
 
-	margins[0] = best_size->left / 72.0;
-	margins[1] = best_size->bottom / 72.0;
-	margins[2] = (best_size->width - best_size->right) / 72.0;
-	margins[3] = (best_size->length - best_size->top) / 72.0;
-	if (xflip == 1)
+#ifdef CUPS_RASTER_SYNCv1
+	if (strcasecmp(cups->header.MediaClass, "PwgRaster") != 0)
 	{
-	  swap = margins[0]; margins[0] = margins[2]; margins[2] = swap;
+#endif
+	  margins[0] = best_size->left / 72.0;
+	  margins[1] = best_size->bottom / 72.0;
+	  margins[2] = (best_size->width - best_size->right) / 72.0;
+	  margins[3] = (best_size->length - best_size->top) / 72.0;
+	  if (xflip == 1)
+	  {
+	    swap = margins[0]; margins[0] = margins[2]; margins[2] = swap;
+	  }
+	  if (yflip == 1)
+	  {
+	    swap = margins[1]; margins[1] = margins[3]; margins[3] = swap;
+	  }
+#ifdef CUPS_RASTER_SYNCv1
 	}
-	if (yflip == 1)
+	else
 	{
-	  swap = margins[1]; margins[1] = margins[3]; margins[3] = swap;
+	  margins[0] = 0.0;
+	  margins[1] = 0.0;
+	  margins[2] = 0.0;
+	  margins[3] = 0.0;
 	}
+#endif
       }
       else
       {
@@ -3539,18 +3688,32 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
 
           cups->landscape = 1;
 
-	  margins[0] = (best_size->length - best_size->top) / 72.0;
-	  margins[1] = best_size->left / 72.0;
-	  margins[2] = best_size->bottom / 72.0;
-	  margins[3] = (best_size->width - best_size->right) / 72.0;
-	  if (xflip == 1)
+#ifdef CUPS_RASTER_SYNCv1
+	  if (strcasecmp(cups->header.MediaClass, "PwgRaster") != 0)
 	  {
-	    swap = margins[1]; margins[1] = margins[3]; margins[3] = swap;
+#endif
+	    margins[0] = (best_size->length - best_size->top) / 72.0;
+	    margins[1] = best_size->left / 72.0;
+	    margins[2] = best_size->bottom / 72.0;
+	    margins[3] = (best_size->width - best_size->right) / 72.0;
+	    if (xflip == 1)
+	    {
+	      swap = margins[1]; margins[1] = margins[3]; margins[3] = swap;
+	    }
+	    if (yflip == 1)
+	    {
+	      swap = margins[0]; margins[0] = margins[2]; margins[2] = swap;
+	    }
+#ifdef CUPS_RASTER_SYNCv1
 	  }
-	  if (yflip == 1)
+	  else
 	  {
-	    swap = margins[0]; margins[0] = margins[2]; margins[2] = swap;
+	    margins[0] = 0.0;
+	    margins[1] = 0.0;
+	    margins[2] = 0.0;
+	    margins[3] = 0.0;
 	  }
+#endif
 	}
 	else
 	{
@@ -3574,32 +3737,62 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
 
 	    cups->landscape = 1;
 
-	    margins[0] = cups->PPD->custom_margins[3] / 72.0;
-	    margins[1] = cups->PPD->custom_margins[0] / 72.0;
-	    margins[2] = cups->PPD->custom_margins[1] / 72.0;
-	    margins[3] = cups->PPD->custom_margins[2] / 72.0;
-	    if (xflip == 1)
+#ifdef CUPS_RASTER_SYNCv1
+	    if (strcasecmp(cups->header.MediaClass, "PwgRaster") != 0)
 	    {
-	      swap = margins[1]; margins[1] = margins[3]; margins[3] = swap;
+#endif
+	      margins[0] = cups->PPD->custom_margins[3] / 72.0;
+	      margins[1] = cups->PPD->custom_margins[0] / 72.0;
+	      margins[2] = cups->PPD->custom_margins[1] / 72.0;
+	      margins[3] = cups->PPD->custom_margins[2] / 72.0;
+	      if (xflip == 1)
+	      {
+		swap = margins[1]; margins[1] = margins[3]; margins[3] = swap;
+	      }
+	      if (yflip == 1)
+	      {
+		swap = margins[0]; margins[0] = margins[2]; margins[2] = swap;
+	      }
+#ifdef CUPS_RASTER_SYNCv1
 	    }
-	    if (yflip == 1)
+	    else
 	    {
-	      swap = margins[0]; margins[0] = margins[2]; margins[2] = swap;
+	      margins[0] = 0.0;
+	      margins[1] = 0.0;
+	      margins[2] = 0.0;
+	      margins[3] = 0.0;
 	    }
-	  } else {
+#endif
+	  }
+	  else
+	  {
 	    /* Do not rotate */
 	    cups->landscape = 0;
 
-	    for (i = 0; i < 4; i ++)
-	      margins[i] = cups->PPD->custom_margins[i] / 72.0;
-	    if (xflip == 1)
+#ifdef CUPS_RASTER_SYNCv1
+	    if (strcasecmp(cups->header.MediaClass, "PwgRaster") != 0)
 	    {
-	      swap = margins[0]; margins[0] = margins[2]; margins[2] = swap;
+#endif
+	      for (i = 0; i < 4; i ++)
+		margins[i] = cups->PPD->custom_margins[i] / 72.0;
+	      if (xflip == 1)
+	      {
+		swap = margins[0]; margins[0] = margins[2]; margins[2] = swap;
+	      }
+	      if (yflip == 1)
+	      {
+		swap = margins[1]; margins[1] = margins[3]; margins[3] = swap;
+	      }
+#ifdef CUPS_RASTER_SYNCv1
 	    }
-	    if (yflip == 1)
+	    else
 	    {
-	      swap = margins[1]; margins[1] = margins[3]; margins[3] = swap;
+	      margins[0] = 0.0;
+	      margins[1] = 0.0;
+	      margins[2] = 0.0;
+	      margins[3] = 0.0;
 	    }
+#endif
 	  }
 	}
       }
@@ -3608,6 +3801,31 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
       dmprintf4(pdev->memory, "DEBUG: margins[] = [ %f %f %f %f ]\n",
                 margins[0], margins[1], margins[2], margins[3]);
 #endif /* CUPS_DEBUG */
+    }
+    else
+    {
+#ifdef CUPS_RASTER_SYNCv1
+      if (strcasecmp(cups->header.MediaClass, "PwgRaster") != 0)
+      {
+#endif
+	/* If we do not have a PPD file, make sure that margins given via the
+	   input file or via something like
+	   "-c '<</.HWMargins[12 12 12 12] /Margins[0 0]>>setpagedevice'"
+	   on the command line are conserved */
+	margins[0] = pdev->HWMargins[0] / 72.0;
+	margins[1] = pdev->HWMargins[1] / 72.0;
+	margins[2] = pdev->HWMargins[2] / 72.0;
+	margins[3] = pdev->HWMargins[3] / 72.0;
+#ifdef CUPS_RASTER_SYNCv1
+      }
+      else
+      {
+	margins[0] = 0.0;
+	margins[1] = 0.0;
+	margins[2] = 0.0;
+	margins[3] = 0.0;
+      }
+#endif
     }
 
    /*
@@ -3643,6 +3861,11 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
                pdev->HWResolution[1] / 72.0f + 0.499f;
     }
 
+    if (width <= 0 || height <= 0) {
+      dmprintf(pdev->memory, "ERROR: page margins overlap\n");
+      return_error(gs_error_rangecheck);
+    }
+
 #ifdef CUPS_RASTER_SYNCv1
     if (cups->header.cupsBorderlessScalingFactor > 1.0)
     {
@@ -3672,11 +3895,11 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
 #endif /* CUPS_DEBUG */
 
       if ((code = gdev_prn_maybe_realloc_memory((gx_device_printer *)pdev,
-                                                &sp_old, 
+                                                &sp_old,
 						width_old, height_old,
 						transp_old))
 	  < 0)
-	return (code);
+        goto done;
 #ifdef CUPS_DEBUG
       dmprintf4(pdev->memory, "DEBUG2: Reallocated memory, [%.0f %.0f] = %dx%d pixels...\n",
                 pdev->MediaSize[0], pdev->MediaSize[1], width, height);
@@ -3712,85 +3935,125 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
     cups->header.cupsPageSize[0] = pdev->MediaSize[1];
     cups->header.cupsPageSize[1] = pdev->MediaSize[0];
 
-    cups->header.cupsImagingBBox[0] = pdev->HWMargins[1];
-    cups->header.cupsImagingBBox[1] = pdev->HWMargins[2];
-    cups->header.cupsImagingBBox[2] = pdev->MediaSize[1] - pdev->HWMargins[3];
-    cups->header.cupsImagingBBox[3] = pdev->MediaSize[0] - pdev->HWMargins[0];
-
     if ((sf = cups->header.cupsBorderlessScalingFactor) < 1.0)
       sf = 1.0;
 
-    cups->header.Margins[0] = pdev->HWMargins[1] * sf;
-    cups->header.Margins[1] = pdev->HWMargins[2] * sf;
+    cups->header.PageSize[0] = (pdev->MediaSize[1] * sf) + 0.5;
+    cups->header.PageSize[1] = (pdev->MediaSize[0] * sf) + 0.5;
 
-    cups->header.PageSize[0] = pdev->MediaSize[1] * sf;
-    cups->header.PageSize[1] = pdev->MediaSize[0] * sf;
-
-    cups->header.ImagingBoundingBox[0] = pdev->HWMargins[1] * sf;
-    cups->header.ImagingBoundingBox[1] = pdev->HWMargins[2] * sf;
-    cups->header.ImagingBoundingBox[2] = (pdev->MediaSize[1] -
-					  pdev->HWMargins[3]) * sf;
-    cups->header.ImagingBoundingBox[3] = (pdev->MediaSize[0] -
-					  pdev->HWMargins[0]) * sf;
-  } 
+    if (strcasecmp(cups->header.MediaClass, "PwgRaster") != 0)
+    {
+      cups->header.Margins[0] = (pdev->HWMargins[1] * sf) + 0.5;
+      cups->header.Margins[1] = (pdev->HWMargins[2] * sf) + 0.5;
+      cups->header.ImagingBoundingBox[0] = (pdev->HWMargins[1] * sf) + 0.5;
+      cups->header.ImagingBoundingBox[1] = (pdev->HWMargins[2] * sf) + 0.5;
+      cups->header.ImagingBoundingBox[2] = ((pdev->MediaSize[1] -
+					     pdev->HWMargins[3]) * sf) + 0.5;
+      cups->header.ImagingBoundingBox[3] = ((pdev->MediaSize[0] -
+					     pdev->HWMargins[0]) * sf) + 0.5;
+      cups->header.cupsImagingBBox[0] = pdev->HWMargins[1];
+      cups->header.cupsImagingBBox[1] = pdev->HWMargins[2];
+      cups->header.cupsImagingBBox[2] = pdev->MediaSize[1] - pdev->HWMargins[3];
+      cups->header.cupsImagingBBox[3] = pdev->MediaSize[0] - pdev->HWMargins[0];
+    }
+    else
+    {
+      for (i = 0; i < 2; i ++)
+	cups->header.Margins[i] = 0;
+      for (i = 0; i < 4; i ++)
+      {
+	cups->header.ImagingBoundingBox[i] = 0;
+	cups->header.cupsImagingBBox[i] = 0.0;
+      }
+    }
+  }
   else
   {
     cups->header.cupsPageSize[0] = pdev->MediaSize[0];
     cups->header.cupsPageSize[1] = pdev->MediaSize[1];
 
-    cups->header.cupsImagingBBox[0] = pdev->HWMargins[0];
-    cups->header.cupsImagingBBox[1] = pdev->HWMargins[1];
-    cups->header.cupsImagingBBox[2] = pdev->MediaSize[0] - pdev->HWMargins[2];
-    cups->header.cupsImagingBBox[3] = pdev->MediaSize[1] - pdev->HWMargins[3];
-
     if ((sf = cups->header.cupsBorderlessScalingFactor) < 1.0)
       sf = 1.0;
 
-    cups->header.Margins[0] = pdev->HWMargins[0] * sf;
-    cups->header.Margins[1] = pdev->HWMargins[1] * sf;
+    cups->header.PageSize[0] = (pdev->MediaSize[0] * sf) + 0.5;
+    cups->header.PageSize[1] = (pdev->MediaSize[1] * sf) + 0.5;
 
-    cups->header.PageSize[0] = pdev->MediaSize[0] * sf;
-    cups->header.PageSize[1] = pdev->MediaSize[1] * sf;
-
-    cups->header.ImagingBoundingBox[0] = pdev->HWMargins[0] * sf;
-    cups->header.ImagingBoundingBox[1] = pdev->HWMargins[1] * sf;
-    cups->header.ImagingBoundingBox[2] = (pdev->MediaSize[0] -
-					  pdev->HWMargins[2]) * sf;
-    cups->header.ImagingBoundingBox[3] = (pdev->MediaSize[1] -
-					  pdev->HWMargins[3]) * sf;
+    if (strcasecmp(cups->header.MediaClass, "PwgRaster") != 0)
+    {
+      cups->header.Margins[0] = (pdev->HWMargins[0] * sf) + 0.5;
+      cups->header.Margins[1] = (pdev->HWMargins[1] * sf) + 0.5;
+      cups->header.ImagingBoundingBox[0] = (pdev->HWMargins[0] * sf) + 0.5;
+      cups->header.ImagingBoundingBox[1] = (pdev->HWMargins[1] * sf) + 0.5;
+      cups->header.ImagingBoundingBox[2] = ((pdev->MediaSize[0] -
+					     pdev->HWMargins[2]) * sf) + 0.5;
+      cups->header.ImagingBoundingBox[3] = ((pdev->MediaSize[1] -
+					     pdev->HWMargins[3]) * sf) + 0.5;
+      cups->header.cupsImagingBBox[0] = pdev->HWMargins[0];
+      cups->header.cupsImagingBBox[1] = pdev->HWMargins[1];
+      cups->header.cupsImagingBBox[2] = pdev->MediaSize[0] - pdev->HWMargins[2];
+      cups->header.cupsImagingBBox[3] = pdev->MediaSize[1] - pdev->HWMargins[3];
+    }
+    else
+    {
+      for (i = 0; i < 2; i ++)
+	cups->header.Margins[i] = 0;
+      for (i = 0; i < 4; i ++)
+      {
+	cups->header.ImagingBoundingBox[i] = 0;
+	cups->header.cupsImagingBBox[i] = 0.0;
+      }
+    }
   }
 
 #else
 
   if (cups->landscape)
   {
-    cups->header.Margins[0] = pdev->HWMargins[1];
-    cups->header.Margins[1] = pdev->HWMargins[2];
+    cups->header.PageSize[0] = pdev->MediaSize[1] + 0.5;
+    cups->header.PageSize[1] = pdev->MediaSize[0] + 0.5;
 
-    cups->header.PageSize[0] = pdev->MediaSize[1];
-    cups->header.PageSize[1] = pdev->MediaSize[0];
-
-    cups->header.ImagingBoundingBox[0] = pdev->HWMargins[1];
-    cups->header.ImagingBoundingBox[1] = pdev->HWMargins[0];
-    cups->header.ImagingBoundingBox[2] = pdev->MediaSize[1] - 
-                                         pdev->HWMargins[3];
-    cups->header.ImagingBoundingBox[3] = pdev->MediaSize[0] -
-                                         pdev->HWMargins[2];
-  } 
+    if (strcasecmp(cups->header.MediaClass, "PwgRaster") != 0)
+    {
+      cups->header.Margins[0] = (pdev->HWMargins[1]) + 0.5;
+      cups->header.Margins[1] = (pdev->HWMargins[2]) + 0.5;
+      cups->header.ImagingBoundingBox[0] = (pdev->HWMargins[1]) + 0.5;
+      cups->header.ImagingBoundingBox[1] = (pdev->HWMargins[0]) + 0.5;
+      cups->header.ImagingBoundingBox[2] = (pdev->MediaSize[1] -
+					    pdev->HWMargins[3]) + 0.5;
+      cups->header.ImagingBoundingBox[3] = (pdev->MediaSize[0] -
+					    pdev->HWMargins[2]) + 0.5;
+    }
+    else
+    {
+      for (i = 0; i < 2; i ++)
+	cups->header.Margins[i] = 0;
+      for (i = 0; i < 4; i ++)
+	cups->header.ImagingBoundingBox[i] = 0;
+    }
+  }
   else
   {
-    cups->header.Margins[0] = pdev->HWMargins[0];
-    cups->header.Margins[1] = pdev->HWMargins[1];
+    cups->header.PageSize[0] = pdev->MediaSize[0] + 0.5;
+    cups->header.PageSize[1] = pdev->MediaSize[1] + 0.5;
 
-    cups->header.PageSize[0] = pdev->MediaSize[0];
-    cups->header.PageSize[1] = pdev->MediaSize[1];
-
-    cups->header.ImagingBoundingBox[0] = pdev->HWMargins[0];
-    cups->header.ImagingBoundingBox[1] = pdev->HWMargins[3];
-    cups->header.ImagingBoundingBox[2] = pdev->MediaSize[0] - 
-                                         pdev->HWMargins[2];
-    cups->header.ImagingBoundingBox[3] = pdev->MediaSize[1] -
-                                         pdev->HWMargins[1];
+    if (strcasecmp(cups->header.MediaClass, "PwgRaster") != 0)
+    {
+      cups->header.Margins[0] = (pdev->HWMargins[0]) + 0.5;
+      cups->header.Margins[1] = (pdev->HWMargins[1]) + 0.5;
+      cups->header.ImagingBoundingBox[0] = (pdev->HWMargins[0]) + 0.5;
+      cups->header.ImagingBoundingBox[1] = (pdev->HWMargins[3]) + 0.5;
+      cups->header.ImagingBoundingBox[2] = (pdev->MediaSize[0] -
+					    pdev->HWMargins[2]) + 0.5;
+      cups->header.ImagingBoundingBox[3] = (pdev->MediaSize[1] -
+					    pdev->HWMargins[1]) + 0.5;
+    }
+    else
+    {
+      for (i = 0; i < 2; i ++)
+	cups->header.Margins[i] = 0;
+      for (i = 0; i < 4; i ++)
+	cups->header.ImagingBoundingBox[i] = 0;
+    }
   }
 
 #endif /* CUPS_RASTER_SYNCv1 */
@@ -3813,7 +4076,8 @@ cups_put_params(gx_device     *pdev,	/* I - Device info */
             pdev->HWMargins[2], pdev->HWMargins[3]);
 #endif /* CUPS_DEBUG */
 
-  return (0);
+done:
+  return code;
 }
 
 /*
@@ -3845,6 +4109,7 @@ cups_set_color_info(gx_device *pdev)	/* I - Device info */
   {
     default :
     case CUPS_CSPACE_W :
+    case CUPS_CSPACE_SW :
     case CUPS_CSPACE_K :
     case CUPS_CSPACE_WHITE :
     case CUPS_CSPACE_GOLD :
@@ -3864,6 +4129,8 @@ cups_set_color_info(gx_device *pdev)	/* I - Device info */
     case CUPS_CSPACE_CMY :
     case CUPS_CSPACE_YMC :
     case CUPS_CSPACE_RGB :
+    case CUPS_CSPACE_SRGB :
+    case CUPS_CSPACE_ADOBERGB :
 #ifdef CUPS_RASTER_SYNCv1
 	cups->header.cupsNumColors      = 3;
 #endif /* CUPS_RASTER_SYNCv1 */
@@ -3966,6 +4233,7 @@ cups_set_color_info(gx_device *pdev)	/* I - Device info */
 	break;
 
     case CUPS_CSPACE_W :
+    case CUPS_CSPACE_SW :
     case CUPS_CSPACE_WHITE :
     case CUPS_CSPACE_K :
     case CUPS_CSPACE_GOLD :
@@ -3988,8 +4256,11 @@ cups_set_color_info(gx_device *pdev)	/* I - Device info */
     default :
     case CUPS_CSPACE_RGBW :
     case CUPS_CSPACE_W :
+    case CUPS_CSPACE_SW :
     case CUPS_CSPACE_WHITE :
     case CUPS_CSPACE_RGB :
+    case CUPS_CSPACE_SRGB :
+    case CUPS_CSPACE_ADOBERGB :
     case CUPS_CSPACE_RGBA :
 #  ifdef CUPS_RASTER_HAVE_COLORIMETRIC
     case CUPS_CSPACE_CIEXYZ :
@@ -4101,8 +4372,14 @@ cups_set_color_info(gx_device *pdev)	/* I - Device info */
             (int)cups->EncodeLUT[gx_max_color_value]);
 #endif /* CUPS_DEBUG */
 
-  for (i = 0; i < cups->color_info.dither_grays; i ++)
-    cups->DecodeLUT[i] = gx_max_color_value * i / max_lut;
+  for (i = 0; i < cups->color_info.dither_grays; i ++) {
+    j = i;
+#if !ARCH_IS_BIG_ENDIAN
+    if (max_lut > 255)
+      j = ((j & 255) << 8) | ((j >> 8) & 255);
+#endif /* !ARCH_IS_BIG_ENDIAN */
+    cups->DecodeLUT[i] = gx_max_color_value * j / max_lut;
+  }
 
 #ifdef CUPS_DEBUG
   dmprintf2(pdev->memory, "DEBUG: num_components = %d, depth = %d\n",
@@ -4241,6 +4518,8 @@ cups_set_color_info(gx_device *pdev)	/* I - Device info */
       default :
       case CUPS_CSPACE_RGBW :
       case CUPS_CSPACE_RGB :
+      case CUPS_CSPACE_SRGB :
+      case CUPS_CSPACE_ADOBERGB :
       case CUPS_CSPACE_RGBA :
       case CUPS_CSPACE_CMY :
       case CUPS_CSPACE_YMC :
@@ -4266,16 +4545,17 @@ cups_set_color_info(gx_device *pdev)	/* I - Device info */
              pdev->icc_struct->device_profile[gsDEFAULTPROFILE]->data_cs != gsRGB)) {
 
           if (pdev->icc_struct) {
-              rc_decrement(pdev->icc_struct, "cups_set_color_info");            
+              rc_decrement(pdev->icc_struct, "cups_set_color_info");
           }
           pdev->icc_struct = gsicc_new_device_profile_array(pdev->memory);
 
-          code = gsicc_set_device_profile(pdev, pdev->memory, 
+          code = gsicc_set_device_profile(pdev, pdev->memory,
               (char *)DEFAULT_RGB_ICC, gsDEFAULTPROFILE);
           }
         break;
 
       case CUPS_CSPACE_W :
+      case CUPS_CSPACE_SW :
       case CUPS_CSPACE_WHITE :
       case CUPS_CSPACE_K :
       case CUPS_CSPACE_GOLD :
@@ -4284,11 +4564,11 @@ cups_set_color_info(gx_device *pdev)	/* I - Device info */
              pdev->icc_struct->device_profile[gsDEFAULTPROFILE]->data_cs != gsGRAY)) {
 
           if (pdev->icc_struct) {
-              rc_decrement(pdev->icc_struct, "cups_set_color_info");            
+              rc_decrement(pdev->icc_struct, "cups_set_color_info");
           }
           pdev->icc_struct = gsicc_new_device_profile_array(pdev->memory);
 
-          code = gsicc_set_device_profile(pdev, pdev->memory->non_gc_memory, 
+          code = gsicc_set_device_profile(pdev, pdev->memory->non_gc_memory,
               (char *)DEFAULT_GRAY_ICC, gsDEFAULTPROFILE);
         }
         break;
@@ -4305,11 +4585,11 @@ cups_set_color_info(gx_device *pdev)	/* I - Device info */
              pdev->icc_struct->device_profile[gsDEFAULTPROFILE]->data_cs != gsCMYK)) {
 
           if (pdev->icc_struct) {
-              rc_decrement(pdev->icc_struct, "cups_set_color_info");            
+              rc_decrement(pdev->icc_struct, "cups_set_color_info");
           }
           pdev->icc_struct = gsicc_new_device_profile_array(pdev->memory);
 
-          code = gsicc_set_device_profile(pdev, pdev->memory, 
+          code = gsicc_set_device_profile(pdev, pdev->memory,
               (char *)DEFAULT_CMYK_ICC, gsDEFAULTPROFILE);
           }
         break;
@@ -4350,8 +4630,10 @@ cups_print_chunked(gx_device_printer *pdev,
 		*dstptr;		/* Pointer to bits */
   int		count;			/* Count for loop */
   int		xflip,			/* Flip scanline? */
+#ifdef CUPS_DEBUG
                 yflip,			/* Reverse scanline order? */
-                ystart, yend, ystep;    /* Loop control for scanline order */   
+#endif
+                ystart, yend, ystep;    /* Loop control for scanline order */
   ppd_attr_t    *backside = NULL;
 
 #ifdef CUPS_DEBUG
@@ -4389,12 +4671,16 @@ cups_print_chunked(gx_device_printer *pdev,
        (cups->header.Tumble &&
 	(backside && !strcasecmp(backside->value, "ManualTumble")))) &&
       !(cups->page & 1)) {
+#ifdef CUPS_DEBUG
     yflip = 1;
+#endif
     ystart = cups->height - 1;
     yend = -1;
     ystep = -1;
   } else {
+#ifdef CUPS_DEBUG
     yflip = 0;
+#endif
     ystart = 0;
     yend = cups->height;
     ystep = 1;
@@ -4577,8 +4863,10 @@ cups_print_banded(gx_device_printer *pdev,
   unsigned char	*cptr, *mptr, *yptr,	/* Pointer to components */
 		*kptr, *lcptr, *lmptr;	/* ... */
   int		xflip,			/* Flip scanline? */
+#ifdef CUPS_DEBUG
                 yflip,			/* Reverse scanline order? */
-                ystart, yend, ystep;    /* Loop control for scanline order */   
+#endif
+                ystart, yend, ystep;    /* Loop control for scanline order */
   ppd_attr_t    *backside = NULL;
 
 #ifdef CUPS_DEBUG
@@ -4616,12 +4904,16 @@ cups_print_banded(gx_device_printer *pdev,
        (cups->header.Tumble &&
 	(backside && !strcasecmp(backside->value, "ManualTumble")))) &&
       !(cups->page & 1)) {
+#ifdef CUPS_DEBUG
     yflip = 1;
+#endif
     ystart = cups->height - 1;
     yend = -1;
     ystep = -1;
   } else {
+#ifdef CUPS_DEBUG
     yflip = 0;
+#endif
     ystart = 0;
     yend = cups->height;
     ystep = 1;
@@ -5282,7 +5574,7 @@ cups_print_planar(gx_device_printer *pdev,
 {
   int		x;			/* Looping var */
   int		y;			/* Looping var */
-  int		z;			/* Looping var */
+  unsigned char z;			/* Looping var */
   unsigned char	srcbit;			/* Current source bit */
   unsigned char	dstbit;			/* Current destination bit */
   unsigned char	temp;			/* Temporary variable */
@@ -5637,6 +5929,17 @@ cups_print_planar(gx_device_printer *pdev,
   return (0);
 }
 
+private int
+cups_spec_op(gx_device *dev_, int op, void *data, int datasize)
+{
+    /* Although not strictly DeviceN, the range of color models
+       this device supports presets similar issues.
+     */
+    if (op == gxdso_supports_devn) {
+        return true;
+    }
+    return gx_default_dev_spec_op(dev_, op, data, datasize);
+}
 
 /*
  */

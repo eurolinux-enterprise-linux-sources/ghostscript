@@ -1,7 +1,11 @@
 %!PS
 %   Postscript that uses Ghostscript extensions to do simple transparency
 
-<< /CompatibilityLevel 1.4 >> setpagedevice % in case we are going to pdfwrite
+<<
+   /PageUsesTransparency true	% needed if we are using transparency
+   /CompatibilityLevel 1.4
+   /PageSpotColors 0
+>> setpagedevice % in case we are going to pdfwrite
 
 % work around rectfill mapping directly to device fill_rectangle
 /rectfill {
@@ -27,4 +31,3 @@
      .endtransparencygroup
 .poppdf14devicefilter
 showpage
-quit

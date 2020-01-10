@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -117,6 +117,16 @@ ulong
 get_u32_msb(const byte *p)
 {
     return ((uint)p[0] << 24) + ((uint)p[1] << 16) + ((uint)p[2] << 8) + p[3];
+}
+
+/* Put an unsigned, big-endian 32-bit value. */
+void
+put_u32_msb(byte *p, const ulong n, const int offs)
+{
+    (p + offs)[0] = n >> 24 & 255;
+    (p + offs)[1] = n >> 16 & 255;
+    (p + offs)[2] = n >> 8  & 255;
+    (p + offs)[3] = n & 255;
 }
 
 /* ------ String utilities ------ */

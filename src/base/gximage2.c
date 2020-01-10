@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -65,7 +65,7 @@ typedef struct image2_data_s {
 static int
 image2_set_data(const gs_image2_t * pim, image2_data_t * pid)
 {
-    gs_state *pgs = pim->DataSource;
+    gs_gstate *pgs = pim->DataSource;
     gs_matrix smat;
     gs_rect sbox, dbox;
 
@@ -87,7 +87,7 @@ image2_set_data(const gs_image2_t * pim, image2_data_t * pid)
 
 /* Compute the source size of an ImageType 2 image. */
 static int
-gx_image2_source_size(const gs_imager_state * pis, const gs_image_common_t * pim,
+gx_image2_source_size(const gs_gstate * pgs, const gs_image_common_t * pim,
                       gs_int_point * psize)
 {
     image2_data_t idata;
@@ -103,13 +103,13 @@ gx_image2_source_size(const gs_imager_state * pis, const gs_image_common_t * pim
 /* this procedure does all the work. */
 static int
 gx_begin_image2(gx_device * dev,
-                const gs_imager_state * pis, const gs_matrix * pmat,
+                const gs_gstate * pgs1, const gs_matrix * pmat,
                 const gs_image_common_t * pic, const gs_int_rect * prect,
               const gx_drawing_color * pdcolor, const gx_clip_path * pcpath,
                 gs_memory_t * mem, gx_image_enum_common_t ** pinfo)
 {
     const gs_image2_t *pim = (const gs_image2_t *)pic;
-    gs_state *pgs = pim->DataSource;
+    gs_gstate *pgs = pim->DataSource;
     gx_device *sdev = gs_currentdevice(pgs);
     int depth = sdev->color_info.depth;
     bool pixel_copy = pim->PixelCopy;
@@ -123,23 +123,21 @@ gx_begin_image2(gx_device * dev,
     int code;
 
     /* verify that color models are the same for PixelCopy */
-    if ( pixel_copy                            &&
-         memcmp( &dev->color_info,
-                 &sdev->color_info,
-                 sizeof(dev->color_info) ) != 0  )
+    if ( pixel_copy &&
+        !gx_color_info_equal(&dev->color_info, &sdev->color_info))
         return_error(gs_error_typecheck);
 
 /****** ONLY HANDLE depth <= 8 FOR PixelCopy ******/
     if (pixel_copy && depth <= 8)
         return_error(gs_error_unregistered);
 
-    gs_image_t_init(&idata.image, gs_currentcolorspace((const gs_state *)pis));
+    gs_image_t_init(&idata.image, gs_currentcolorspace((const gs_gstate *)pgs1));
 
     /* Add Decode entries for K and alpha */
     idata.image.Decode[6] = idata.image.Decode[8] = 0.0;
     idata.image.Decode[7] = idata.image.Decode[9] = 1.0;
     if (pmat == 0) {
-        gs_currentmatrix((const gs_state *)pis, &dmat);
+        gs_currentmatrix((const gs_gstate *)pgs1, &dmat);
         pmat = &dmat;
     } else
         dmat = *pmat;
@@ -229,7 +227,7 @@ gx_begin_image2(gx_device * dev,
     }
     if (!direct_copy)
         code = (*dev_proc(dev, begin_typed_image))
-            (dev, pis, pmat, (const gs_image_common_t *)&idata.image, NULL,
+            (dev, pgs1, pmat, (const gs_image_common_t *)&idata.image, NULL,
              pdcolor, pcpath, mem, &info);
     if (code >= 0) {
         int y;

@@ -1,0 +1,4 @@
+* text=auto
+*.inf eol=crlf
+*.cat binary
+

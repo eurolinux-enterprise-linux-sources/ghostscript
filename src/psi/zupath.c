@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -58,10 +58,10 @@ static int upath_stroke(i_ctx_t *, gs_matrix *, bool);
 /* ---------------- Insideness testing ---------------- */
 
 /* Forward references */
-static int in_test(i_ctx_t *, int (*)(gs_state *));
+static int in_test(i_ctx_t *, int (*)(gs_gstate *));
 static int in_path(os_ptr, i_ctx_t *, gx_device *);
 static int in_path_result(i_ctx_t *, int, int);
-static int in_utest(i_ctx_t *, int (*)(gs_state *));
+static int in_utest(i_ctx_t *, int (*)(gs_gstate *));
 static int in_upath(i_ctx_t *, gx_device *);
 static int in_upath_result(i_ctx_t *, int, int);
 
@@ -130,8 +130,10 @@ zinustroke(i_ctx_t *i_ctx_p)
     }
     if (npop > 1)		/* matrix was supplied */
         code = gs_concat(igs, &mat);
-    if (code >= 0)
+    if (code >= 0) {
+        dev_proc(&hdev, set_graphics_type_tag)(&hdev, GS_PATH_TAG);	/* so that fills don't unset dev_color */
         code = gs_stroke(igs);
+    }
     return in_upath_result(i_ctx_p, npop + spop, code);
 }
 
@@ -139,7 +141,7 @@ zinustroke(i_ctx_t *i_ctx_p)
 
 /* Do the work of the non-user-path insideness operators. */
 static int
-in_test(i_ctx_t *i_ctx_p, int (*paintproc)(gs_state *))
+in_test(i_ctx_t *i_ctx_p, int (*paintproc)(gs_gstate *))
 {
     os_ptr op = osp;
     gx_device hdev;
@@ -148,6 +150,7 @@ in_test(i_ctx_t *i_ctx_p, int (*paintproc)(gs_state *))
 
     if (npop < 0)
         return npop;
+    dev_proc(&hdev, set_graphics_type_tag)(&hdev, GS_PATH_TAG);	/* so that fills don't unset dev_color */
     code = (*paintproc)(igs);
     return in_path_result(i_ctx_p, npop, code);
 }
@@ -174,7 +177,7 @@ in_path(os_ptr oppath, i_ctx_t *i_ctx_p, gx_device * phdev)
         fr.q.y = fr.p.y + fixed_1;
         code = gx_clip_to_rectangle(igs, &fr);
         npop = 2;
-    } else if (code == e_stackunderflow) {
+    } else if (code == gs_error_stackunderflow) {
         /* If 0 elements, definitely a stackunderflow; otherwise, */
         /* only 1 number, also a stackunderflow. */
         npop = code;
@@ -197,8 +200,11 @@ in_path(os_ptr oppath, i_ctx_t *i_ctx_p, gx_device * phdev)
         gs_grestore(igs);
         return code;
     }
+    code = gx_set_device_color_1(igs);
+    if (code < 0)
+        return code;
+
     /* Install the hit detection device. */
-    gx_set_device_color_1(igs);
     gx_device_init_on_stack((gx_device *) phdev, (const gx_device *)&gs_hit_device,
                             imemory);
     phdev->width = phdev->height = max_int;
@@ -231,7 +237,7 @@ in_path_result(i_ctx_t *i_ctx_p, int npop, int code)
 
 /* Do the work of the user-path insideness operators. */
 static int
-in_utest(i_ctx_t *i_ctx_p, int (*paintproc)(gs_state *))
+in_utest(i_ctx_t *i_ctx_p, int (*paintproc)(gs_gstate *))
 {
     gx_device hdev;
     int npop = in_upath(i_ctx_p, &hdev);
@@ -239,6 +245,7 @@ in_utest(i_ctx_t *i_ctx_p, int (*paintproc)(gs_state *))
 
     if (npop < 0)
         return npop;
+    dev_proc(&hdev, set_graphics_type_tag)(&hdev, GS_PATH_TAG);	/* so that fills don't unset dev_color */
     code = (*paintproc)(igs);
     return in_upath_result(i_ctx_p, npop, code);
 }
@@ -450,7 +457,7 @@ zustrokepath(i_ctx_t *i_ctx_p)
 /* <with_ucache> upath <userpath> */
 /* We do all the work in a procedure that is also used to construct */
 /* the UnpaintedPath user path for ImageType 2 images. */
-int make_upath(i_ctx_t *i_ctx_p, ref *rupath, gs_state *pgs, gx_path *ppath,
+int make_upath(i_ctx_t *i_ctx_p, ref *rupath, gs_gstate *pgs, gx_path *ppath,
                bool with_ucache);
 static int
 zupath(i_ctx_t *i_ctx_p)
@@ -483,14 +490,14 @@ path_length_for_upath(const gx_path *ppath)
                 size += 1;
                 continue;
             default:
-                return_error(e_unregistered);
+                return_error(gs_error_unregistered);
         }
     }
     return size;
 }
 
 int
-make_upath(i_ctx_t *i_ctx_p, ref *rupath, gs_state *pgs, gx_path *ppath,
+make_upath(i_ctx_t *i_ctx_p, ref *rupath, gs_gstate *pgs, gx_path *ppath,
            bool with_ucache)
 {
     int size = (with_ucache ? 6 : 5);
@@ -508,7 +515,7 @@ make_upath(i_ctx_t *i_ctx_p, ref *rupath, gs_state *pgs, gx_path *ppath,
          * not in CPSI compatibility mode, we set a reasonable default
          * bbox instead.
          */
-        if (code != e_nocurrentpoint || gs_currentcpsimode(imemory))
+        if (code != gs_error_nocurrentpoint || gs_currentcpsimode(imemory))
             return code;
         bbox.p.x = bbox.p.y = bbox.q.x = bbox.q.y = 0;
     }
@@ -518,7 +525,7 @@ make_upath(i_ctx_t *i_ctx_p, ref *rupath, gs_state *pgs, gx_path *ppath,
         return code;
     size += code;
     if (size >= 65536)
-        return_error(e_limitcheck);
+        return_error(gs_error_limitcheck);
 
     code = ialloc_ref_array(rupath, a_all | a_executable, size,
                             "make_upath");
@@ -548,7 +555,7 @@ make_upath(i_ctx_t *i_ctx_p, ref *rupath, gs_state *pgs, gx_path *ppath,
         gx_path *save_path = pgs->path;
 
         pgs->path = ppath;
-        gs_path_enum_copy_init(&penum, pgs, false);
+        gs_path_enum_copy_init(pgs->memory, &penum, pgs, false);
         pgs->path = save_path;
         while ((op = gs_path_enum_next(&penum, pts)) != 0) {
             const char *opstr;
@@ -577,7 +584,7 @@ make_upath(i_ctx_t *i_ctx_p, ref *rupath, gs_state *pgs, gx_path *ppath,
                     opstr = "closepath";
                     break;
                 default:
-                    return_error(e_unregistered);
+                    return_error(gs_error_unregistered);
             }
             if ((code = name_enter_string(pgs->memory, opstr, next)) < 0)
                 return code;
@@ -610,7 +617,7 @@ zgetpath(i_ctx_t *i_ctx_p)
         dict_find_string(systemdict, "lineto", &operators[2]) <= 0 ||
         dict_find_string(systemdict, "curveto", &operators[3]) <= 0 ||
         dict_find_string(systemdict, "closepath", &operators[4]) <= 0)
-          return_error(e_undefined);
+          return_error(gs_error_undefined);
 
     main_ref = op->value.refs;
     for (i = 0; i < leaf_count; i++) {
@@ -635,7 +642,7 @@ zgetpath(i_ctx_t *i_ctx_p)
         fts[5] = &pts[2].y;
 
         main_ref = op->value.refs;
-        gs_path_enum_copy_init(&penum, igs, false);
+        gs_path_enum_copy_init(igs->memory, &penum, igs, false);
         pe = gs_path_enum_next(&penum, pts);
         if (pe < 0)
             return pe;
@@ -655,7 +662,7 @@ zgetpath(i_ctx_t *i_ctx_p)
                     if (pe <= 0)
                         return pe;
                     if (pe >= 5)
-                        return_error(e_unregistered);
+                        return_error(gs_error_unregistered);
                 }
             }
         }
@@ -673,9 +680,9 @@ upath_append_aux(os_ptr oppath, i_ctx_t *i_ctx_p, int *pnargs, bool upath_compat
     ref opcodes;
 
     if (r_has_type(oppath, t__invalid))
-        return_error(e_stackunderflow);
+        return_error(gs_error_stackunderflow);
     if (!r_is_array(oppath))
-        return_error(e_typecheck);
+        return_error(gs_error_typecheck);
     check_read(*oppath);
     gs_newpath(igs);
     /****** ROUND tx AND ty ******/
@@ -704,7 +711,7 @@ upath_append_aux(os_ptr oppath, i_ctx_t *i_ctx_p, int *pnargs, bool upath_compat
             if (opx > UPATH_REPEAT)
                 repcount = opx - UPATH_REPEAT;
             else if (opx > UPATH_MAX_OP)
-                return_error(e_rangecheck);
+                return_error(gs_error_rangecheck);
             else {		/* operator */
                 const up_data_t data = up_data[opx];
 
@@ -715,7 +722,7 @@ upath_append_aux(os_ptr oppath, i_ctx_t *i_ctx_p, int *pnargs, bool upath_compat
                     ups = ups > UPS_UCACHE ? ups : data.state_after;
                 } else {
                     if (!(ups & data.states_before))
-                        return_error(e_typecheck);
+                        return_error(gs_error_typecheck);
                     ups = data.state_after;
                 }
                 do {
@@ -734,7 +741,7 @@ upath_append_aux(os_ptr oppath, i_ctx_t *i_ctx_p, int *pnargs, bool upath_compat
                                 r_set_type_attrs(op, t_real, 0);
                                 break;
                             default:
-                                return_error(e_typecheck);
+                                return_error(gs_error_typecheck);
                         }
                     }
                     code = (*up_ops[opx])(i_ctx_p);
@@ -772,49 +779,49 @@ upath_append_aux(os_ptr oppath, i_ctx_t *i_ctx_p, int *pnargs, bool upath_compat
                     if (!r_has_attr(&rup, a_executable) ||
                         dict_find(systemdict, &rup, &defp) <= 0 ||
                         r_btype(defp) != t_operator)
-                        return_error(e_typecheck); /* all errors = typecheck */
+                        return_error(gs_error_typecheck); /* all errors = typecheck */
                     goto xop;
                 case t_operator:
                     defp = &rup;
                   xop:if (!r_has_attr(defp, a_executable))
-                        return_error(e_typecheck);
+                        return_error(gs_error_typecheck);
                     oproc = real_opproc(defp);
                     for (opx = 0; opx <= UPATH_MAX_OP; opx++)
                         if (oproc == up_ops[opx])
                             break;
                     if (opx > UPATH_MAX_OP)
-                        return_error(e_typecheck);
+                        return_error(gs_error_typecheck);
                     data = up_data[opx];
                     if (argcount != data.num_args)
-                        return_error(e_typecheck);
+                        return_error(gs_error_typecheck);
                     if (upath_compat && opx == upath_op_ucache) {
                         /* CPSI does not complain about incorrect ucache
                            placement, even though PLRM3 says it's illegal. */
                         ups = ups > UPS_UCACHE ? ups : data.state_after;
                     } else {
                         if (!(ups & data.states_before))
-                            return_error(e_typecheck);
+                            return_error(gs_error_typecheck);
                         ups = data.state_after;
                     }
                     code = (*up_ops[opx])(i_ctx_p);
                     if (code < 0) {
-                        if (code == e_nocurrentpoint)
-                            return_error(e_rangecheck); /* CET 11-22 */
+                        if (code == gs_error_nocurrentpoint)
+                            return_error(gs_error_rangecheck); /* CET 11-22 */
                         return code;
                     }
                     argcount = 0;
                     break;
                 default:
-                    return_error(e_typecheck);
+                    return_error(gs_error_typecheck);
             }
         }
         if (argcount) {
             *pnargs = argcount;
-            return_error(e_typecheck);	/* leftover args */
+            return_error(gs_error_typecheck);	/* leftover args */
         }
     }
     if (ups < UPS_SETBBOX)
-        return_error(e_typecheck);	/* no setbbox */
+        return_error(gs_error_typecheck);	/* no setbbox */
     if (ups == UPS_SETBBOX && upath_compat) {
         /*
          * In CPSI compatibility mode, an empty path with a setbbox also

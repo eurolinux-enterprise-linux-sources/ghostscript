@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -18,9 +18,9 @@
 #ifndef gsicccache_INCLUDED
 #  define gsicccache_INCLUDED
 
-#ifndef gs_imager_state_DEFINED
-#  define gs_imager_state_DEFINED
-typedef struct gs_imager_state_s gs_imager_state;
+#ifndef gs_gstate_DEFINED
+#  define gs_gstate_DEFINED
+typedef struct gs_gstate_s gs_gstate;
 #endif
 
 #ifndef gx_device_DEFINED
@@ -46,29 +46,29 @@ void gsicc_init_buffer(gsicc_bufferdesc_t *buffer_desc, unsigned char num_chan,
 bool gsicc_alloc_link_entry(gsicc_link_cache_t *icc_link_cache, 
                             gsicc_link_t **ret_link, gsicc_hashlink_t hash,
                             bool include_softproof, bool include_devlink);
-gsicc_link_t* gsicc_get_link(const gs_imager_state * pis, gx_device *dev,
+gsicc_link_t* gsicc_get_link(const gs_gstate * pgs, gx_device *dev,
                              const gs_color_space  *input_colorspace,
                              gs_color_space *output_colorspace,
                              gsicc_rendering_param_t *rendering_params,
                              gs_memory_t *memory);
-gsicc_link_t* gsicc_get_link_profile(const gs_imager_state *pis, gx_device *dev,
+gsicc_link_t* gsicc_get_link_profile(const gs_gstate *pgs, gx_device *dev,
                                      cmm_profile_t *gs_input_profile,
                                      cmm_profile_t *gs_output_profile,
                                      gsicc_rendering_param_t *rendering_params,
                                      gs_memory_t *memory, bool devicegraytok);
 void gsicc_release_link(gsicc_link_t *icclink);
-void gsicc_set_link_data(gsicc_link_t *icc_link, void *link_handle,
-                         gsicc_hashlink_t hashcode, gx_monitor_t *lock,
-                         bool includes_proof, bool includes_devlink);
-void gsicc_link_free(gsicc_link_t *icc_link, gs_memory_t *memory);
+void gsicc_link_free(gsicc_link_t *icc_link, const gs_memory_t *memory);
 void gsicc_get_icc_buff_hash(unsigned char *buffer, int64_t *hash, unsigned int buff_size);
+int64_t gsicc_get_hash(cmm_profile_t *profile);
 int gsicc_transform_named_color(const float tint_values[],
                             gsicc_namedcolor_t color_names[], 
                             uint num_names,
                             gx_color_value device_values[],
-                            const gs_imager_state *pis, gx_device *dev,
+                            const gs_gstate *pgs, gx_device *dev,
                             cmm_profile_t *gs_output_profile,
                             gsicc_rendering_param_t *rendering_params);
-int  gsicc_get_device_profile_comps(cmm_dev_profile_t *dev_profile);
-
+int  gsicc_get_device_profile_comps(const cmm_dev_profile_t *dev_profile);
+gsicc_link_t * gsicc_alloc_link_dev(gs_memory_t *memory, cmm_profile_t *src_profile,
+    cmm_profile_t *des_profile, gsicc_rendering_param_t *rendering_params);
+void gsicc_free_link_dev(gs_memory_t *memory, gsicc_link_t *link);
 #endif

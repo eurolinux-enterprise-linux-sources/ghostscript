@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,17 +9,17 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
 /* Miscellaneous support for platform facilities */
 
+#include "stat_.h"
 #include "unistd_.h"
 #include "fcntl_.h"
 #include "stdio_.h"
-#include "stat_.h"
 #include "memory_.h"
 #include "string_.h"
 #include "gp.h"
@@ -248,7 +248,7 @@ gp_file_name_combine_generic(const char *prefix, uint plen, const char *fname, u
                 case 0:
                     /* We have no infix, start with parent. */
                     if ((no_sibling && ipe == fname + flen && flen != 0) ||
-                            !gp_file_name_is_partent_allowed())
+                            !gp_file_name_is_parent_allowed())
                         return gp_combine_cant_handle;
                     /* Falls through. */
                 case 2:

@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -76,7 +76,7 @@ zbuildfont0(i_ctx_t *i_ctx_p)
             dict_find_string(op, "FDepVector", &pfdepvector) <= 0 ||
             !r_is_array(pfdepvector)
             )
-            return_error(e_invalidfont);
+            return_error(gs_error_invalidfont);
         data.FMapType = (fmap_type) pfmaptype->value.intval;
         /*
          * Adding elements below could cause the font dictionary to be
@@ -110,7 +110,7 @@ zbuildfont0(i_ctx_t *i_ctx_p)
                  !(data.FMapType == fmap_escape ||
                    data.FMapType == fmap_double_escape))
                 )
-                return_error(e_invalidfont);
+                return_error(gs_error_invalidfont);
         }
     }
     switch (data.FMapType) {
@@ -134,7 +134,7 @@ zbuildfont0(i_ctx_t *i_ctx_p)
                 (data.subs_width = (int)*psubsvector->value.bytes + 1) > 4 ||
                     (svsize - 1) % data.subs_width != 0
                     )
-                    return_error(e_invalidfont);
+                    return_error(gs_error_invalidfont);
                 data.subs_size = (svsize - 1) / data.subs_width;
                 data.SubsVector.data = psubsvector->value.bytes + 1;
                 data.SubsVector.size = svsize - 1;
@@ -201,7 +201,7 @@ zbuildfont0(i_ctx_t *i_ctx_p)
      */
     if (data.FMapType == fmap_SubsVector) {
         if (data.subs_size >= r_size(&pdata->Encoding)) {
-            code = gs_note_error(e_rangecheck);
+            code = gs_note_error(gs_error_rangecheck);
             goto fail;
         }
     }
@@ -209,7 +209,7 @@ zbuildfont0(i_ctx_t *i_ctx_p)
         (uint *) ialloc_byte_array(data.encoding_size, sizeof(uint),
                                    "buildfont0(Encoding)");
     if (data.Encoding == 0) {
-        code = gs_note_error(e_VMerror);
+        code = gs_note_error(gs_error_VMerror);
         goto fail;
     }
     /* Fill in the encoding vector, checking to make sure that */
@@ -219,11 +219,11 @@ zbuildfont0(i_ctx_t *i_ctx_p)
 
         array_get(imemory, &pdata->Encoding, i, &enc);
         if (!r_has_type(&enc, t_integer)) {
-            code = gs_note_error(e_typecheck);
+            code = gs_note_error(gs_error_typecheck);
             goto fail;
         }
         if ((ulong) enc.value.intval >= data.fdep_size) {
-            code = gs_note_error(e_rangecheck);
+            code = gs_note_error(gs_error_rangecheck);
             goto fail;
         }
         data.Encoding[i] = (uint) enc.value.intval;
@@ -233,7 +233,7 @@ zbuildfont0(i_ctx_t *i_ctx_p)
                             &st_gs_font_ptr_element,
                             "buildfont0(FDepVector)");
     if (data.FDepVector == 0) {
-        code = gs_note_error(e_VMerror);
+        code = gs_note_error(gs_error_VMerror);
         goto fail;
     }
     for (i = 0; i < data.fdep_size; i++) {

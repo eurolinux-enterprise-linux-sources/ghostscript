@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -47,26 +47,27 @@
 #include "gxht.h"		/* for gs_halftone */
 #include "gdevbbox.h"
 #include "gshtx.h"
+#include "gxiodev.h"
 
 /* Define whether we are processing captured data. */
 /*#define CAPTURE */
 
 /* Test programs */
-static int test1(gs_state *, gs_memory_t *);	/* kaleidoscope */
-static int test2(gs_state *, gs_memory_t *);	/* pattern fill */
-static int test3(gs_state *, gs_memory_t *);	/* RasterOp */
-static int test4(gs_state *, gs_memory_t *);	/* set resolution */
-static int test5(gs_state *, gs_memory_t *);	/* images */
-static int test6(gs_state *, gs_memory_t *);	/* CIE API, snapping */
-static int test7(gs_state *, gs_memory_t *);	/* non-monot HT */
-static int test8(gs_state *, gs_memory_t *);	/* transp patterns */
+static int test1(gs_gstate *, gs_memory_t *);	/* kaleidoscope */
+static int test2(gs_gstate *, gs_memory_t *);	/* pattern fill */
+static int test3(gs_gstate *, gs_memory_t *);	/* RasterOp */
+static int test4(gs_gstate *, gs_memory_t *);	/* set resolution */
+static int test5(gs_gstate *, gs_memory_t *);	/* images */
+static int test6(gs_gstate *, gs_memory_t *);	/* CIE API, snapping */
+static int test7(gs_gstate *, gs_memory_t *);	/* non-monot HT */
+static int test8(gs_gstate *, gs_memory_t *);	/* transp patterns */
 
 #ifdef CAPTURE
 #include "k/capture.c"
-static int test10(gs_state *, gs_memory_t *);	/* captured data */
+static int test10(gs_gstate *, gs_memory_t *);	/* captured data */
 
 #endif
-static int (*tests[]) (gs_state *, gs_memory_t *) =
+static int (*tests[]) (gs_gstate *, gs_memory_t *) =
 {
     test1, test2, test3, test4, test5,
         test6, test7, test8, 0
@@ -76,11 +77,10 @@ static int (*tests[]) (gs_state *, gs_memory_t *) =
 };
 
 /* Include the extern for the device stuff. */
-extern init_proc(gs_iodev_init);
 extern_gs_lib_device_list();
 
 /* Forward references */
-static float odsf(floatp, floatp);
+static float odsf(double, double);
 static void gs_abort(const gs_memory_t *);
 
 int
@@ -89,7 +89,7 @@ main(int argc, const char *argv[])
     char achar = '0';
     gs_memory_t *mem;
 
-    gs_state *pgs;
+    gs_gstate *pgs;
     const gx_device *const *list;
     gx_device *dev;
     gx_device_bbox *bbdev;
@@ -172,7 +172,7 @@ main(int argc, const char *argv[])
         }
     }
     dev = (gx_device *) bbdev;
-    pgs = gs_state_alloc(mem);
+    pgs = gs_gstate_alloc(mem);
     gs_setdevice_no_erase(pgs, dev);	/* can't erase yet */
     {
         gs_point dpi;
@@ -209,7 +209,7 @@ main(int argc, const char *argv[])
 }
 /* Ordered dither spot function */
 static float
-odsf(floatp x, floatp y)
+odsf(double x, double y)
 {
     static const byte dither[256] =
     {
@@ -238,7 +238,7 @@ odsf(floatp x, floatp y)
 
 /* Fill a rectangle. */
 static int
-fill_rect1(gs_state * pgs, floatp x, floatp y, floatp w, floatp h)
+fill_rect1(gs_gstate * pgs, double x, double y, double w, double h)
 {
     gs_rect r;
 
@@ -283,7 +283,7 @@ gs_abort(const gs_memory_t *mem)
 /* Return the number with the magnitude of x and the sign of y. */
 /* This is a BSD addition to libm; not all compilers have it. */
 static double
-gs_copysign(floatp x, floatp y)
+gs_copysign(double x, double y)
 {
    return ( y >= 0  ? fabs(x) : -fabs(x) );
 }
@@ -294,7 +294,7 @@ gs_copysign(floatp x, floatp y)
 /* Random number generator */
 static long rand_state = 1;
 static long
-rand(void)
+gs_rand(void)
 {
 #define A 16807
 #define M 0x7fffffff
@@ -311,7 +311,7 @@ rand(void)
     return rand_state;
 }
 static int
-test1(gs_state * pgs, gs_memory_t * mem)
+test1(gs_gstate * pgs, gs_memory_t * mem)
 {
     int n;
 
@@ -322,7 +322,7 @@ test1(gs_state * pgs, gs_memory_t * mem)
     for (n = 200; --n >= 0;) {
         int j;
 
-#define rf() (rand() / (1.0 * 0x10000 * 0x8000))
+#define rf() (gs_rand() / (1.0 * 0x10000 * 0x8000))
         double r = rf(), g = rf(), b = rf();
         double x0 = rf(), y0 = rf(), x1 = rf(), y1 = rf(), x2 = rf(), y2 = rf();
 
@@ -345,7 +345,7 @@ test1(gs_state * pgs, gs_memory_t * mem)
 /* Fill an area with a pattern. */
 
 static int
-test2(gs_state * pgs, gs_memory_t * mem)
+test2(gs_gstate * pgs, gs_memory_t * mem)
 {
     gs_client_color cc;
     gx_tile_bitmap tile;
@@ -406,7 +406,7 @@ test2(gs_state * pgs, gs_memory_t * mem)
 /* Currently, this only works with monobit devices. */
 
 static int
-test3(gs_state * pgs, gs_memory_t * mem)
+test3(gs_gstate * pgs, gs_memory_t * mem)
 {
     gx_device *dev = gs_currentdevice(pgs);
     gx_color_index black = gx_device_black(dev);
@@ -448,7 +448,7 @@ test3(gs_state * pgs, gs_memory_t * mem)
 /* Set the resolution dynamically. */
 
 static int
-test4(gs_state * pgs, gs_memory_t * mem)
+test4(gs_gstate * pgs, gs_memory_t * mem)
 {
     gs_c_param_list list;
     float resv[2];
@@ -495,7 +495,7 @@ test4(gs_state * pgs, gs_memory_t * mem)
 /* Test masked (and non-masked) images. */
 
 static int
-test5(gs_state * pgs, gs_memory_t * mem)
+test5(gs_gstate * pgs, gs_memory_t * mem)
 {
     gx_device *dev = gs_currentdevice(pgs);
     gx_image_enum_common_t *info;
@@ -541,7 +541,7 @@ test5(gs_state * pgs, gs_memory_t * mem)
 
 #define do_image(image, idata)\
   BEGIN\
-  code = gx_device_begin_typed_image(dev, (gs_imager_state *)pgs, NULL,\
+  code = gx_device_begin_typed_image(dev, pgs, NULL,\
      (gs_image_common_t *)&image, NULL, &dcolor, NULL, mem, &info);\
   /****** TEST code >= 0 ******/\
   planes[0].data = idata;\
@@ -575,7 +575,7 @@ test5(gs_state * pgs, gs_memory_t * mem)
         image1.BitsPerComponent = 8;
 
         gs_translate(pgs, 0.5, 4.0);
-        code = gx_device_begin_image(dev, (gs_imager_state *) pgs,
+        code = gx_device_begin_image(dev, pgs,
                                      &image1, gs_image_format_chunky,
                                      NULL, &dcolor, NULL, mem, &info1);
 /****** TEST code >= 0 ******/
@@ -632,7 +632,7 @@ test5(gs_state * pgs, gs_memory_t * mem)
 
         /* Display with 1-for-1 mask and image. */
         gs_translate(pgs, 0.5, 2.0);
-        code = gx_device_begin_typed_image(dev, (gs_imager_state *) pgs,
+        code = gx_device_begin_typed_image(dev, pgs,
                                        NULL, (gs_image_common_t *) & image3,
                                            NULL, &dcolor, NULL, mem, &info);
 /****** TEST code >= 0 ******/
@@ -655,7 +655,7 @@ test5(gs_state * pgs, gs_memory_t * mem)
         image3.MaskDict.Width *= 2;
         image3.MaskDict.Height *= 2;
         gs_translate(pgs, 1.5, 0.0);
-        code = gx_device_begin_typed_image(dev, (gs_imager_state *) pgs,
+        code = gx_device_begin_typed_image(dev, pgs,
                                        NULL, (gs_image_common_t *) & image3,
                                            NULL, &dcolor, NULL, mem, &info);
 /****** TEST code >= 0 ******/
@@ -722,7 +722,7 @@ test5(gs_state * pgs, gs_memory_t * mem)
 /* Test the C API for CIE CRDs, and color snapping. */
 
 static void
-spectrum(gs_state * pgs, int n)
+spectrum(gs_gstate * pgs, int n)
 {
     float den = n;
     float den1 = n - 1;
@@ -745,12 +745,12 @@ spectrum(gs_state * pgs, int n)
             }
 }
 static float
-render_abc(floatp v, const gs_cie_render * ignore_crd)
+render_abc(double v, const gs_cie_render * ignore_crd)
 {
     return v / 2;
 }
 static int
-test6(gs_state * pgs, gs_memory_t * mem)
+test6(gs_gstate * pgs, gs_memory_t * mem)
 {
     gs_color_space *pcs;
     gs_cie_abc *pabc;
@@ -797,7 +797,7 @@ test6(gs_state * pgs, gs_memory_t * mem)
 /* Test the C API for non-monotonic halftones. */
 
 static int
-test7(gs_state * pgs, gs_memory_t * mem)
+test7(gs_gstate * pgs, gs_memory_t * mem)
 {
     /* Define a non-monotonic 4 x 4 halftone with 4 gray levels. */
     static const byte masks[1 * 4 * 4] =
@@ -834,7 +834,7 @@ test7(gs_state * pgs, gs_memory_t * mem)
 /* Test partially transparent patterns */
 
 static int
-test8(gs_state * pgs, gs_memory_t * mem)
+test8(gs_gstate * pgs, gs_memory_t * mem)
 {
     /*
      * Define a 16 x 16 pattern using a 4-entry palette
@@ -918,7 +918,7 @@ static const float xmove_origin = 0.0;
 static const float ymove_origin = 0.0;
 
 static int
-test10(gs_state * pgs, gs_memory_t * mem)
+test10(gs_gstate * pgs, gs_memory_t * mem)
 {
     gs_c_param_list list;
     gs_param_string nstr, OFstr;

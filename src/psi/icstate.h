@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -43,11 +43,13 @@ typedef struct gs_file_path_s *gs_file_path_ptr;
 #endif
 
 struct gs_context_state_s {
-    gs_state *pgs;
+    gs_gstate *pgs;
     gs_dual_memory_t memory;
     int language_level;
     ref array_packing;		/* t_boolean */
     ref binary_object_format;	/* t_integer */
+    long nv_page_count;    /* non-decreasing page counter for /PageCount */
+                           /* It's updated only by currentsystemparams .*/
     long rand_state;		/* (not in Red Book) */
     long usertime_total;	/* total accumulated usertime, */
                                 /* not counting current time if running */

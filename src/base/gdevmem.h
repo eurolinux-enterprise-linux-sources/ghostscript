@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 /* Private definitions for memory devices. */
@@ -91,7 +91,7 @@ dev_proc_draw_thin_line(mem_draw_thin_line);
 dev_proc_open_device(mem_open);
 dev_proc_get_bits_rectangle(mem_get_bits_rectangle);
 /* The following are for word-oriented devices. */
-#if arch_is_big_endian
+#if ARCH_IS_BIG_ENDIAN
 #  define mem_word_get_bits_rectangle mem_get_bits_rectangle
 #else
 dev_proc_get_bits_rectangle(mem_word_get_bits_rectangle);
@@ -248,7 +248,7 @@ dev_proc_strip_copy_rop(mem_mono_strip_copy_rop_dev);
 dev_proc_strip_copy_rop(mem_gray_strip_copy_rop);
 dev_proc_strip_copy_rop(mem_gray8_rgb24_strip_copy_rop);
 
-#if arch_is_big_endian
+#if ARCH_IS_BIG_ENDIAN
 #  define mem_mono_word_device mem_mono_device
 #  define mem_mapped2_word_device mem_mapped2_device
 #  define mem_mapped4_word_device mem_mapped4_device

@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2012 Artifex Software, Inc.
+/* Copyright (C) 2001-2018 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  7 Mt. Lassen Drive - Suite A-134, San Rafael,
-   CA  94903, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
+   CA 94945, U.S.A., +1(415)492-9861, for further information.
 */
 
 
@@ -387,6 +387,16 @@ int param_read_requested_typed(gs_param_list *, gs_param_name,
    param_read_requested_typed(plist, pkey, pvalue))
 
 /* Transmit parameters of specific types. */
+
+/*************** WARNING ********************
+ * You CANNOT use heap allocated strings as
+ * KEYS in param lists. Keys MUST be string
+ * constants.
+ * String values can be heap allocated by
+ * using param_string_from_transient_string()
+ * rather than param_string_from_string()
+ *
+ ********************************************/
 int param_read_null(gs_param_list *, gs_param_name);
 int param_write_null(gs_param_list *, gs_param_name);
 int param_read_bool(gs_param_list *, gs_param_name, bool *);

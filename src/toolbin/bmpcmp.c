@@ -3,7 +3,7 @@
  */
 
 /* Compile from inside ghostpdl with:
- * gcc -Igs/libpng -Igs/zlib -o bmpcmp -DHAVE_LIBPNG gs/toolbin/bmpcmp.c gs/libpng/png.c gs/libpng/pngerror.c gs/libpng/pngget.c gs/libpng/pngmem.c gs/libpng/pngpread.c gs/libpng/pngread.c gs/libpng/pngrio.c gs/libpng/pngrtran.c gs/libpng/pngrutil.c gs/libpng/pngset.c gs/libpng/pngtrans.c gs/libpng/pngwio.c gs/libpng/pngwrite.c gs/libpng/pngwtran.c gs/libpng/pngwutil.c gs/zlib/adler32.c gs/zlib/crc32.c gs/zlib/infback.c gs/zlib/inflate.c gs/zlib/uncompr.c gs/zlib/compress.c gs/zlib/deflate.c gs/zlib/gzio.c gs/zlib/inffast.c gs/zlib/inftrees.c gs/zlib/trees.c gs/zlib/zutil.c -lm
+ * gcc -I./obj -I./libpng -I./zlib -o bmpcmp -DHAVE_LIBPNG ./toolbin/bmpcmp.c ./libpng/png.c ./libpng/pngerror.c ./libpng/pngget.c ./libpng/pngmem.c ./libpng/pngpread.c ./libpng/pngread.c ./libpng/pngrio.c ./libpng/pngrtran.c ./libpng/pngrutil.c ./libpng/pngset.c ./libpng/pngtrans.c ./libpng/pngwio.c ./libpng/pngwrite.c ./libpng/pngwtran.c ./libpng/pngwutil.c ./zlib/adler32.c ./zlib/crc32.c ./zlib/infback.c ./zlib/inflate.c ./zlib/uncompr.c ./zlib/compress.c ./zlib/deflate.c ./zlib/inffast.c ./zlib/inftrees.c ./zlib/trees.c ./zlib/zutil.c -lm
  */
 
 #include <stdio.h>
@@ -478,12 +478,13 @@ static void *cups_read(ImageReader *im,
     if (skip_bytes(im->file, 1796-424) == EOF)
         return NULL;
 
-    d = data = Malloc(*width * *height * 4);
+    data = Malloc(*width * *height * 4);
     *span = *width * 4;
     *bpp = 32;
     for (y = *height; y > 0; y--) {
         b = 0;
         c = 0;
+        d = data + (y - 1) * *span;
         for (x = *width; x > 0; x--) {
             b >>= 1;
             if (b == 0) {
@@ -905,11 +906,12 @@ static int skip_string(FILE *file, const char *string)
     return 1;
 }
 
-static void pam_header_read(FILE *file,
-                            int  *width,
-                            int  *height,
-                            int  *maxval)
+static int pam_header_read(FILE *file,
+                           int  *width,
+                           int  *height,
+                           int  *maxval)
 {
+    int cmyk = 0;
     while (1) {
         if        (skip_string(file, "WIDTH")) {
             *width = get_pnm_num(file);
@@ -923,13 +925,17 @@ static void pam_header_read(FILE *file,
         } else if (skip_string(file, "MAXVAL")) {
             *maxval = get_pnm_num(file);
         } else if (skip_string(file, "TUPLTYPE")) {
-            if (!skip_string(file, "CMYK")) {
-                fprintf(stderr, "bmpcmp: Only CMYK PAMs!\n");
+            if (skip_string(file, "RGB_TAG")) {
+                cmyk = 2;
+            } else if (!skip_string(file, "CMYK")) {
+                fprintf(stderr, "bmpcmp: Only CMYK or RGB_ALPHA PAMs!\n");
                 exit(1);
+            } else {
+                cmyk = 1;
             }
         } else if (skip_string(file, "ENDHDR")) {
           skip_to_eol(file);
-          return;
+          return cmyk;
         } else {
             /* Unknown header string. Just skip to the end of the line */
             skip_to_eol(file);
@@ -978,7 +984,6 @@ static void *pnm_read(ImageReader *im,
             break;
         case 7:
             read = pam_read;
-            *cmyk = 1;
             break;
         default:
             /* Eh? */
@@ -986,7 +991,7 @@ static void *pnm_read(ImageReader *im,
             return NULL;
     }
     if (read == pam_read) {
-        pam_header_read(im->file, width, height, &maxval);
+        *cmyk = pam_header_read(im->file, width, height, &maxval);
     } else {
         *width  = get_pnm_num(im->file);
         *height = get_pnm_num(im->file);
@@ -1090,7 +1095,7 @@ static void *psd_read(ImageReader *im,
                       int         *bpp,
                       int         *cmyk)
 {
-    int c, ir_start, ir_len, w, h, n, x, y, z, i, N;
+    int c, ir_len, w, h, n, x, y, z, N;
     unsigned char *bmp, *line, *ptr;
 
     if (feof(im->file))
@@ -1154,16 +1159,16 @@ static void *psd_read(ImageReader *im,
     while (ir_len > 0)
     {
         int data_len, pad;
-        c  = fgetc(im->file);     if (--ir_len == 0) break;
-        c |= fgetc(im->file)<<8;  if (--ir_len == 0) break;
+        c  = fgetc(im->file)<<24; if (--ir_len == 0) break;
         c |= fgetc(im->file)<<16; if (--ir_len == 0) break;
-        c |= fgetc(im->file)<<24; if (--ir_len == 0) break;
-        /* c == 8BIM */
-        c  = fgetc(im->file);     if (--ir_len == 0) break;
         c |= fgetc(im->file)<<8;  if (--ir_len == 0) break;
+        c |= fgetc(im->file);     if (--ir_len == 0) break;
+        /* c == 8BIM */
+        c  = fgetc(im->file)<<8; if (--ir_len == 0) break;
+        c |= fgetc(im->file);    if (--ir_len == 0) break;
         /* Skip the padded id (which will always be 00 00) */
-        pad  = fgetc(im->file);     if (--ir_len == 0) break;
-        pad |= fgetc(im->file)<<8;  if (--ir_len == 0) break;
+        pad  = fgetc(im->file);    if (--ir_len == 0) break;
+        pad |= fgetc(im->file)<<8; if (--ir_len == 0) break;
         /* Get the data len */
         data_len  = fgetc(im->file)<<24; if (--ir_len == 0) break;
         data_len |= fgetc(im->file)<<16; if (--ir_len == 0) break;
@@ -1181,13 +1186,13 @@ static void *psd_read(ImageReader *im,
                 }
                 /* c == 2 = COLORSPACE = CMYK */
                 /* 16 bits C, 16 bits M, 16 bits Y, 16 bits K */
-                spots[spotfill++] = fgetc(im->file);  if (--ir_len == 0) break;
+                spots[spotfill++] = 0xff - fgetc(im->file);  if (--ir_len == 0) break;
                 c = fgetc(im->file);  if (--ir_len == 0) break;
-                spots[spotfill++] = fgetc(im->file);  if (--ir_len == 0) break;
+                spots[spotfill++] = 0xff - fgetc(im->file);  if (--ir_len == 0) break;
                 c = fgetc(im->file);  if (--ir_len == 0) break;
-                spots[spotfill++] = fgetc(im->file);  if (--ir_len == 0) break;
+                spots[spotfill++] = 0xff - fgetc(im->file);  if (--ir_len == 0) break;
                 c = fgetc(im->file);  if (--ir_len == 0) break;
-                spots[spotfill++] = fgetc(im->file);  if (--ir_len == 0) break;
+                spots[spotfill++] = 0xff - fgetc(im->file);  if (--ir_len == 0) break;
                 c = fgetc(im->file);  if (--ir_len == 0) break;
                 /* 2 bytes opacity (always seems to be 0) */
                 c = fgetc(im->file);  if (--ir_len == 0) break;
@@ -1199,9 +1204,13 @@ static void *psd_read(ImageReader *im,
                 data_len -= 14;
             }
         }
-        while (data_len > 0)
+        if (ir_len > 0)
         {
-            c = fgetc(im->file); if (--ir_len == 0) break;
+            while (data_len > 0)
+            {
+                c = fgetc(im->file); if (--ir_len == 0) break;
+                data_len--;
+            }
         }
     }
 
@@ -1651,8 +1660,8 @@ static int fuzzy_fast(FuzzyParams   *fuzzy_params,
 
     for (i = fuzzy_params->wTabLen; i > 0; i--)
     {
-        int o = *wTab++;
-        int v;
+        ptrdiff_t o = *wTab++;
+        int       v;
 
         v = isrc[0]-isrc2[o];
         if (v < 0)
@@ -1692,9 +1701,9 @@ static int fuzzy_fast_exhaustive(FuzzyParams   *fuzzy_params,
 
     for (i = fuzzy_params->wTabLen; i > 0; i--)
     {
-        int o = *wTab++;
-        int v;
-        int exact = 1;
+        ptrdiff_t o = *wTab++;
+        int       v;
+        int       exact = 1;
 
         v = isrc[0]-isrc2[o];
         if (v < 0)
@@ -2069,7 +2078,7 @@ static int fuzzy_fast_n(FuzzyParams   *fuzzy_params,
 
     for (i = fuzzy_params->wTabLen; i > 0; i--)
     {
-        int o = *wTab++;
+        ptrdiff_t o = *wTab++;
         for (z = 0; z < n; z++)
         {
             int v;
@@ -2102,8 +2111,8 @@ static int fuzzy_fast_exhaustive_n(FuzzyParams   *fuzzy_params,
 
     for (i = fuzzy_params->wTabLen; i > 0; i--)
     {
-        int o = *wTab++;
-        int exact = 1;
+        ptrdiff_t o = *wTab++;
+        int       exact = 1;
         for (z = 0; z < n; z++)
         {
             int v;
@@ -2411,6 +2420,56 @@ static void uncmyk_bmp(unsigned char *bmp,
             b = (255-y-k);
             if (b < 0)
                 b = 0;
+            bmp[-1] = 0;
+            bmp[-2] = r;
+            bmp[-3] = g;
+            bmp[-4] = b;
+        }
+        bmp += span;
+    }
+}
+
+static void untag_bmp(unsigned char *bmp,
+                      BBox          *bbox,
+                      int            span)
+{
+    int w, h;
+    int x, y;
+
+    bmp  += span    *(bbox->ymin)+(bbox->xmin*4);
+    w     = bbox->xmax - bbox->xmin;
+    h     = bbox->ymax - bbox->ymin;
+    span -= 4*w;
+    for (y = 0; y < h; y++)
+    {
+        for (x = 0; x < w; x++)
+        {
+            int R, G, B, T, r, g, b;
+ 
+            T = *bmp++;
+            R = *bmp++;
+            G = *bmp++;
+            B = *bmp++;
+
+            r = (R>>2);
+            g = (G>>2);
+            b = (B>>2);
+            if (T & 1)
+              r |= 128;
+            if (T & 2)
+              g |= 128;
+            if (T & 4)
+              b |= 128;
+            if (T & 248)
+            {
+                r |= 64;
+                g |= 64;
+                b |= 64;
+                if ((x^y) & 1)
+                  r |= 128;
+                else
+                  g |= 128;
+            }
             bmp[-1] = 0;
             bmp[-2] = r;
             bmp[-3] = g;
@@ -3110,10 +3169,18 @@ int main(int argc, char *argv[])
                     DEBUG_BBOX(fprintf(stderr, "bmpcmp: Reduced bbox=%d %d %d %d\n",
                                        boxlist->xmin, boxlist->ymin,
                                        boxlist->xmax, boxlist->ymax));
-                    if (cmyk)
+                    switch(cmyk)
                     {
+                    case 1:
                         uncmyk_bmp(bmp,  boxlist, s);
                         uncmyk_bmp(bmp2, boxlist, s);
+                        break;
+                    case 2:
+                        untag_bmp(bmp,  boxlist, s);
+                        untag_bmp(bmp2, boxlist, s);
+                        break;
+                    default:
+                        break;
                     }
 #ifdef HAVE_LIBPNG
                     sprintf(str1, "%s.%05d.png", params.outroot, n);
