@@ -1,0 +1,25 @@
+From 9e45d4a26eea12be326c5f515b44c7474a33f6c5 Mon Sep 17 00:00:00 2001
+From: Tim Waugh <twaugh@redhat.com>
+Date: Tue, 12 Jul 2016 17:29:49 +0200
+Subject: [PATCH] Do not set device output ICC profile if the string is empty
+
+---
+ cups/gstoraster.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/cups/gstoraster.c b/cups/gstoraster.c
+index 3ddc21f..8fe77a2 100644
+--- a/cups/gstoraster.c
++++ b/cups/gstoraster.c
+@@ -665,7 +665,7 @@ main (int argc, char **argv, char *envp[])
+   cupsArrayAdd(gs_args, strdup(tmpstr));
+ 
+   /* set the device output ICC profile */
+-  if(icc_profile != NULL) {
++  if(icc_profile != NULL && icc_profile[0] != '\0') {
+     snprintf(tmpstr, sizeof(tmpstr), "-sOutputICCProfile=%s", icc_profile);
+     cupsArrayAdd(gs_args, strdup(tmpstr));
+   }
+-- 
+2.5.5
+

@@ -1,0 +1,21 @@
+diff -up ghostscript-9.10/psi/ialloc.c.crash ghostscript-9.10/psi/ialloc.c
+--- ghostscript-9.10/psi/ialloc.c.crash	2013-08-30 11:37:28.000000000 +0100
++++ ghostscript-9.10/psi/ialloc.c	2014-06-04 10:47:58.294526685 +0100
+@@ -160,6 +160,7 @@ gs_alloc_ref_array(gs_ref_memory_t * mem
+                    uint num_refs, client_name_t cname)
+ {
+     ref *obj;
++    int i;
+ 
+     /* If we're allocating a run of refs already, */
+     /* and we aren't about to overflow the maximum run length, use it. */
+@@ -224,6 +225,9 @@ gs_alloc_ref_array(gs_ref_memory_t * mem
+             cp->where = (ref_packed *)obj;
+         }
+     }
++    for (i = 0; i < num_refs; i++) {
++        make_null(&(obj[i]));
++    }
+     make_array(parr, attrs | mem->space, num_refs, obj);
+     return 0;
+ }

@@ -1,0 +1,29 @@
+diff -up ghostscript-9.07/cups/gstoraster.c.cups-colord ghostscript-9.07/cups/gstoraster.c
+--- ghostscript-9.07/cups/gstoraster.c.cups-colord	2013-07-01 17:06:10.977743028 +0100
++++ ghostscript-9.07/cups/gstoraster.c	2013-07-01 17:18:36.597852666 +0100
+@@ -596,11 +596,21 @@ main (int argc, char **argv, char *envp[
+ 
+   qualifier = colord_get_qualifier_for_ppd (ppd);
+   if (qualifier != NULL) {
++		const char *env_printer = getenv("PRINTER");
++		char *device_id;
+ 
+-    fprintf(stderr, "DEBUG: PPD uses qualifier '%s.%s.%s'\n",
+-            qualifier[0], qualifier[1], qualifier[2]);
+-    icc_profile = colord_get_profile_for_device_id (getenv("PRINTER"),
+-                                                    (const char**) qualifier);
++		if (env_printer) {
++			device_id = malloc (5 + strlen (env_printer) + 1);
++			if (device_id) {
++				strcpy (device_id, "cups-");
++				strcpy (device_id + 5, env_printer);
++				fprintf(stderr, "DEBUG: PPD uses qualifier '%s.%s.%s'\n",
++								qualifier[0], qualifier[1], qualifier[2]);
++				icc_profile = colord_get_profile_for_device_id (device_id,
++																												(const char**) qualifier);
++				free (device_id);
++			}
++		}
+ 
+     /* fall back to the PPD */
+     if (icc_profile == NULL)

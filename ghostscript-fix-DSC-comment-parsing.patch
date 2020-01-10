@@ -1,0 +1,124 @@
+From: Ken Sharp <ken.sharp@artifex.com>
+Date: Fri, 21 Sep 2018 14:28:15 +0000 (+0100)
+Subject: pdfwrite - fix DSC comment parsing
+
+pdfwrite - fix DSC comment parsing
+
+This may affect other DSC parsing utilities. For some reason double
+comment (%%) marks are being interpreted 'sometimes' in gs_init.ps
+as DSC comments. This only happens when reading the init files from disk
+becuase the ROM file system strips comments.
+
+Passing these to pdfwrite causes it to drop later DSC comments, such
+as %%Title: and %%Creator: which meant the information wasn't being
+embedded in the document information dictionary.
+
+Fix by converting double %% to single % comments, document this in the
+header of gs_init.ps.
+
+https://git.ghostscript.com/?p=ghostpdl.git;a=commit;h=f31702b38fba21153e26c3417c838618e7cfd16f
+---
+
+diff -up ghostscript-9.07/Resource/Init/gs_init.ps.comment_fix ghostscript-9.07/Resource/Init/gs_init.ps
+--- ghostscript-9.07/Resource/Init/gs_init.ps.comment_fix	2019-02-28 11:02:59.540694185 +0100
++++ ghostscript-9.07/Resource/Init/gs_init.ps	2019-02-28 11:05:31.182710227 +0100
+@@ -20,6 +20,11 @@
+ %	%% Replace <n> <file(s)>
+ % indicate places where the next <n> lines should be replaced by
+ % the contents of <file(s)>, when creating a single merged init file.
++%
++% For reasons not clear to me, some cases of %% are being treated as
++% DSC comments when (and only when) the resource files are disk based
++% This can kill DSC parsing for pdfwrite at least, so avoid using
++% double % comments in this file.
+ 
+ % The interpreter can call out to PostScript code.  All procedures
+ % called in this way, and no other procedures defined in these
+@@ -2132,22 +2137,22 @@ SAFER { .setsafe } if
+ 
+ /UndefinePostScriptOperators {
+ 
+-  %% This list is of Display PostScript operators. We believe that Display PostScript
+-  %% was never fully implemented and the only known user, GNUStep, is no longer
+-  %% using it. So lets remove it.
++  % This list is of Display PostScript operators. We believe that Display PostScript
++  % was never fully implemented and the only known user, GNUStep, is no longer
++  % using it. So lets remove it.
+   [
+   /condition /currentcontext /detach /.fork /join /.localfork /lock /monitor /notify
+   /wait /yield /.currentscreenphase /.setscreenphase /.image2 /eoviewclip /initviewclip
+   /viewclip /viewclippath /defineusername
+-  %% NeXT DPS extensions
++  % NeXT DPS extensions
+   /currentalpha /setalpha /.alphaimage /composite /compositerect /dissolve /sizeimagebox /.sizeimageparams
+   ]
+   {systemdict exch .forceundef} forall
+ 
+-  %% This list is of operators which no longer appear to be used, and which we do not believe
+-  %% to have any real use. For now we will undefine the operstors so they cannot easily be used
+-  %% but can be easily restored (just delete the name from the list in the array). In future
+-  %% we may remove the operator and the code implementation entirely.
++  % This list is of operators which no longer appear to be used, and which we do not believe
++  % to have any real use. For now we will undefine the operstors so they cannot easily be used
++  % but can be easily restored (just delete the name from the list in the array). In future
++  % we may remove the operator and the code implementation entirely.
+   [
+   /.bitadd /.charboxpath /.cond /.runandhide /.popdevicefilter
+   /.execfile /.filenamesplit /.file_name_parent
+@@ -2156,15 +2161,15 @@ SAFER { .setsafe } if
+   /.currentlimitclamp /.dotorientation /.setaccuratecurves /.setcurvejoin /.setdashadapt /.setdotorientation
+   /.setlimitclamp /.currentscreenlevels /.dashpath /.pathbbox /.identeq /.identne /.tokenexec /.forgetsave /.pantonecallback
+ 
+-  %% Used by our own test suite files
+-  %%/.setdotlength % Bug687720.ps
++  % Used by our own test suite files
++  %/.setdotlength % Bug687720.ps
+   ]
+   {systemdict exch .forceundef} forall
+ 
+-  %% This list of operators are used internally by various parts of the Ghostscript startup code.
+-  %% Since each operator is a potential security vulnerability, and any operator listed here
+-  %% is not required once the initislisation is complete and functions are bound, we undefine
+-  %% the ones that aren't needed at runtime.
++  % This list of operators are used internally by various parts of the Ghostscript startup code.
++  % Since each operator is a potential security vulnerability, and any operator listed here
++  % is not required once the initislisation is complete and functions are bound, we undefine
++  % the ones that aren't needed at runtime.
+   [
+   /.callinstall /.callbeginpage /.callendpage
+   /.currentstackprotect /.setstackprotect /.errorexec /.finderrorobject /.installsystemnames /.bosobject /.fontbbox
+@@ -2236,10 +2241,10 @@ SAFER { .setsafe } if
+ } .bind executeonly def % must be bound and hidden for .forceundef
+ 
+ /UndefinePDFOperators {
+-  %% This list of operators are used internally by various parts of the Ghostscript PDF interpreter.
+-  %% Since each operator is a potential security vulnerability, and any operator listed here
+-  %% is not required once the initislisation is complete and functions are bound, we undefine
+-  %% the ones that aren't needed at runtime.
++  % This list of operators are used internally by various parts of the Ghostscript PDF interpreter.
++  % Since each operator is a potential security vulnerability, and any operator listed here
++  % is not required once the initislisation is complete and functions are bound, we undefine
++  % the ones that aren't needed at runtime.
+   [
+   /.pdfawidthshow /.pdfwidthshow
+   /.setfillcolor /.setfillcolorspace /.setstrokecolor /.setstrokecolorspace /.currentrenderingintent /.setrenderingintent
+@@ -2380,8 +2385,8 @@ currentdict /.shadingtypes .undef
+ currentdict /.wheredict .undef
+ currentdict /.renderingintentdict .undef
+ 
+-%% If we are using DELAYBIND we have to defer the undefinition
+-%% until .bindnow.
++% If we are using DELAYBIND we have to defer the undefinition
++% until .bindnow.
+ DELAYBIND not {
+   SAFER {
+     //systemdict /SAFERUndefinePostScriptOperators get exec
+@@ -2408,7 +2413,7 @@ systemdict /superexec .knownget {
+   systemdict /superexec .undef
+ } if
+ 
+-%% Can't remove this one until the last minute :-)
++% Can't remove this one until the last minute :-)
+ systemdict /.undef .undef
+ 
+ WRITESYSTEMDICT not { systemdict readonly pop } if

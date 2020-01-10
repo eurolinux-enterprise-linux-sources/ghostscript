@@ -1,0 +1,70 @@
+From ab4d21b69bf0717ac93072d24b076681bdb9b3a4 Mon Sep 17 00:00:00 2001
+From: Chris Liddell <chris.liddell@artifex.com>
+Date: Wed, 19 Jun 2013 16:25:17 +0100
+Subject: [PATCH] Bug 693934: CCITT Fax decode - cope with negative run length
+
+In various places in the fax decode code we coped with the run length being
+negative - in just a few we didn't.
+
+We'll now cope gracefully with negative run lengths in places.
+
+No cluster differences.
+---
+ base/scfd.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/base/scfd.c b/base/scfd.c
+index 970c925..5f7f798 100644
+--- a/base/scfd.c
++++ b/base/scfd.c
+@@ -611,6 +611,7 @@ v0:	    skip_bits(1);
+                     rlen, "[w2]", d2l, out0);
+             /* rlen may be run2_pass, run_uncompressed, or */
+             /* 0..countof(cf2_run_vertical)-1. */
++rlen_lt_zero:
+             if (rlen < 0)
+                 switch (rlen) {
+                     case run2_pass:
+@@ -726,6 +727,9 @@ v0:	    skip_bits(1);
+         status = ERRC;
+         goto out;
+     }
++
++    if (rlen < 0) goto rlen_lt_zero;
++
+     skip_data(rlen, hww);
+     /* Handle the second half of a white-black horizontal code. */
+   hwb:get_run(cf_black_decode, cfd_black_initial_bits, cfd_black_min_bits,
+@@ -734,6 +738,9 @@ v0:	    skip_bits(1);
+         status = ERRC;
+         goto out;
+     }
++
++    if (rlen < 0) goto rlen_lt_zero;
++
+     invert_data(rlen, black_byte, goto hwb, ihwb);
+     goto top;
+   outww:ss->run_color = -2;
+@@ -747,6 +754,9 @@ v0:	    skip_bits(1);
+         status = ERRC;
+         goto out;
+     }
++
++    if (rlen < 0) goto rlen_lt_zero;
++
+     invert_data(rlen, black_byte, goto hbb, ihbb);
+     /* Handle the second half of a black-white horizontal code. */
+   hbw:get_run(cf_white_decode, cfd_white_initial_bits, cfd_white_min_bits,
+@@ -755,6 +765,9 @@ v0:	    skip_bits(1);
+         status = ERRC;
+         goto out;
+     }
++
++    if (rlen < 0) goto rlen_lt_zero;
++
+     skip_data(rlen, hbw);
+     goto top;
+   outbb:ss->run_color = 2;
+-- 
+2.9.4
+

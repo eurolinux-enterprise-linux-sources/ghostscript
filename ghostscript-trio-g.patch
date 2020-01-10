@@ -1,0 +1,25 @@
+diff -up ghostscript-9.07/trio/trio.c~ ghostscript-9.07/trio/trio.c
+--- ghostscript-9.07/trio/trio.c~	2014-05-14 16:44:46.390090859 +0100
++++ ghostscript-9.07/trio/trio.c	2014-05-14 17:52:24.247609272 +0100
+@@ -3172,6 +3172,9 @@ TRIO_ARGS6((self, number, flags, width,
+   if (integerNumber > epsilon)
+     {
+       integerDigits += (int)TrioLogarithm(integerNumber, base);
++      /* Deal with the dangers of casting long double to int */
++      if (integerNumber - TrioPower (base, integerDigits) >= 0)
++	integerDigits++;
+     }
+ 
+   fractionDigits = precision;
+@@ -3255,6 +3258,11 @@ TRIO_ARGS6((self, number, flags, width,
+ 	      integerDigits = (integerNumber > epsilon)
+ 		? 1 + (int)TrioLogarithm(integerNumber, base)
+ 		: 1;
++
++	      /* Deal with the dangers of casting long double to int */
++	      if (integerNumber - TrioPower (base, integerDigits) >= 0)
++		integerDigits++;
++
+ 	      if (flags & FLAGS_FLOAT_G)
+ 		{
+ 		  if (flags & FLAGS_ALTERNATIVE)

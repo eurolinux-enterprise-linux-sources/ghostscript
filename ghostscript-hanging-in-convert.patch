@@ -1,0 +1,784 @@
+From 85cebb9760339a7853f6eef6be03812f24492f40 Mon Sep 17 00:00:00 2001
+From: Michael Vrhel <michael.vrhel@artifex.com>
+Date: Sat, 8 Jun 2013 09:12:30 -0700
+Subject: [PATCH 1/5] Change in behavior for overprint. Fixes bugs 694295
+ 694296 and 694067
+
+With this change we now do simulated overprinting of cmyk AND spot colorants
+for contone cmyk devices by default.   If -dSimulateOverprint=false is specified we
+will not simulate overprinting of any colors.
+
+Also, cmyk simulation of spot colors with separation devices is not handled.
+i.e. if you specify -dSimulateOverprint=true -dMaxSpots=0  -sDEVICE=tiffsep1
+you will see the spot colors blended in CMYK space if overprint has been
+specified in the document.
+
+Note that not all overprint situations can be simulated accurately with this
+approach.  For example, if I have a spot color that resulted in a CMYK value
+of 0 0 100 0 after the alternate tint transform and then I did an overprint with
+a CMYK value of 0 0 1 0, the color should still be a bright yellow but will actually
+be almost no color.   The issue is that we can not distinguish this case from one
+where we had first laid down a CMYK of 0 0 100 0 followed by the overprint of 0 0 1 0
+which should be a light yellow.  The documentation has been updated to point this out.
+
+I reviewed all the diffs that came up in the bmpcmp and reviewed the Ghent overprint
+files.
+---
+ base/gscdevn.c      | 10 +++++++---
+ base/gscsepr.c      |  8 ++++++--
+ base/gsdparam.c     |  4 ++--
+ base/gsicc.c        |  7 +++++--
+ base/gsicc_manage.c |  2 +-
+ base/gsovrc.c       | 43 ++++++++++++++++++++++++-------------------
+ base/gsstate.c      | 13 ++++++++++++-
+ base/lib.mak        |  4 ++--
+ doc/Use.htm         | 11 +++++++++--
+ 9 files changed, 68 insertions(+), 34 deletions(-)
+
+diff --git a/base/gscdevn.c b/base/gscdevn.c
+index 4963d14..348d543 100644
+--- a/base/gscdevn.c
++++ b/base/gscdevn.c
+@@ -40,6 +40,7 @@
+ #include "gsicc_manage.h"
+ #include "gsicc.h"
+ #include "gsicc_cache.h"
++#include "gxdevice.h"
+ 
+ /* ---------------- Color space ---------------- */
+ 
+@@ -688,14 +689,16 @@ gx_set_overprint_DeviceN(const gs_color_space * pcs, gs_state * pgs)
+     if (pcmap->use_alt_cspace) {
+         const gs_color_space_type* base_type = pcs->base_space->type;
+ 
+-        if (dev_profile->sim_overprint)
++        if (dev_profile->sim_overprint &&
++            dev->color_info.polarity == GX_CINFO_POLARITY_SUBTRACTIVE &&
++            !gx_device_must_halftone(dev))
+             return gx_simulated_set_overprint(pcs->base_space, pgs);
+         else {
+             /* If the base space is DeviceCMYK, handle overprint as DeviceCMYK */
+             if ( base_type->index == gs_color_space_index_DeviceCMYK )
+-                    return base_type->set_overprint( pcs->base_space, pgs );
++                return base_type->set_overprint( pcs->base_space, pgs );
+             else
+-                    return gx_spot_colors_set_overprint( pcs->base_space, pgs);
++                return gx_spot_colors_set_overprint( pcs->base_space, pgs);
+         }
+     }
+     else {
+@@ -707,6 +710,7 @@ gx_set_overprint_DeviceN(const gs_color_space * pcs, gs_state * pgs)
+             params.retain_spot_comps = false;
+             params.drawn_comps = 0;
+             params.k_value = 0;
++            /* We should not have to blend if we don't need the alternate tint transform */
+             params.blendspot = false;
+             for (i = 0; i < ncomps; i++) {
+                 int     mcomp = pcmap->color_map[i];
+diff --git a/base/gscsepr.c b/base/gscsepr.c
+index 4f477f7..c9b20c5 100644
+--- a/base/gscsepr.c
++++ b/base/gscsepr.c
+@@ -33,6 +33,7 @@
+ #include "gsovrc.h"
+ #include "stream.h"
+ #include "gsicc_cache.h"
++#include "gxdevice.h"
+ 
+ /* ---------------- Color space ---------------- */
+ 
+@@ -149,20 +150,23 @@ gx_set_overprint_Separation(const gs_color_space * pcs, gs_state * pgs)
+     
+     dev_proc(dev, get_profile)(dev, &(dev_profile));
+     if (pcmap->use_alt_cspace)
+-        if (dev_profile->sim_overprint)
++        if (dev_profile->sim_overprint && 
++            dev->color_info.polarity == GX_CINFO_POLARITY_SUBTRACTIVE &&
++            !gx_device_must_halftone(dev))
+             return gx_simulated_set_overprint(pcs->base_space, pgs);
+         else
+             return gx_spot_colors_set_overprint(pcs->base_space, pgs);
+     else {
+         gs_overprint_params_t   params;
+ 
++        /* We should not have to blend if we don't need the alternate tint transform */
++        params.blendspot = false;
+         params.retain_any_comps = pgs->overprint &&
+                                   pcs->params.separation.sep_type != SEP_ALL;
+         if (params.retain_any_comps) {
+             params.retain_spot_comps = false;
+             params.drawn_comps = 0;
+             params.k_value = 0;
+-            params.blendspot = false;
+             if (pcs->params.separation.sep_type != SEP_NONE) {
+                 int     mcomp = pcmap->color_map[0];
+ 
+diff --git a/base/gsdparam.c b/base/gsdparam.c
+index 030daec..e2a3e54 100644
+--- a/base/gsdparam.c
++++ b/base/gsdparam.c
+@@ -80,7 +80,7 @@ gx_default_get_params(gx_device * dev, gs_param_list * plist)
+     gsicc_blackpreserve_t blackpreserve[NUM_DEVICE_PROFILES];
+     bool devicegraytok = true;  /* Default if device profile stuct not set */
+     bool usefastcolor = false;  /* set for unmanaged color */
+-    bool sim_overprint = false;
++    bool sim_overprint = true;  /* By default simulate overprinting */
+     bool prebandthreshold = true;
+     int k;
+     gs_param_float_array msa, ibba, hwra, ma;
+@@ -803,7 +803,7 @@ gx_default_put_params(gx_device * dev, gs_param_list * plist)
+     int k;
+     bool devicegraytok = true;
+     bool usefastcolor = false;
+-    bool sim_overprint = false;
++    bool sim_overprint = true;
+     bool prebandthreshold = false;
+     int  profile_types[NUM_DEVICE_PROFILES] = {gsDEFAULTPROFILE,
+                                                gsGRAPHICPROFILE,
+diff --git a/base/gsicc.c b/base/gsicc.c
+index 80380b7..e7093c5 100644
+--- a/base/gsicc.c
++++ b/base/gsicc.c
+@@ -608,14 +608,17 @@ gx_set_overprint_ICC(const gs_color_space * pcs, gs_state * pgs)
+ {
+     gx_device *             dev = pgs->device;
+     gx_device_color_info *  pcinfo = (dev == 0 ? 0 : &dev->color_info);
++    cmm_dev_profile_t *dev_profile;
++    int code = dev_proc(dev, get_profile)(dev, &dev_profile);
+ 
+     /* check if we require special handling */
+     if ( !pgs->overprint                      ||
+          pgs->overprint_mode != 1             ||
+          pcinfo == 0                          ||
+          pcs->cmm_icc_profile_data->data_cs != gsCMYK ||
+-         pcinfo->opmode == GX_CINFO_OPMODE_NOT  )
+-        return gx_spot_colors_set_overprint(pcs, pgs);
++         pcinfo->opmode == GX_CINFO_OPMODE_NOT  ) {
++            return gx_spot_colors_set_overprint(pcs, pgs);
++    }
+ 
+     if (pcinfo->opmode == GX_CINFO_OPMODE_RGB || 
+         pcinfo->opmode == GC_CINFO_OPMODE_RGB_SET) {
+diff --git a/base/gsicc_manage.c b/base/gsicc_manage.c
+index 05e618b..03cc29c 100644
+--- a/base/gsicc_manage.c
++++ b/base/gsicc_manage.c
+@@ -1179,7 +1179,7 @@ gsicc_new_device_profile_array(gs_memory_t *memory)
+     result->usefastcolor = false;  /* Default is to not use fast color */
+     result->prebandthreshold = true;
+     result->supports_devn = false;
+-    result->sim_overprint = false;
++    result->sim_overprint = true;
+     rc_init_free(result, memory->non_gc_memory, 1, rc_free_profile_array);
+     return(result);
+ }
+diff --git a/base/gsovrc.c b/base/gsovrc.c
+index 890b2f7..3b741b9 100644
+--- a/base/gsovrc.c
++++ b/base/gsovrc.c
+@@ -125,6 +125,7 @@ c_overprint_equal(const gs_composite_t * pct0, const gs_composite_t * pct1)
+  */
+ #define OVERPRINT_ANY_COMPS     1
+ #define OVERPRINT_SPOT_COMPS    2
++#define OVERPRINT_BLEND         4
+ 
+ /*
+  * Convert an overprint compositor to string form for use by the command
+@@ -140,15 +141,15 @@ c_overprint_write(const gs_composite_t * pct, byte * data, uint * psize, gx_devi
+     /* encoded the booleans in a single byte */
+     if (pparams->retain_any_comps) {
+         flags |= OVERPRINT_ANY_COMPS;
+-
+-        /* write out the component bits only if necessary (and possible) */
+-        if (pparams->retain_spot_comps && !pparams->blendspot)
++        if (pparams->blendspot)
++            flags |= OVERPRINT_BLEND;
++        if (pparams->retain_spot_comps)
+             flags |= OVERPRINT_SPOT_COMPS;
+-        else {
+-            uint    tmp_size = (avail > 0 ? avail - 1 : 0);
+-            int     code = write_color_index( pparams->drawn_comps,
+-                                              data + 1,
+-                                              &tmp_size );
++        /* write out the component bits only if necessary (and possible) */
++        if (!pparams->retain_spot_comps || pparams->blendspot) {
++            uint tmp_size = (avail > 0 ? avail - 1 : 0);
++            int code = write_color_index(pparams->drawn_comps, data + 1, 
++                                             &tmp_size);
+             /* It would be nice to do have an If RGB OP case, then write out 
+                K value, but on the reader side, there is no way to find this
+                out so we will always write it out if we are writing the
+@@ -199,11 +200,11 @@ c_overprint_read(
+     params.retain_any_comps = (flags & OVERPRINT_ANY_COMPS) != 0;
+     params.retain_spot_comps = (flags & OVERPRINT_SPOT_COMPS) != 0;
+     params.idle = 0;
+-    params.blendspot = false;
++    params.blendspot = (flags & OVERPRINT_BLEND) != 0;
+     params.k_value = 0;
+ 
+     /* check if the drawn_comps array is present */
+-    if (params.retain_any_comps && !params.retain_spot_comps) {
++    if (params.retain_any_comps && (!params.retain_spot_comps || params.blendspot)) {
+         code = read_color_index(&params.drawn_comps, data + 1, size - 1);
+         if (code < 0)
+             return code;
+@@ -1181,21 +1182,25 @@ overprint_fill_rectangle_hl_color(gx_device *dev,
+                 return code;
+             }
+             if (blendspot) {
+-                /* Skip the plane if this component is not to be drawn.  We have
+-                   to do a get bits for each plane due to the fact that we have
+-                   to do a copy_planes at the end.  If we had a copy_plane 
+-                   operation we would just get the ones need and set those. */
+-                if ((comps & 0x01) == 1) {
+-                    /* Not sure if a loop or a memset is better here */
+-                    memset(gb_params.data[k], 
+-                           ((pdcolor->colors.devn.values[k]) >> shift & mask), w);
++                /* We need to blend the CMYK colorants as we are simulating
++                   the overprint of a spot colorant with its equivalent CMYK
++                   colorants */
++                if ((comps &  0x01) == 1) {
++                    int kk;
++                    byte *cp = gb_params.data[k];
++                    byte new_val = ((pdcolor->colors.devn.values[k]) >> shift & mask);
++                    for (kk = 0; kk < w; kk++, cp++) {
++                        int temp = (255 - *cp) * (255 - new_val);
++                        temp = temp >> 8;
++                        *cp = (255-temp);
++                    }
+                 }
+                 comps >>= 1;
+             } else {
+                 /* Skip the plane if this component is not to be drawn.  We have
+                    to do a get bits for each plane due to the fact that we have
+                    to do a copy_planes at the end.  If we had a copy_plane 
+-                   operation we would just get the ones need and set those. */
++                   operation we would just get the ones needed and set those. */
+                 if ((comps & 0x01) == 1) {
+                     /* Not sure if a loop or a memset is better here */
+                     memset(gb_params.data[k], 
+diff --git a/base/gsstate.c b/base/gsstate.c
+index 516fc70..e3e5b70 100644
+--- a/base/gsstate.c
++++ b/base/gsstate.c
+@@ -675,7 +675,18 @@ void
+ gs_setoverprint(gs_state * pgs, bool ovp)
+ {
+     bool    prior_ovp = pgs->overprint;
+-
++    cmm_dev_profile_t *profile_struct;
++    gx_device *dev = pgs->device;
++
++    /* Check if overprint is disabled */
++    if (dev != NULL) {
++        if (dev->procs.get_profile == NULL) {
++            profile_struct = dev->icc_struct;
++        } else {
++            dev_proc(dev, get_profile)(dev,  &profile_struct);
++        }
++        if (profile_struct->sim_overprint == false) return;
++    }
+     pgs->overprint = ovp;
+     if (prior_ovp != ovp)
+         (void)gs_do_set_overprint(pgs);
+diff --git a/base/lib.mak b/base/lib.mak
+index 10d0d0d..59e0f5c 100644
+--- a/base/lib.mak
++++ b/base/lib.mak
+@@ -2898,7 +2898,7 @@ $(GLD)seprlib.dev : $(LIB_MAK) $(ECHOGS_XE) $(seprlib_)
+ $(GLOBJ)gscsepr.$(OBJ) : $(GLSRC)gscsepr.c $(AK) $(gx_h) $(gserrors_h)\
+  $(memory__h) $(gsfunc_h) $(gsrefct_h) $(gsmatrix_h) $(gscsepr_h) $(gxcspace_h)\
+  $(gxfixed_h) $(gxcolor2_h) $(gzstate_h) $(gscdevn_h) $(gxcdevn_h)\
+- $(gxcmap_h) $(gxdevcli_h) $(gsovrc_h) $(stream_h) $(gsicc_cache_h)\
++ $(gxcmap_h) $(gxdevcli_h) $(gsovrc_h) $(stream_h) $(gsicc_cache_h) $(gxdevice_h)\
+  $(MAKEDIRS)
+ 	$(GLCC) $(GLO_)gscsepr.$(OBJ) $(C_) $(GLSRC)gscsepr.c
+ 
+@@ -2972,7 +2972,7 @@ $(GLOBJ)gscdevn.$(OBJ) : $(GLSRC)gscdevn.c $(AK) $(gx_h) $(gserrors_h)\
+  $(gscdevn_h) $(gsfunc_h) $(gsmatrix_h) $(gsrefct_h) $(gsstruct_h)\
+  $(gxcspace_h) $(gxcdevn_h) $(gxfarith_h) $(gxfrac_h) $(gsnamecl_h) $(gxcmap_h)\
+  $(gxistate_h) $(gscoord_h) $(gzstate_h) $(gxdevcli_h) $(gsovrc_h) $(stream_h)\
+- $(gsicc_manage_h) $(gsicc_cache_h) $(MAKEDIRS)
++ $(gsicc_manage_h) $(gsicc_cache_h) $(gxdevice_h) $(MAKEDIRS)
+ 	$(GLCC) $(GLO_)gscdevn.$(OBJ) $(C_) $(GLSRC)gscdevn.c
+ 
+ $(GLOBJ)gxdevndi.$(OBJ) : $(GLSRC)gxdevndi.c $(AK) $(gx_h)\
+diff --git a/doc/Use.htm b/doc/Use.htm
+index 2bbc2f0..133b2ec 100644
+--- a/doc/Use.htm
++++ b/doc/Use.htm
+@@ -3057,8 +3057,15 @@ removal mappings.
+ <dl>
+ <dt><code>-dSimulateOverprint=</code><em>true/false</em>
+ <dd>
+-This option enables CMYK devices (e.g. tiff32nc) to provide an simulation of
+-overprinting. 
++This option enables continous tone CMYK devices (e.g. tiff32nc) the capability to
++provide a  simulation of spot color overprinting.  The default setting is true.  
++Note that not all spot color overprint cases can be accurately simulated with a CMYK 
++only device.   For example, a case where you have a spot color overprinted with CMYK
++colors will be indistiguishable from a case where you have spot color equivalent 
++CMYK colorants overprinted with CMYK colors, even though they may need to show 
++significantly different overprint simulations.  To obtain a full overprint simulation,
++use the psdcmyk or tiffsep device, where the spot colors are kept in their own 
++individual planes.
+ </dl>
+ 
+ <dl>
+-- 
+2.5.5
+
+
+From 27c1c6e80b0d4c62d9ced7bf986a7bdb7b444d67 Mon Sep 17 00:00:00 2001
+From: Robin Watts <robin@peeves.(none)>
+Date: Tue, 26 Mar 2013 13:09:49 -0700
+Subject: [PATCH 2/5] Fix various memory squeezing errors.
+
+Mostly these are unchecked allocations, but some are errors in the
+cleanup paths.
+---
+ base/gslibctx.c | 14 +++++++++-----
+ base/gsmalloc.c |  8 ++++++--
+ psi/gs.c        |  3 ++-
+ psi/imain.c     | 10 ++++++++--
+ psi/interp.c    | 19 ++++++++++++++-----
+ psi/zgstate.c   |  4 ++++
+ 6 files changed, 43 insertions(+), 15 deletions(-)
+
+diff --git a/base/gslibctx.c b/base/gslibctx.c
+index e0bf259..e3f1b06 100644
+--- a/base/gslibctx.c
++++ b/base/gslibctx.c
+@@ -192,13 +192,17 @@ int errwrite_nomem(const char *str, int len)
+ int errwrite(const gs_memory_t *mem, const char *str, int len)
+ {
+     int code;
++    gs_lib_ctx_t *ctx;
+     if (len == 0)
+         return 0;
+-    if (mem->gs_lib_ctx->stderr_fn)
+-        return (*mem->gs_lib_ctx->stderr_fn)(mem->gs_lib_ctx->caller_handle, str, len);
+-
+-    code = fwrite(str, 1, len, mem->gs_lib_ctx->fstderr);
+-    fflush(mem->gs_lib_ctx->fstderr);
++    ctx = mem->gs_lib_ctx;
++    if (ctx == NULL)
++      return 0;
++    if (ctx->stderr_fn)
++        return (*ctx->stderr_fn)(ctx->caller_handle, str, len);
++
++    code = fwrite(str, 1, len, ctx->fstderr);
++    fflush(ctx->fstderr);
+     return code;
+ }
+ 
+diff --git a/base/gsmalloc.c b/base/gsmalloc.c
+index 76f5d40..6b3d4b5 100644
+--- a/base/gsmalloc.c
++++ b/base/gsmalloc.c
+@@ -581,10 +581,14 @@ gs_malloc_init(void)
+ void
+ gs_malloc_release(gs_memory_t *mem)
+ {
++    gs_malloc_memory_t * malloc_memory_default;
++
++    if (mem == NULL)
++        return;
+ #ifdef USE_RETRY_MEMORY_WRAPPER
+-    gs_malloc_memory_t * malloc_memory_default = gs_malloc_unwrap(mem);
++    malloc_memory_default = gs_malloc_unwrap(mem);
+ #else
+-    gs_malloc_memory_t * malloc_memory_default = (gs_malloc_memory_t *)mem;
++    malloc_memory_default = (gs_malloc_memory_t *)mem;
+ #endif
+     gs_lib_ctx_fin((gs_memory_t *)malloc_memory_default);
+ 
+diff --git a/psi/gs.c b/psi/gs.c
+index 530303b..dc5bb31 100644
+--- a/psi/gs.c
++++ b/psi/gs.c
+@@ -135,7 +135,8 @@ main(int argc, char *argv[])
+             exit_status = 255;
+     }
+ 
+-    gs_to_exit_with_code(minst->heap, exit_status, code);
++    if (minst)
++        gs_to_exit_with_code(minst->heap, exit_status, code);
+     gs_malloc_release(mem);
+ 
+     switch (exit_status) {
+diff --git a/psi/imain.c b/psi/imain.c
+index aee66f8..91b0fbe 100644
+--- a/psi/imain.c
++++ b/psi/imain.c
+@@ -131,6 +131,7 @@ gs_main_init0(gs_main_instance * minst, FILE * in, FILE * out, FILE * err,
+               int max_lib_paths)
+ {
+     ref *paths;
++    ref *array;
+ 
+     /* Do platform-dependent initialization. */
+     /* We have to do this as the very first thing, */
+@@ -158,9 +159,14 @@ gs_main_init0(gs_main_instance * minst, FILE * in, FILE * out, FILE * err,
+         gs_lib_finit(1, e_VMerror, minst->heap);
+         return_error(e_VMerror);
+     }
++    array = (ref *) gs_alloc_byte_array(minst->heap, max_lib_paths, sizeof(ref),
++                                        "lib_path array");
++    if (array == 0) {
++        gs_lib_finit(1, e_VMerror, minst->heap);
++        return_error(e_VMerror);
++    }
+     make_array(&minst->lib_path.container, avm_foreign, max_lib_paths,
+-               (ref *) gs_alloc_byte_array(minst->heap, max_lib_paths, sizeof(ref),
+-                                           "lib_path array"));
++               array);
+     make_array(&minst->lib_path.list, avm_foreign | a_readonly, 0,
+                minst->lib_path.container.value.refs);
+     minst->lib_path.env = 0;
+diff --git a/psi/interp.c b/psi/interp.c
+index bc8b49a..3e3aaaa 100644
+--- a/psi/interp.c
++++ b/psi/interp.c
+@@ -311,6 +311,7 @@ gs_interp_init(i_ctx_t **pi_ctx_p, const ref *psystem_dict,
+ int
+ gs_interp_alloc_stacks(gs_ref_memory_t *mem, gs_context_state_t * pcst)
+ {
++    int code;
+     gs_ref_memory_t *smem =
+         (gs_ref_memory_t *)gs_memory_stable((gs_memory_t *)mem);
+     ref stk;
+@@ -318,16 +319,20 @@ gs_interp_alloc_stacks(gs_ref_memory_t *mem, gs_context_state_t * pcst)
+ #define REFS_SIZE_OSTACK OS_REFS_SIZE(MAX_OSTACK)
+ #define REFS_SIZE_ESTACK ES_REFS_SIZE(MAX_ESTACK)
+ #define REFS_SIZE_DSTACK DS_REFS_SIZE(MAX_DSTACK)
+-    gs_alloc_ref_array(smem, &stk, 0,
++    code = gs_alloc_ref_array(smem, &stk, 0,
+                        REFS_SIZE_OSTACK + REFS_SIZE_ESTACK +
+                        REFS_SIZE_DSTACK, "gs_interp_alloc_stacks");
++    if (code < 0)
++        return code;
+ 
+     {
+         ref_stack_t *pos = &pcst->op_stack.stack;
+ 
+         r_set_size(&stk, REFS_SIZE_OSTACK);
+-        ref_stack_init(pos, &stk, OS_GUARD_UNDER, OS_GUARD_OVER, NULL,
+-                       smem, NULL);
++        code = ref_stack_init(pos, &stk, OS_GUARD_UNDER, OS_GUARD_OVER, NULL,
++                              smem, NULL);
++	if (code < 0)
++            return code;
+         ref_stack_set_error_codes(pos, e_stackunderflow, e_stackoverflow);
+         ref_stack_set_max_count(pos, MAX_OSTACK);
+         stk.value.refs += REFS_SIZE_OSTACK;
+@@ -339,8 +344,10 @@ gs_interp_alloc_stacks(gs_ref_memory_t *mem, gs_context_state_t * pcst)
+ 
+         r_set_size(&stk, REFS_SIZE_ESTACK);
+         make_oper(&euop, 0, estack_underflow);
+-        ref_stack_init(pes, &stk, ES_GUARD_UNDER, ES_GUARD_OVER, &euop,
++        code = ref_stack_init(pes, &stk, ES_GUARD_UNDER, ES_GUARD_OVER, &euop,
+                        smem, NULL);
++	if (code < 0)
++            return code;
+         ref_stack_set_error_codes(pes, e_ExecStackUnderflow,
+                                   e_execstackoverflow);
+         /**************** E-STACK EXPANSION IS NYI. ****************/
+@@ -353,7 +360,9 @@ gs_interp_alloc_stacks(gs_ref_memory_t *mem, gs_context_state_t * pcst)
+         ref_stack_t *pds = &pcst->dict_stack.stack;
+ 
+         r_set_size(&stk, REFS_SIZE_DSTACK);
+-        ref_stack_init(pds, &stk, 0, 0, NULL, smem, NULL);
++        code = ref_stack_init(pds, &stk, 0, 0, NULL, smem, NULL);
++        if (code < 0)
++            return code;
+         ref_stack_set_error_codes(pds, e_dictstackunderflow,
+                                   e_dictstackoverflow);
+         ref_stack_set_max_count(pds, MAX_DSTACK);
+diff --git a/psi/zgstate.c b/psi/zgstate.c
+index 8529d04..524f8ff 100644
+--- a/psi/zgstate.c
++++ b/psi/zgstate.c
+@@ -117,6 +117,8 @@ int_gstate_alloc(const gs_dual_memory_t * dmem)
+ 
+     iigs = gs_alloc_struct((gs_memory_t *)lmem, int_gstate, &st_int_gstate,
+                            "int_gstate_alloc(int_gstate)");
++    if (iigs == NULL)
++        return NULL;
+     int_gstate_map_refs(iigs, make_null);
+     make_empty_array(&iigs->dash_pattern_array, a_all);
+     gs_alloc_ref_array(lmem, &proc0, a_readonly + a_executable, 2,
+@@ -134,6 +136,8 @@ int_gstate_alloc(const gs_dual_memory_t * dmem)
+     prci = gs_alloc_struct((gs_memory_t *)gmem, int_remap_color_info_t,
+                            &st_int_remap_color_info,
+                            "int_gstate_alloc(remap color info)");
++    if (prci == NULL)
++        return NULL;
+     make_struct(&iigs->remap_color_info, imemory_space(gmem), prci);
+     clear_pagedevice(iigs);
+     gs_state_set_client(pgs, iigs, &istate_procs, true);
+-- 
+2.5.5
+
+
+From 7bacac2668e96e14b7a988cfdc10c34405bfe585 Mon Sep 17 00:00:00 2001
+From: Robin Watts <robin@peeves.(none)>
+Date: Tue, 26 Mar 2013 14:48:04 -0700
+Subject: [PATCH 3/5] More memory squeezing fixes.
+
+Mostly unchecked allocation failures when setting up the gstate.
+---
+ base/gscolor.c  |  6 ++++--
+ base/gsptype1.c |  4 +++-
+ base/gsstate.c  | 35 +++++++++++++++++++++++++++++------
+ base/gxchar.c   |  8 ++++++--
+ base/gxdcolor.h |  2 +-
+ 5 files changed, 43 insertions(+), 12 deletions(-)
+
+diff --git a/base/gscolor.c b/base/gscolor.c
+index 62a687b..81f738d 100644
+--- a/base/gscolor.c
++++ b/base/gscolor.c
+@@ -210,7 +210,7 @@ gs_currenttransfer(const gs_state * pgs)
+ /* ------ Non-operator routines ------ */
+ 
+ /* Set device color = 1 for writing into the character cache. */
+-void
++int
+ gx_set_device_color_1(gs_state * pgs)
+ {
+     gs_color_space  *pcs;
+@@ -222,7 +222,8 @@ gx_set_device_color_1(gs_state * pgs)
+         gs_setcolorspace(pgs, pcs);
+         rc_decrement_only_cs(pcs, "gx_set_device_color_1");
+     } else {
+-        /* {csrc} really need to signal an error here */
++        /* signal an error here */
++        return_error(gs_error_VMerror);
+     }
+     set_nonclient_dev_color(gs_currentdevicecolor_inline(pgs), 1);
+     pgs->log_op = lop_default;
+@@ -233,6 +234,7 @@ gx_set_device_color_1(gs_state * pgs)
+     if (pgs->effective_overprint_mode == 1)
+         (void)gs_do_set_overprint(pgs);
+ 
++    return 0;
+ }
+ 
+ /* ------ Internal routines ------ */
+diff --git a/base/gsptype1.c b/base/gsptype1.c
+index 171025d..0959bea 100644
+--- a/base/gsptype1.c
++++ b/base/gsptype1.c
+@@ -158,7 +158,9 @@ gs_pattern1_make_pattern(gs_client_color * pcc,
+             gs_set_logical_op(saved, lop_default);
+             break;
+         case 2:         /* uncolored */
+-            gx_set_device_color_1(saved);
++            code = gx_set_device_color_1(saved);
++            if (code < 0)
++                goto fsaved;
+             break;
+         default:
+             code = gs_note_error(gs_error_rangecheck);
+diff --git a/base/gsstate.c b/base/gsstate.c
+index e3e5b70..a0419ff 100644
+--- a/base/gsstate.c
++++ b/base/gsstate.c
+@@ -223,8 +223,19 @@ gs_state_alloc(gs_memory_t * mem)
+ 
+     if (pgs == 0)
+         return 0;
+-    pgs->saved = 0;
+     *(gs_imager_state *)pgs = gstate_initial;   /* this sets is_gstate == true */
++    /* Need to set up at least enough to make gs_state_free happy */
++    pgs->saved = 0;
++    pgs->path = NULL;
++    pgs->clip_path = NULL;
++    pgs->clip_stack = NULL;
++    pgs->view_clip = NULL;
++    pgs->effective_clip_path = NULL;
++    pgs->font = NULL;
++    pgs->root_font = NULL;
++    pgs->show_gstate = NULL;
++    pgs->device = NULL;
++    pgs->dfilter_stack = NULL;
+ 
+     /*
+      * Just enough of the state is initialized at this point
+@@ -247,6 +258,8 @@ gs_state_alloc(gs_memory_t * mem)
+     pgs->clip_path = gx_cpath_alloc(mem, "gs_state_alloc(clip_path)");
+     pgs->clip_stack = 0;
+     pgs->view_clip = gx_cpath_alloc(mem, "gs_state_alloc(view_clip)");
++    if (pgs->view_clip == NULL)
++        goto fail;
+     pgs->view_clip->rule = 0;   /* no clipping */
+     pgs->effective_clip_id = pgs->clip_path->id;
+     pgs->effective_view_clip_id = gs_no_id;
+@@ -254,14 +267,24 @@ gs_state_alloc(gs_memory_t * mem)
+     pgs->effective_clip_shared = true;
+     /* Initialize things so that gx_remap_color won't crash. */
+     pgs->color[0].color_space = gs_cspace_new_DeviceGray(pgs->memory);
++    if (pgs->color[0].color_space == NULL)
++        goto fail;
+     pgs->color[1].color_space = gs_cspace_new_DeviceGray(pgs->memory);
++    if (pgs->color[1].color_space == NULL)
++        goto fail;
+     pgs->in_cachedevice = 0;
+     gs_swapcolors_quick(pgs); /* To color 1 */
+-    gx_set_device_color_1(pgs); /* sets colorspace and client color */
++    code = gx_set_device_color_1(pgs); /* sets colorspace and client color */
++    if (code < 0)
++        goto fail;
+     gs_swapcolors_quick(pgs); /* To color 0 */
+-    gx_set_device_color_1(pgs); /* sets colorspace and client color */
++    code = gx_set_device_color_1(pgs); /* sets colorspace and client color */
++    if (code < 0)
++        goto fail;
+     pgs->device = 0;            /* setting device adjusts refcts */
+-    gs_nulldevice(pgs);
++    code = gs_nulldevice(pgs);
++    if (code < 0)
++        goto fail;
+     gs_setalpha(pgs, 1.0);
+     gs_settransfer(pgs, gs_identity_transfer);
+     gs_setflat(pgs, 1.0);
+@@ -886,7 +909,7 @@ gstate_free_parts(const gs_state * parts, gs_memory_t * mem, client_name_t cname
+         gx_cpath_free(parts->effective_clip_path, cname);
+     gx_cpath_free(parts->clip_path, cname);
+     if (parts->path)
+-	gx_path_free(parts->path, cname);
++        gx_path_free(parts->path, cname);
+ }
+ 
+ /* Allocate the privately allocated parts of a gstate. */
+@@ -1223,4 +1246,4 @@ int gs_swapcolors(gs_state *pgs)
+         return gs_do_set_overprint(pgs);
+     }
+     return 0;
+-}
+\ No newline at end of file
++}
+diff --git a/base/gxchar.c b/base/gxchar.c
+index 40c42f1..e2e8692 100644
+--- a/base/gxchar.c
++++ b/base/gxchar.c
+@@ -689,9 +689,13 @@ set_cache_device(gs_show_enum * penum, gs_state * pgs, floatp llx, floatp lly,
+         clip_box.q.y = int2fixed(iheight);
+         if ((code = gx_clip_to_rectangle(pgs, &clip_box)) < 0)
+             return code;
+-        gx_set_device_color_1(pgs);     /* write 1's */
++        code = gx_set_device_color_1(pgs);     /* write 1's */
++        if (code < 0)
++            return code;
+         gs_swapcolors_quick(pgs);
+-        gx_set_device_color_1(pgs);     /* write 1's */
++        code = gx_set_device_color_1(pgs);     /* write 1's */
++        if (code < 0)
++            return code;
+         gs_swapcolors_quick(pgs);
+         pgs->in_cachedevice = CACHE_DEVICE_CACHING;
+     }
+diff --git a/base/gxdcolor.h b/base/gxdcolor.h
+index 476f59e..70b1291 100644
+--- a/base/gxdcolor.h
++++ b/base/gxdcolor.h
+@@ -300,7 +300,7 @@ extern  dev_color_proc_get_phase(gx_dc_ht_get_phase);
+ 
+ /* Set up device color 1 for writing into a mask cache */
+ /* (e.g., the character cache). */
+-void gx_set_device_color_1(gs_state * pgs);
++int gx_set_device_color_1(gs_state * pgs);
+ 
+ /* Remap the color if necessary. */
+ int gx_remap_color(gs_state *);
+-- 
+2.5.5
+
+
+From 0a2b1cddf39ddbe263c61b15af283aaf0f1d8d00 Mon Sep 17 00:00:00 2001
+From: Robin Watts <robin.watts@artifex.com>
+Date: Thu, 28 Mar 2013 19:42:34 +0000
+Subject: [PATCH 4/5] Another memory squeezing fix.
+
+Check allocations for failures. Free objects in the cleanup path.
+---
+ base/gsicc_manage.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/base/gsicc_manage.c b/base/gsicc_manage.c
+index 03cc29c..e0e7d93 100644
+--- a/base/gsicc_manage.c
++++ b/base/gsicc_manage.c
+@@ -1628,7 +1628,7 @@ gsicc_profile_new(stream *s, gs_memory_t *memory, const char* pname,
+ {
+     cmm_profile_t *result;
+     int code;
+-    char *nameptr;
++    char *nameptr = NULL;
+     gs_memory_t *mem_nongc = memory->non_gc_memory;
+ 
+     result = (cmm_profile_t*) gs_alloc_bytes(mem_nongc, sizeof(cmm_profile_t),
+@@ -1639,6 +1639,10 @@ gsicc_profile_new(stream *s, gs_memory_t *memory, const char* pname,
+     if (namelen > 0) {
+         nameptr = (char*) gs_alloc_bytes(mem_nongc, namelen+1,
+                              "gsicc_profile_new");
++        if (nameptr == NULL) {
++            gs_free_object(mem_nongc, result, "gsicc_profile_new");
++            return NULL;
++        }
+         memcpy(nameptr, pname, namelen);
+         nameptr[namelen] = '\0';
+         result->name = nameptr;
+@@ -1654,6 +1658,7 @@ gsicc_profile_new(stream *s, gs_memory_t *memory, const char* pname,
+         code = gsicc_load_profile_buffer(result, s, mem_nongc);
+         if (code < 0) {
+             gs_free_object(mem_nongc, result, "gsicc_profile_new");
++            gs_free_object(mem_nongc, nameptr, "gsicc_profile_new");
+             return NULL;
+         }
+     } else {
+@@ -1670,6 +1675,7 @@ gsicc_profile_new(stream *s, gs_memory_t *memory, const char* pname,
+     result->lock = gx_monitor_alloc(mem_nongc);
+     if (result->lock == NULL ) {
+         gs_free_object(mem_nongc, result, "gsicc_profile_new");
++        gs_free_object(mem_nongc, nameptr, "gsicc_profile_new");
+         return(NULL);
+     }
+     if_debug1m(gs_debug_flag_icc, mem_nongc,
+-- 
+2.5.5
+
+
+From e6997f1f7f436eb7ca2ebbc88a7463b880427b69 Mon Sep 17 00:00:00 2001
+From: Michael Vrhel <michael.vrhel@artifex.com>
+Date: Fri, 22 Apr 2016 09:24:52 -0700
+Subject: [PATCH 5/5] Coverity ID 94568 Dereference after null check
+
+The device profile is not even used in this function.
+Likely left over by mistake.  Dereference of NULL no
+longer possible here.
+---
+ base/gsicc.c | 6 ++----
+ 1 file changed, 2 insertions(+), 4 deletions(-)
+
+diff --git a/base/gsicc.c b/base/gsicc.c
+index e7093c5..f74f55b 100644
+--- a/base/gsicc.c
++++ b/base/gsicc.c
+@@ -606,10 +606,8 @@ gx_serialize_ICC(const gs_color_space * pcs, stream * s)
+ static int
+ gx_set_overprint_ICC(const gs_color_space * pcs, gs_state * pgs)
+ {
+-    gx_device *             dev = pgs->device;
+-    gx_device_color_info *  pcinfo = (dev == 0 ? 0 : &dev->color_info);
+-    cmm_dev_profile_t *dev_profile;
+-    int code = dev_proc(dev, get_profile)(dev, &dev_profile);
++    gx_device *dev = pgs->device;
++    gx_device_color_info *pcinfo = (dev == 0 ? 0 : &dev->color_info);
+ 
+     /* check if we require special handling */
+     if ( !pgs->overprint                      ||
+-- 
+2.5.5
+
